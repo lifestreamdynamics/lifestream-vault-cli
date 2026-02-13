@@ -1,0 +1,23 @@
+{
+  "name": "@lifestream-vault/cli",
+  "version": "0.1.0",
+  "description": "CLI for Lifestream Vault",
+  "type": "module",
+  "bin": {
+    "lsvault": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@lifestream-vault/sdk": "*",
+    "commander": "^13.0.0",
+    "chalk": "^5.4.0",
+    "ora": "^8.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0"
+  }
+}
