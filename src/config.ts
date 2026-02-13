@@ -12,7 +12,7 @@ export interface CliConfig {
 
 export function loadConfig(): CliConfig {
   const config: CliConfig = {
-    apiUrl: process.env.LSVAULT_API_URL || 'http://localhost:4000',
+    apiUrl: process.env.LSVAULT_API_URL || 'http://localhost:4660',
   };
 
   if (process.env.LSVAULT_API_KEY) {
