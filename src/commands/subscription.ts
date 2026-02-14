@@ -3,13 +3,7 @@ import chalk from 'chalk';
 import { getClient } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
-}
+import { formatBytes } from '../utils/format.js';
 
 export function registerSubscriptionCommands(program: Command): void {
   const sub = program.command('subscription').description('View plans, manage subscription, and access billing');

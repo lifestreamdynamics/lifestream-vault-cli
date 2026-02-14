@@ -3,6 +3,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import type { LifestreamVaultClient } from '@lifestream-vault/sdk';
 import type { SyncConfig, SyncState, FileState } from './types.js';
 import { loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from './state.js';
@@ -93,12 +94,40 @@ export async function scanRemoteFiles(
 }
 
 /**
- * Execute a pull operation: download remote changes to local.
+ * Write a file atomically using a temp file + rename.
+ * Prevents partial reads if the process is interrupted mid-write.
  */
-export async function executePull(
-  client: LifestreamVaultClient,
+function atomicWriteFileSync(targetPath: string, content: string, encoding: BufferEncoding = 'utf-8'): void {
+  const tmpFile = targetPath + '.tmp.' + randomBytes(4).toString('hex');
+  fs.writeFileSync(tmpFile, content, encoding);
+  fs.renameSync(tmpFile, targetPath);
+}
+
+/**
+ * Direction-specific callbacks for the sync operation helper.
+ */
+interface SyncOperationHandlers {
+  /** The file entries to transfer (downloads for pull, uploads for push). */
+  transfers: SyncDiffEntry[];
+  /** The file entries to delete. */
+  deletes: SyncDiffEntry[];
+  /** Transfer a single file entry; returns the content for state tracking. */
+  transferFile(entry: SyncDiffEntry, config: SyncConfig): Promise<string>;
+  /** Delete a single file entry. */
+  deleteFile(entry: SyncDiffEntry, config: SyncConfig): Promise<void>;
+  /** Which counter to increment on successful transfer. */
+  transferCounterKey: 'filesUploaded' | 'filesDownloaded';
+}
+
+/**
+ * Shared sync operation executor used by both pull and push.
+ * Handles result initialization, state loading, progress callbacks,
+ * quota error handling, state saving, and lastSync update.
+ */
+async function executeSyncOperation(
   config: SyncConfig,
   diff: SyncDiff,
+  handlers: SyncOperationHandlers,
   onProgress?: ProgressCallback,
 ): Promise<SyncResult> {
   const result: SyncResult = {
@@ -110,10 +139,10 @@ export async function executePull(
   };
 
   const state = loadSyncState(config.id);
-  const allOps = [...diff.downloads, ...diff.deletes];
+  const allOps = [...handlers.transfers, ...handlers.deletes];
   let current = 0;
 
-  for (const entry of diff.downloads) {
+  for (const entry of handlers.transfers) {
     current++;
     onProgress?.({
       phase: 'transferring',
@@ -125,16 +154,8 @@ export async function executePull(
     });
 
     try {
-      const { content } = await retryWithBackoff(() =>
-        client.documents.get(config.vaultId, entry.path),
-      );
-      const localFile = path.join(config.localPath, entry.path);
-      const localDir = path.dirname(localFile);
-      if (!fs.existsSync(localDir)) {
-        fs.mkdirSync(localDir, { recursive: true });
-      }
-      fs.writeFileSync(localFile, content, 'utf-8');
-      result.filesDownloaded++;
+      const content = await handlers.transferFile(entry, config);
+      result[handlers.transferCounterKey]++;
       result.bytesTransferred += entry.sizeBytes;
 
       // Update state
@@ -159,7 +180,7 @@ export async function executePull(
     }
   }
 
-  for (const entry of diff.deletes) {
+  for (const entry of handlers.deletes) {
     current++;
     onProgress?.({
       phase: 'transferring',
@@ -171,10 +192,7 @@ export async function executePull(
     });
 
     try {
-      const localFile = path.join(config.localPath, entry.path);
-      if (fs.existsSync(localFile)) {
-        fs.unlinkSync(localFile);
-      }
+      await handlers.deleteFile(entry, config);
       result.filesDeleted++;
       delete state.local[entry.path];
       delete state.remote[entry.path];
@@ -199,6 +217,40 @@ export async function executePull(
 }
 
 /**
+ * Execute a pull operation: download remote changes to local.
+ */
+export async function executePull(
+  client: LifestreamVaultClient,
+  config: SyncConfig,
+  diff: SyncDiff,
+  onProgress?: ProgressCallback,
+): Promise<SyncResult> {
+  return executeSyncOperation(config, diff, {
+    transfers: diff.downloads,
+    deletes: diff.deletes,
+    transferCounterKey: 'filesDownloaded',
+    async transferFile(entry, cfg) {
+      const { content } = await retryWithBackoff(() =>
+        client.documents.get(cfg.vaultId, entry.path),
+      );
+      const localFile = path.join(cfg.localPath, entry.path);
+      const localDir = path.dirname(localFile);
+      if (!fs.existsSync(localDir)) {
+        fs.mkdirSync(localDir, { recursive: true });
+      }
+      atomicWriteFileSync(localFile, content, 'utf-8');
+      return content;
+    },
+    async deleteFile(entry, cfg) {
+      const localFile = path.join(cfg.localPath, entry.path);
+      if (fs.existsSync(localFile)) {
+        fs.unlinkSync(localFile);
+      }
+    },
+  }, onProgress);
+}
+
+/**
  * Execute a push operation: upload local changes to remote.
  */
 export async function executePush(
@@ -207,96 +259,24 @@ export async function executePush(
   diff: SyncDiff,
   onProgress?: ProgressCallback,
 ): Promise<SyncResult> {
-  const result: SyncResult = {
-    filesUploaded: 0,
-    filesDownloaded: 0,
-    filesDeleted: 0,
-    bytesTransferred: 0,
-    errors: [],
-  };
-
-  const state = loadSyncState(config.id);
-  const allOps = [...diff.uploads, ...diff.deletes];
-  let current = 0;
-
-  for (const entry of diff.uploads) {
-    current++;
-    onProgress?.({
-      phase: 'transferring',
-      current,
-      total: allOps.length,
-      currentFile: entry.path,
-      bytesTransferred: result.bytesTransferred,
-      totalBytes: diff.totalBytes,
-    });
-
-    try {
-      const localFile = path.join(config.localPath, entry.path);
+  return executeSyncOperation(config, diff, {
+    transfers: diff.uploads,
+    deletes: diff.deletes,
+    transferCounterKey: 'filesUploaded',
+    async transferFile(entry, cfg) {
+      const localFile = path.join(cfg.localPath, entry.path);
       const content = fs.readFileSync(localFile, 'utf-8');
       await retryWithBackoff(() =>
-        client.documents.put(config.vaultId, entry.path, content),
+        client.documents.put(cfg.vaultId, entry.path, content),
       );
-      result.filesUploaded++;
-      result.bytesTransferred += entry.sizeBytes;
-
-      // Update state
-      state.local[entry.path] = {
-        path: entry.path,
-        hash: hashFileContent(content),
-        mtime: new Date().toISOString(),
-        size: Buffer.byteLength(content, 'utf-8'),
-      };
-      state.remote[entry.path] = buildRemoteFileState(
-        entry.path,
-        content,
-        new Date().toISOString(),
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (isQuotaError(message)) {
-        result.errors.push({ path: entry.path, error: message });
-        break; // Stop immediately on quota errors
-      }
-      result.errors.push({ path: entry.path, error: message });
-    }
-  }
-
-  for (const entry of diff.deletes) {
-    current++;
-    onProgress?.({
-      phase: 'transferring',
-      current,
-      total: allOps.length,
-      currentFile: entry.path,
-      bytesTransferred: result.bytesTransferred,
-      totalBytes: diff.totalBytes,
-    });
-
-    try {
+      return content;
+    },
+    async deleteFile(entry, cfg) {
       await retryWithBackoff(() =>
-        client.documents.delete(config.vaultId, entry.path),
+        client.documents.delete(cfg.vaultId, entry.path),
       );
-      result.filesDeleted++;
-      delete state.local[entry.path];
-      delete state.remote[entry.path];
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      result.errors.push({ path: entry.path, error: message });
-    }
-  }
-
-  saveSyncState(state);
-  updateLastSync(config.id);
-
-  onProgress?.({
-    phase: 'complete',
-    current: allOps.length,
-    total: allOps.length,
-    bytesTransferred: result.bytesTransferred,
-    totalBytes: diff.totalBytes,
-  });
-
-  return result;
+    },
+  }, onProgress);
 }
 
 /**

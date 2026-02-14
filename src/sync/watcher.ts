@@ -3,6 +3,7 @@
  * Uses chokidar to detect file changes and triggers sync operations.
  */
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { watch, type FSWatcher } from 'chokidar';
 import type { LifestreamVaultClient } from '@lifestream-vault/sdk';
 import type { SyncConfig } from './types.js';
@@ -73,6 +74,59 @@ export function createWatcher(
     return rel.split(path.sep).join('/');
   }
 
+  /**
+   * Handles a detected conflict between local and remote versions of a file.
+   * Creates a backup of the losing side and applies the winning resolution.
+   * Returns the resolution chosen, or 'skip' if no actual conflict was detected.
+   */
+  async function handleConflict(params: {
+    absPath: string;
+    docPath: string;
+    localContent: string;
+    localHash: string;
+    lastLocal: import('./types.js').FileState | undefined;
+    lastRemote: import('./types.js').FileState | undefined;
+    remoteContent: string;
+    remoteHash: string;
+    remoteUpdatedAt: string;
+    state: import('./types.js').SyncState;
+  }): Promise<'local' | 'remote' | 'skip'> {
+    const { absPath, docPath, localContent, localHash, lastLocal, lastRemote, remoteContent, remoteHash, remoteUpdatedAt, state } = params;
+
+    const localState = { path: docPath, hash: localHash, mtime: new Date().toISOString(), size: Buffer.byteLength(localContent) };
+    const remoteState = { path: docPath, hash: remoteHash, mtime: remoteUpdatedAt, size: Buffer.byteLength(remoteContent) };
+
+    if (!detectConflict(localState, remoteState, lastLocal, lastRemote)) {
+      return 'skip';
+    }
+
+    const resolution = resolveConflict(config.onConflict, localState, remoteState);
+    let conflictFile: string | null = null;
+
+    if (resolution === 'local') {
+      conflictFile = createConflictFile(config.localPath, docPath, remoteContent, 'remote');
+      await client.documents.put(config.vaultId, docPath, localContent);
+      log(`Conflict: ${docPath} — used local, saved remote as ${conflictFile}`);
+    } else {
+      conflictFile = createConflictFile(config.localPath, docPath, localContent, 'local');
+      recentlyWritten.add(docPath);
+      const tmpFile = absPath + '.tmp.' + randomBytes(4).toString('hex');
+      fs.writeFileSync(tmpFile, remoteContent, 'utf-8');
+      fs.renameSync(tmpFile, absPath);
+      log(`Conflict: ${docPath} — used remote, saved local as ${conflictFile}`);
+    }
+
+    onConflictLog?.(formatConflictLog(docPath, resolution, conflictFile));
+
+    state.local[docPath] = resolution === 'local' ? localState : remoteState;
+    state.remote[docPath] = resolution === 'local'
+      ? buildRemoteFileState(docPath, localContent, new Date().toISOString())
+      : buildRemoteFileState(docPath, remoteContent, remoteUpdatedAt);
+    saveSyncState(state);
+
+    return resolution;
+  }
+
   async function handleFileChange(absPath: string): Promise<void> {
     const docPath = toDocPath(absPath);
 
@@ -96,34 +150,13 @@ export function createWatcher(
           const remote = await client.documents.get(config.vaultId, docPath);
           const remoteHash = hashFileContent(remote.content);
           if (remoteHash !== lastRemote.hash) {
-            // Remote also changed — conflict
-            const localState = { path: docPath, hash: localHash, mtime: new Date().toISOString(), size: Buffer.byteLength(content) };
-            const remoteState = { path: docPath, hash: remoteHash, mtime: remote.document.updatedAt, size: Buffer.byteLength(remote.content) };
-
-            if (detectConflict(localState, remoteState, lastLocal, lastRemote)) {
-              const resolution = resolveConflict(config.onConflict, localState, remoteState);
-              let conflictFile: string | null = null;
-
-              if (resolution === 'local') {
-                conflictFile = createConflictFile(config.localPath, docPath, remote.content, 'remote');
-                await client.documents.put(config.vaultId, docPath, content);
-                log(`Conflict: ${docPath} — used local, saved remote as ${conflictFile}`);
-              } else {
-                conflictFile = createConflictFile(config.localPath, docPath, content, 'local');
-                recentlyWritten.add(docPath);
-                fs.writeFileSync(absPath, remote.content, 'utf-8');
-                log(`Conflict: ${docPath} — used remote, saved local as ${conflictFile}`);
-              }
-
-              onConflictLog?.(formatConflictLog(docPath, resolution, conflictFile));
-
-              state.local[docPath] = resolution === 'local' ? localState : remoteState;
-              state.remote[docPath] = resolution === 'local'
-                ? buildRemoteFileState(docPath, content, new Date().toISOString())
-                : buildRemoteFileState(docPath, remote.content, remote.document.updatedAt);
-              saveSyncState(state);
-              return;
-            }
+            const result = await handleConflict({
+              absPath, docPath, localContent: content, localHash,
+              lastLocal, lastRemote,
+              remoteContent: remote.content, remoteHash,
+              remoteUpdatedAt: remote.document.updatedAt, state,
+            });
+            if (result !== 'skip') return;
           }
         } catch {
           // Remote check failed — proceed with push

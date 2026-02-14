@@ -53,10 +53,15 @@ describe('encrypted-config', () => {
       backend.saveCredentials(config, passphrase);
 
       expect(mockedFs.mkdirSync).toHaveBeenCalledWith(CONFIG_DIR, { recursive: true, mode: 0o700 });
+      // Atomic write: writes to temp file then renames
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
-        ENCRYPTED_FILE,
+        expect.stringMatching(/^.*credentials\.enc\.tmp\.[0-9a-f]{8}$/),
         expect.any(String),
         { mode: 0o600 },
+      );
+      expect(mockedFs.renameSync).toHaveBeenCalledWith(
+        expect.stringMatching(/^.*credentials\.enc\.tmp\.[0-9a-f]{8}$/),
+        ENCRYPTED_FILE,
       );
 
       // Parse the saved encrypted data

@@ -114,7 +114,9 @@ export function createEncryptedConfigBackend(): EncryptedConfigBackend {
 
       const merged = { ...existing, ...config };
       const encrypted = encrypt(JSON.stringify(merged), passphrase);
-      fs.writeFileSync(ENCRYPTED_FILE, JSON.stringify(encrypted, null, 2) + '\n', { mode: 0o600 });
+      const tmpFile = ENCRYPTED_FILE + '.tmp.' + crypto.randomBytes(4).toString('hex');
+      fs.writeFileSync(tmpFile, JSON.stringify(encrypted, null, 2) + '\n', { mode: 0o600 });
+      fs.renameSync(tmpFile, ENCRYPTED_FILE);
     },
 
     clearCredentials(): void {

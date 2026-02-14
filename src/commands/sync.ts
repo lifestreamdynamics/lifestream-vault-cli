@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import { getClient } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
+import { formatUptime } from '../utils/format.js';
 import {
   loadSyncConfigs,
   createSyncConfig,
@@ -614,10 +615,7 @@ export function registerSyncCommands(program: Command): void {
           out.status(`  PID:        ${status.pid}`);
           out.status(`  Log file:   ${status.logFile}`);
           if (status.uptime !== null) {
-            const hours = Math.floor(status.uptime / 3600);
-            const minutes = Math.floor((status.uptime % 3600) / 60);
-            const seconds = status.uptime % 60;
-            out.status(`  Uptime:     ${hours}h ${minutes}m ${seconds}s`);
+            out.status(`  Uptime:     ${formatUptime(status.uptime)}`);
           }
           if (status.startedAt) {
             out.status(`  Started at: ${new Date(status.startedAt).toLocaleString()}`);
