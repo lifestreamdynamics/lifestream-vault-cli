@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { getClient } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
-import type { CreateShareLinkParams } from '@lifestream-vault/sdk';
+import type { CreateShareLinkParams } from '@lifestreamdynamics/vault-sdk';
 
 export function registerShareCommands(program: Command): void {
   const shares = program.command('shares').description('Create, list, and revoke document share links');

@@ -5,7 +5,7 @@
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { watch, type FSWatcher } from 'chokidar';
-import type { LifestreamVaultClient } from '@lifestream-vault/sdk';
+import type { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import type { SyncConfig } from './types.js';
 import { shouldIgnore } from './ignore.js';
 import { hashFileContent, loadSyncState, saveSyncState, buildRemoteFileState } from './state.js';

@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { getClient } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
-import type { CreateHookParams } from '@lifestream-vault/sdk';
+import type { CreateHookParams } from '@lifestreamdynamics/vault-sdk';
 
 export function registerHookCommands(program: Command): void {
   const hooks = program.command('hooks').description('Manage vault event hooks (auto-tag, template, etc.)');

@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { getClient } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
-import type { CreateWebhookParams, UpdateWebhookParams } from '@lifestream-vault/sdk';
+import type { CreateWebhookParams, UpdateWebhookParams } from '@lifestreamdynamics/vault-sdk';
 
 export function registerWebhookCommands(program: Command): void {
   const webhooks = program.command('webhooks').description('Manage vault webhooks');

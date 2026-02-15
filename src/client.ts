@@ -1,4 +1,4 @@
-import { LifestreamVaultClient } from '@lifestream-vault/sdk';
+import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import { loadConfig, loadConfigAsync, getCredentialManager } from './config.js';
 import chalk from 'chalk';
 

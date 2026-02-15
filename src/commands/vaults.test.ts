@@ -30,7 +30,7 @@ vi.mock('../lib/credential-manager.js', () => ({
 }));
 
 // Mock SDK generateVaultKey
-vi.mock('@lifestream-vault/sdk', () => ({
+vi.mock('@lifestreamdynamics/vault-sdk', () => ({
   generateVaultKey: vi.fn(() => 'a'.repeat(64)),
 }));
 

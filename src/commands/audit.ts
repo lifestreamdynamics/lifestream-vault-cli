@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { AuditLogger } from '@lifestream-vault/sdk';
+import { AuditLogger } from '@lifestreamdynamics/vault-sdk';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 

@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import type { LifestreamVaultClient } from '@lifestream-vault/sdk';
+import type { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import type { SyncConfig, SyncState, FileState } from './types.js';
 import { loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from './state.js';
 import { updateLastSync } from './config.js';

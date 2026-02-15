@@ -4,7 +4,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import type { LifestreamVaultClient } from '@lifestream-vault/sdk';
+import type { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import type { SyncConfig } from './types.js';
 import { shouldIgnore } from './ignore.js';
 import { loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from './state.js';

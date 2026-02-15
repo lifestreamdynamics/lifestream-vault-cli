@@ -9,7 +9,7 @@ import { createWatcher } from './watcher.js';
 import { createRemotePoller } from './remote-poller.js';
 import { removePid } from './daemon.js';
 import { loadConfig } from '../config.js';
-import { LifestreamVaultClient } from '@lifestream-vault/sdk';
+import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import type { FSWatcher } from 'chokidar';
 
 interface ManagedSync {

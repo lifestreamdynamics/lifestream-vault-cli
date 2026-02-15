@@ -17,7 +17,7 @@ vi.mock('./config.js', () => ({
 }));
 
 // Mock the SDK - must use function() (NOT arrow) for constructable mock
-vi.mock('@lifestream-vault/sdk', () => ({
+vi.mock('@lifestreamdynamics/vault-sdk', () => ({
   LifestreamVaultClient: vi.fn(function (this: any, opts: { baseUrl: string; apiKey?: string; accessToken?: string }) {
     this.baseUrl = opts.baseUrl;
     this.apiKey = opts.apiKey;

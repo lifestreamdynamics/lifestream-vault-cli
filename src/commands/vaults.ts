@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { getClient } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
-import { generateVaultKey } from '@lifestream-vault/sdk';
+import { generateVaultKey } from '@lifestreamdynamics/vault-sdk';
 import { createCredentialManager } from '../lib/credential-manager.js';
 
 export function registerVaultCommands(program: Command): void {

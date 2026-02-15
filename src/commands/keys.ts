@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { getClient } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
-import type { CreateApiKeyParams, UpdateApiKeyParams } from '@lifestream-vault/sdk';
+import type { CreateApiKeyParams, UpdateApiKeyParams } from '@lifestreamdynamics/vault-sdk';
 
 export function registerKeyCommands(program: Command): void {
   const keys = program.command('keys').description('Create, list, update, and revoke API keys');

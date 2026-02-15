@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import { getClient } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
-import type { PublishDocumentParams, UpdatePublishParams } from '@lifestream-vault/sdk';
+import type { PublishDocumentParams, UpdatePublishParams } from '@lifestreamdynamics/vault-sdk';
 import chalk from 'chalk';
 
 export function registerPublishCommands(program: Command): void {
