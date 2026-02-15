@@ -1,21 +1,47 @@
 {
   "name": "@lifestream-vault/cli",
-  "version": "0.1.0",
-  "description": "CLI for Lifestream Vault",
+  "version": "1.0.0",
+  "description": "Command-line interface for Lifestream Vault",
   "type": "module",
   "bin": {
     "lsvault": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/__tests__",
+    "README.md"
+  ],
+  "keywords": [
+    "lifestream",
+    "vault",
+    "cli",
+    "markdown",
+    "webdav",
+    "sync",
+    "command-line"
+  ],
+  "author": "Lifestream Dynamics <eric@lifestreamdynamics.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lifestreamdynamics/lifestream-vault-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lifestreamdynamics/lifestream-vault-cli/issues"
+  },
+  "homepage": "https://github.com/lifestreamdynamics/lifestream-vault-cli#readme",
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:ui": "vitest --ui"
+    "test:ui": "vitest --ui",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
-    "@lifestream-vault/sdk": "*",
+    "@lifestream-vault/sdk": "^1.0.0",
     "chalk": "^5.4.0",
     "chokidar": "^4.0.3",
     "commander": "^13.0.0",
