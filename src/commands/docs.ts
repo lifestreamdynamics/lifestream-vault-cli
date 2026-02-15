@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { createCredentialManager } from '../lib/credential-manager.js';
@@ -21,7 +21,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Fetching documents...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const documents = await client.documents.list(vaultId, _opts.dir as string | undefined);
         out.stopSpinner();
         out.list(
@@ -68,7 +68,7 @@ EXAMPLES
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const result = await client.documents.get(vaultId, docPath);
 
         // Auto-decrypt if the document is encrypted
@@ -127,7 +127,7 @@ EXAMPLES
         });
 
         out.startSpinner('Uploading document...');
-        const client = getClient();
+        const client = await getClientAsync();
 
         // Check if vault is encrypted and auto-encrypt
         const vault = await client.vaults.get(vaultId);
@@ -165,7 +165,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Deleting document...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.documents.delete(vaultId, docPath);
         out.success(`Deleted: ${chalk.cyan(docPath)}`, { path: docPath, deleted: true });
       } catch (err) {
@@ -188,7 +188,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Moving document...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const result = await client.documents.move(vaultId, source, dest, _opts.overwrite as boolean | undefined);
         out.success(`Moved: ${chalk.cyan(result.source)} -> ${chalk.cyan(result.destination)}`, {
           source: result.source,

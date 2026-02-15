@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { generateVaultKey } from '@lifestreamdynamics/vault-sdk';
@@ -16,7 +16,7 @@ export function registerVaultCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching vaults...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const vaultList = await client.vaults.list();
         out.stopSpinner();
         out.list(
@@ -49,7 +49,7 @@ export function registerVaultCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching vault...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const vault = await client.vaults.get(vaultId);
         out.stopSpinner();
         out.record({
@@ -81,7 +81,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Creating vault...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const isEncrypted = _opts.encrypted === true;
         const vault = await client.vaults.create({
           name,

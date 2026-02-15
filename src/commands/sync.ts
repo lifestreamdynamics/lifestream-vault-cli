@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { formatUptime } from '../utils/format.js';
@@ -46,7 +46,7 @@ export function registerSyncCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Initializing sync...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const vault = await client.vaults.get(vaultId);
         const absPath = path.resolve(localPath);
 
@@ -167,7 +167,7 @@ export function registerSyncCommands(program: Command): void {
           return;
         }
 
-        const client = getClient();
+        const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const lastState = loadSyncState(config.id);
 
@@ -253,7 +253,7 @@ export function registerSyncCommands(program: Command): void {
           return;
         }
 
-        const client = getClient();
+        const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const lastState = loadSyncState(config.id);
 
@@ -339,7 +339,7 @@ export function registerSyncCommands(program: Command): void {
           return;
         }
 
-        const client = getClient();
+        const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const lastState = loadSyncState(config.id);
 
@@ -426,7 +426,7 @@ export function registerSyncCommands(program: Command): void {
           return;
         }
 
-        const client = getClient();
+        const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const pollInterval = parseInt(String(_opts.pollInterval ?? '30000'), 10);
 
@@ -509,7 +509,7 @@ export function registerSyncCommands(program: Command): void {
           return;
         }
 
-        const client = getClient();
+        const client = await getClientAsync();
         const localFile = path.join(config.localPath, docPath);
         const state = loadSyncState(config.id);
 

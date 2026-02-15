@@ -3,6 +3,8 @@ import type { CliConfig } from '../config.js';
 const SERVICE_NAME = 'lifestream-vault-cli';
 const ACCOUNT_API_KEY = 'api-key';
 const ACCOUNT_API_URL = 'api-url';
+const ACCOUNT_ACCESS_TOKEN = 'access-token';
+const ACCOUNT_REFRESH_TOKEN = 'refresh-token';
 
 export interface KeychainBackend {
   isAvailable(): Promise<boolean>;
@@ -59,6 +61,12 @@ export function createKeychainBackend(): KeychainBackend {
 
         const apiUrl = await kt.getPassword(SERVICE_NAME, ACCOUNT_API_URL);
         if (apiUrl) result.apiUrl = apiUrl;
+
+        const accessToken = await kt.getPassword(SERVICE_NAME, ACCOUNT_ACCESS_TOKEN);
+        if (accessToken) result.accessToken = accessToken;
+
+        const refreshToken = await kt.getPassword(SERVICE_NAME, ACCOUNT_REFRESH_TOKEN);
+        if (refreshToken) result.refreshToken = refreshToken;
       } catch {
         // Keychain access failed silently
       }
@@ -75,6 +83,12 @@ export function createKeychainBackend(): KeychainBackend {
       if (config.apiUrl) {
         await kt.setPassword(SERVICE_NAME, ACCOUNT_API_URL, config.apiUrl);
       }
+      if (config.accessToken) {
+        await kt.setPassword(SERVICE_NAME, ACCOUNT_ACCESS_TOKEN, config.accessToken);
+      }
+      if (config.refreshToken) {
+        await kt.setPassword(SERVICE_NAME, ACCOUNT_REFRESH_TOKEN, config.refreshToken);
+      }
     },
 
     async clearCredentials(): Promise<void> {
@@ -86,6 +100,12 @@ export function createKeychainBackend(): KeychainBackend {
       } catch { /* ignore */ }
       try {
         await kt.deletePassword(SERVICE_NAME, ACCOUNT_API_URL);
+      } catch { /* ignore */ }
+      try {
+        await kt.deletePassword(SERVICE_NAME, ACCOUNT_ACCESS_TOKEN);
+      } catch { /* ignore */ }
+      try {
+        await kt.deletePassword(SERVICE_NAME, ACCOUNT_REFRESH_TOKEN);
       } catch { /* ignore */ }
     },
   };

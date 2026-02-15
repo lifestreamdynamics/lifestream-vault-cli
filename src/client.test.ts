@@ -48,7 +48,7 @@ describe('client', () => {
 
   it('should create a client when API key is configured', () => {
     mockedLoadConfig.mockReturnValue({
-      apiUrl: 'http://localhost:4660',
+      apiUrl: 'https://vault.lifestreamdynamics.com',
       apiKey: 'lsv_k_testkey',
     });
 
@@ -60,7 +60,7 @@ describe('client', () => {
 
   it('should exit with error when no API key is set', () => {
     mockedLoadConfig.mockReturnValue({
-      apiUrl: 'http://localhost:4660',
+      apiUrl: 'https://vault.lifestreamdynamics.com',
     });
 
     getClient();

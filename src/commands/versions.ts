@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 
@@ -19,7 +19,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Fetching versions...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const versionList = await client.documents.listVersions(vaultId, docPath);
         out.stopSpinner();
         out.list(
@@ -71,7 +71,7 @@ EXAMPLES
         return;
       }
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const version = await client.documents.getVersion(vaultId, docPath, versionNum);
         if (version.content === null) {
           out.error('Version content is no longer available (expired or pruned)');
@@ -105,7 +105,7 @@ EXAMPLES
       }
       out.startSpinner('Computing diff...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const diff = await client.documents.diffVersions(vaultId, docPath, from, to);
         out.stopSpinner();
 
@@ -147,7 +147,7 @@ EXAMPLES
       }
       out.startSpinner(`Restoring to version ${versionNum}...`);
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const doc = await client.documents.restoreVersion(vaultId, docPath, versionNum);
         out.success(`Restored ${chalk.cyan(docPath)} to version ${versionNum}`, {
           path: doc.path,
@@ -177,7 +177,7 @@ EXAMPLES
       }
       out.startSpinner(`Pinning version ${versionNum}...`);
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.documents.pinVersion(vaultId, docPath, versionNum);
         out.success(`Pinned version ${versionNum} of ${chalk.cyan(docPath)}`, {
           path: docPath,
@@ -208,7 +208,7 @@ EXAMPLES
       }
       out.startSpinner(`Unpinning version ${versionNum}...`);
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.documents.unpinVersion(vaultId, docPath, versionNum);
         out.success(`Unpinned version ${versionNum} of ${chalk.cyan(docPath)}`, {
           path: docPath,

@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 
@@ -16,7 +16,7 @@ export function registerTeamCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching teams...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const teamList = await client.teams.list();
         out.stopSpinner();
         out.list(
@@ -44,7 +44,7 @@ export function registerTeamCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching team...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const team = await client.teams.get(teamId);
         out.stopSpinner();
         out.record({
@@ -73,7 +73,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Creating team...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const team = await client.teams.create({ name, description: _opts.description as string | undefined });
         out.success(`Team created: ${chalk.cyan(team.name)} (${team.id})`, { id: team.id, name: team.name });
       } catch (err) {
@@ -91,7 +91,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Updating team...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const team = await client.teams.update(teamId, {
           name: _opts.name as string | undefined,
           description: _opts.description as string | undefined,
@@ -110,7 +110,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Deleting team...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.teams.delete(teamId);
         out.success('Team deleted.', { id: teamId, deleted: true });
       } catch (err) {
@@ -130,7 +130,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Fetching members...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const memberList = await client.teams.listMembers(teamId);
         out.stopSpinner();
         out.list(
@@ -166,7 +166,7 @@ EXAMPLES
       const role = String(_opts.role) as 'admin' | 'member';
       out.startSpinner('Updating member role...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const member = await client.teams.updateMemberRole(teamId, userId, role);
         out.success(`Role updated to ${chalk.magenta(member.role)} for ${member.user.email}`, {
           userId,
@@ -187,7 +187,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Removing member...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.teams.removeMember(teamId, userId);
         out.success('Member removed.', { teamId, userId, removed: true });
       } catch (err) {
@@ -203,7 +203,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Leaving team...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.teams.leave(teamId);
         out.success('Left the team.', { teamId, left: true });
       } catch (err) {
@@ -223,7 +223,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Fetching invitations...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const invitationList = await client.teams.listInvitations(teamId);
         out.stopSpinner();
         out.list(
@@ -259,7 +259,7 @@ EXAMPLES
       const role = String(_opts.role) as 'admin' | 'member';
       out.startSpinner('Sending invitation...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const invitation = await client.teams.inviteMember(teamId, email, role);
         out.success(`Invited ${chalk.cyan(invitation.email)} as ${chalk.magenta(invitation.role)}`, {
           id: invitation.id,
@@ -280,7 +280,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Revoking invitation...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.teams.revokeInvitation(teamId, invitationId);
         out.success('Invitation revoked.', { id: invitationId, revoked: true });
       } catch (err) {
@@ -300,7 +300,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Fetching team vaults...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const vaultList = await client.teams.listVaults(teamId);
         out.stopSpinner();
         out.list(
@@ -330,7 +330,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Creating team vault...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const vault = await client.teams.createVault(teamId, { name, description: _opts.description as string | undefined });
         out.success(`Team vault created: ${chalk.cyan(String(vault.name))}`, {
           name: String(vault.name),

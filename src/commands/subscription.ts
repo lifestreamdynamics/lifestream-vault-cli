@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { formatBytes } from '../utils/format.js';
@@ -15,7 +15,7 @@ export function registerSubscriptionCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching subscription...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const data = await client.subscription.get();
         out.stopSpinner();
 
@@ -52,7 +52,7 @@ export function registerSubscriptionCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching plans...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const plans = await client.subscription.listPlans();
         out.stopSpinner();
         out.list(
@@ -91,7 +91,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Creating checkout session...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const session = await client.subscription.createCheckoutSession(tier, String(_opts.returnUrl));
         out.success('Checkout session created', { url: session.url });
         if (flags.output === 'text') {
@@ -110,7 +110,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Cancelling subscription...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.subscription.cancel(_opts.reason as string | undefined);
         out.success('Subscription cancelled', { cancelled: true });
       } catch (err) {
@@ -126,7 +126,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Creating portal session...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const portal = await client.subscription.createPortalSession(String(_opts.returnUrl));
         out.success('Portal session created', { url: portal.url });
         if (flags.output === 'text') {
@@ -144,7 +144,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Fetching invoices...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const invoices = await client.subscription.listInvoices();
         out.stopSpinner();
         out.list(

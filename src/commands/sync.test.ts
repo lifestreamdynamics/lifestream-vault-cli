@@ -46,7 +46,7 @@ vi.mock('../sync/state.js', () => ({
 
 let sdkMock: SDKMock;
 vi.mock('../client.js', () => ({
-  getClient: vi.fn(() => sdkMock),
+  getClientAsync: vi.fn(async () => sdkMock),
 }));
 
 import { createSyncConfig, deleteSyncConfig, loadSyncConfigs } from '../sync/config.js';

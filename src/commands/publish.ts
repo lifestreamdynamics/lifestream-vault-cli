@@ -1,5 +1,5 @@
 import type { Command } from 'commander';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { PublishDocumentParams, UpdatePublishParams } from '@lifestreamdynamics/vault-sdk';
@@ -16,7 +16,7 @@ export function registerPublishCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching published documents...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const docs = await client.publish.listMine(vaultId);
         out.stopSpinner();
         out.list(
@@ -65,7 +65,7 @@ export function registerPublishCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Publishing document...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const params: PublishDocumentParams = {
           slug: String(_opts.slug),
         };
@@ -99,7 +99,7 @@ export function registerPublishCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Updating published document...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const params: UpdatePublishParams = {
           slug: String(_opts.slug),
         };
@@ -128,7 +128,7 @@ export function registerPublishCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Unpublishing document...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.publish.delete(vaultId, docPath);
         out.success('Document unpublished successfully', { path: docPath, unpublished: true });
       } catch (err) {

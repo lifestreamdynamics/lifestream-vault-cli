@@ -3,7 +3,7 @@
 A powerful command-line interface for Lifestream Vault - the multi-user Markdown document storage service with WebDAV sync, search, and collaboration features.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![npm version](https://img.shields.io/npm/v/@lifestream-vault/cli.svg)](https://www.npmjs.com/package/@lifestream-vault/cli)
+[![npm version](https://img.shields.io/npm/v/@lifestreamdynamics/vault-cli.svg)](https://www.npmjs.com/package/@lifestreamdynamics/vault-cli)
 
 ## 📖 Table of Contents
 
@@ -49,14 +49,14 @@ A powerful command-line interface for Lifestream Vault - the multi-user Markdown
 - **🛡️ Admin Tools** - User management, system stats, and audit logs (admin only)
 - **⚙️ Flexible Configuration** - Multiple profiles, environment variable support, and configurable sync behavior
 - **🌐 Offline Support** - Work offline and sync when reconnected
-- **📦 TypeScript SDK** - Built on `@lifestream-vault/sdk` with full type safety
+- **📦 TypeScript SDK** - Built on `@lifestreamdynamics/vault-sdk` with full type safety
 
 ## 📦 Installation
 
 ### Global Installation (Recommended)
 
 ```bash
-npm install -g @lifestream-vault/cli
+npm install -g @lifestreamdynamics/vault-cli
 ```
 
 After installation, the `lsvault` command will be available globally:
@@ -68,7 +68,7 @@ lsvault --help
 ### Local Installation (Project-Specific)
 
 ```bash
-npm install @lifestream-vault/cli
+npm install @lifestreamdynamics/vault-cli
 
 # Run with npx
 npx lsvault --help
@@ -98,7 +98,7 @@ lsvault auth login --api-key lsv_k_your_api_key_here
 lsvault auth login --email user@example.com
 
 # Set a custom API URL (optional)
-lsvault auth login --api-key lsv_k_your_key --api-url https://vault.example.com
+lsvault auth login --api-key lsv_k_your_key --api-url https://vault.lifestreamdynamics.com
 ```
 
 ### 2. List Your Vaults
@@ -474,11 +474,13 @@ The CLI stores configuration in `~/.lsvault/config.json`:
 
 ```json
 {
-  "apiUrl": "http://localhost:4660"
+  "apiUrl": "https://vault.lifestreamdynamics.com"
 }
 ```
 
 **Note:** Credentials are stored securely in the system keychain (or encrypted file fallback), not in the plaintext config file.
+
+> **Self-hosting?** Replace `https://vault.lifestreamdynamics.com` with your server's URL, or set the `LSVAULT_API_URL` environment variable.
 
 ### Configuration Profiles
 
@@ -489,13 +491,13 @@ Manage multiple configurations with profiles:
 lsvault config profiles
 
 # Create a profile
-lsvault config create-profile production --api-url https://vault.example.com
+lsvault config create-profile production --api-url https://vault.lifestreamdynamics.com
 
 # Switch profiles
 lsvault config use production
 
 # Set config values
-lsvault config set apiUrl https://vault.example.com
+lsvault config set apiUrl https://vault.lifestreamdynamics.com
 
 # Get config values
 lsvault config get apiUrl
@@ -522,14 +524,14 @@ Sync configurations are stored per vault in `~/.lsvault/sync/`:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LSVAULT_API_URL` | API server base URL | `http://localhost:4660` |
+| `LSVAULT_API_URL` | API server base URL | `https://vault.lifestreamdynamics.com` |
 | `LSVAULT_API_KEY` | API key for authentication | - |
 | `LSVAULT_CONFIG_DIR` | Configuration directory | `~/.lsvault` |
 | `LSVAULT_PROFILE` | Active configuration profile | `default` |
 
 **Example:**
 ```bash
-export LSVAULT_API_URL=https://vault.example.com
+export LSVAULT_API_URL=https://vault.lifestreamdynamics.com
 export LSVAULT_API_KEY=lsv_k_your_key_here
 lsvault vaults list
 ```
@@ -718,7 +720,7 @@ lsvault auth migrate
 1. Verify API URL is correct: `lsvault config get apiUrl`
 2. Test connectivity: `curl <API_URL>/api/v1/health`
 3. Check firewall/proxy settings
-4. Use custom API URL: `lsvault auth login --api-url https://vault.example.com`
+4. Use custom API URL: `lsvault auth login --api-url https://vault.lifestreamdynamics.com`
 
 ### Output Format Issues
 
@@ -733,9 +735,9 @@ lsvault docs get vault_abc123 /path.md --quiet > output.md
 
 ## 🔗 Related Packages
 
-- **[@lifestream-vault/sdk](https://npmjs.com/package/@lifestream-vault/sdk)** - TypeScript SDK for Lifestream Vault API
-- **[@lifestream-vault/api](https://github.com/lifestreamdynamics/lifestream-vault)** - Backend API server
-- **[@lifestream-vault/web](https://github.com/lifestreamdynamics/lifestream-vault)** - Web frontend
+- **[@lifestreamdynamics/vault-sdk](https://npmjs.com/package/@lifestreamdynamics/vault-sdk)** - TypeScript SDK for Lifestream Vault API
+- **[@lifestreamdynamics/vault-api](https://github.com/lifestreamdynamics/lifestream-vault)** - Backend API server
+- **[@lifestreamdynamics/vault-web](https://github.com/lifestreamdynamics/lifestream-vault)** - Web frontend
 
 ## 📄 Documentation
 

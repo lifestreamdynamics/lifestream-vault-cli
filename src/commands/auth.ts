@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import { loadConfig, loadConfigAsync, getCredentialManager } from '../config.js';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { migrateCredentials, hasPlaintextCredentials, checkAndPromptMigration } from '../lib/migration.js';
 
 export function registerAuthCommands(program: Command): void {
@@ -14,7 +14,7 @@ export function registerAuthCommands(program: Command): void {
     .option('--api-key <key>', 'API key (lsv_k_... prefix)')
     .option('--email <email>', 'Email address for password login')
     .option('--password <password>', 'Password (prompts interactively if omitted)')
-    .option('--api-url <url>', 'API server URL (default: http://localhost:4660)')
+    .option('--api-url <url>', 'API server URL (default: https://vault.lifestreamdynamics.com)')
     .addHelpText('after', `
 EXAMPLES
   lsvault auth login --api-key lsv_k_abc123
@@ -204,7 +204,7 @@ EXAMPLES
       if (config.apiKey || config.accessToken) {
         const spinner = ora('Fetching user info...').start();
         try {
-          const client = getClient();
+          const client = await getClientAsync();
           const user = await client.user.me();
           spinner.stop();
           console.log(`User:    ${chalk.cyan(user.email)}`);

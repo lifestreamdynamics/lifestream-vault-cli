@@ -57,7 +57,7 @@ describe('config', () => {
 
       const config = loadConfig();
 
-      expect(config.apiUrl).toBe('http://localhost:4660');
+      expect(config.apiUrl).toBe('https://vault.lifestreamdynamics.com');
       expect(config.apiKey).toBeUndefined();
     });
 
@@ -146,7 +146,7 @@ describe('config', () => {
 
       const config = await loadConfigAsync();
 
-      expect(config.apiUrl).toBe('http://localhost:4660');
+      expect(config.apiUrl).toBe('https://vault.lifestreamdynamics.com');
       expect(config.apiKey).toBeUndefined();
     });
   });

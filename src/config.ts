@@ -6,6 +6,8 @@ import { createCredentialManager, type CredentialManager } from './lib/credentia
 const CONFIG_DIR = path.join(os.homedir(), '.lsvault');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
+export const DEFAULT_API_URL = 'https://vault.lifestreamdynamics.com';
+
 export interface CliConfig {
   apiUrl: string;
   apiKey?: string;
@@ -37,7 +39,7 @@ export function setCredentialManager(cm: CredentialManager): void {
  */
 export function loadConfig(): CliConfig {
   const config: CliConfig = {
-    apiUrl: process.env.LSVAULT_API_URL || 'http://localhost:4660',
+    apiUrl: process.env.LSVAULT_API_URL || DEFAULT_API_URL,
   };
 
   if (process.env.LSVAULT_API_KEY) {
@@ -63,7 +65,7 @@ export async function loadConfigAsync(): Promise<CliConfig> {
   const secureCreds = await cm.getCredentials();
 
   const config: CliConfig = {
-    apiUrl: secureCreds.apiUrl || process.env.LSVAULT_API_URL || 'http://localhost:4660',
+    apiUrl: secureCreds.apiUrl || process.env.LSVAULT_API_URL || DEFAULT_API_URL,
   };
 
   // Load JWT tokens if available

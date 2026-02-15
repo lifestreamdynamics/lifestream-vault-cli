@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 
@@ -15,7 +15,7 @@ export function registerConnectorCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching connectors...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const connectorList = await client.connectors.list(_opts.vault as string | undefined);
         out.stopSpinner();
         out.list(
@@ -54,7 +54,7 @@ export function registerConnectorCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching connector...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const c = await client.connectors.get(connectorId);
         out.stopSpinner();
         out.record({
@@ -87,7 +87,7 @@ export function registerConnectorCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Creating connector...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const connector = await client.connectors.create({
           provider: provider as 'google_drive',
           name,
@@ -115,7 +115,7 @@ export function registerConnectorCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Updating connector...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const params: Record<string, unknown> = {};
         if (_opts.name) params.name = _opts.name;
         if (_opts.direction) params.syncDirection = _opts.direction;
@@ -137,7 +137,7 @@ export function registerConnectorCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Deleting connector...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.connectors.delete(connectorId);
         out.success('Connector deleted.', { id: connectorId, deleted: true });
       } catch (err) {
@@ -153,7 +153,7 @@ export function registerConnectorCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Testing connection...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const result = await client.connectors.test(connectorId);
         if (result.success) {
           out.success('Connection test passed.', { success: true });
@@ -177,7 +177,7 @@ export function registerConnectorCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Triggering sync...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const result = await client.connectors.sync(connectorId);
         out.success(result.message, { message: result.message });
       } catch (err) {
@@ -193,7 +193,7 @@ export function registerConnectorCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching sync logs...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const logs = await client.connectors.logs(connectorId);
         out.stopSpinner();
         out.list(

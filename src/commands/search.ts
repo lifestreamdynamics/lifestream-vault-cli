@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 
@@ -21,7 +21,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Searching...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const response = await client.search.search({
           q: query,
           vault: _opts.vault as string | undefined,

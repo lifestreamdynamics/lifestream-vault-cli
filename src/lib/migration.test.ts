@@ -41,7 +41,7 @@ describe('migration', () => {
 
     it('should return false when config has no apiKey', () => {
       mockedFs.existsSync.mockReturnValue(true);
-      mockedFs.readFileSync.mockReturnValue(JSON.stringify({ apiUrl: 'http://localhost:4660' }));
+      mockedFs.readFileSync.mockReturnValue(JSON.stringify({ apiUrl: 'https://vault.lifestreamdynamics.com' }));
       expect(hasPlaintextCredentials()).toBe(false);
     });
 

@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { CreateWebhookParams, UpdateWebhookParams } from '@lifestreamdynamics/vault-sdk';
@@ -16,7 +16,7 @@ export function registerWebhookCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching webhooks...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const webhookList = await client.webhooks.list(vaultId);
         out.stopSpinner();
         out.list(
@@ -57,7 +57,7 @@ export function registerWebhookCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Creating webhook...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const params: CreateWebhookParams = {
           url,
           events: String(_opts.events || 'create,update,delete').split(',').map((e: string) => e.trim()),
@@ -105,7 +105,7 @@ export function registerWebhookCommands(program: Command): void {
 
       out.startSpinner('Updating webhook...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const params: UpdateWebhookParams = {};
         if (_opts.url) params.url = String(_opts.url);
         if (_opts.events) params.events = String(_opts.events).split(',').map((e: string) => e.trim());
@@ -132,7 +132,7 @@ export function registerWebhookCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Deleting webhook...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.webhooks.delete(vaultId, webhookId);
         out.success('Webhook deleted successfully', { id: webhookId, deleted: true });
       } catch (err) {
@@ -149,7 +149,7 @@ export function registerWebhookCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching deliveries...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const deliveries = await client.webhooks.listDeliveries(vaultId, webhookId);
         out.stopSpinner();
         out.list(

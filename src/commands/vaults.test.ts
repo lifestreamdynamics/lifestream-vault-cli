@@ -15,10 +15,10 @@ vi.mock('ora', () => ({
   })),
 }));
 
-// Mock getClient to return our SDK mock
+// Mock getClientAsync to return our SDK mock
 let sdkMock: SDKMock;
 vi.mock('../client.js', () => ({
-  getClient: vi.fn(() => sdkMock),
+  getClientAsync: vi.fn(async () => sdkMock),
 }));
 
 // Mock credential manager for encryption tests

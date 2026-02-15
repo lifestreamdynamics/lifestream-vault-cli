@@ -29,7 +29,7 @@ const mockCredentialManager = {
 vi.mock('../config.js', () => ({
   loadConfig: vi.fn(),
   loadConfigAsync: vi.fn(async () => ({
-    apiUrl: 'http://localhost:4660',
+    apiUrl: 'https://vault.lifestreamdynamics.com',
   })),
   saveConfig: vi.fn(),
   getCredentialManager: vi.fn(() => mockCredentialManager),
@@ -43,7 +43,7 @@ vi.mock('../lib/migration.js', () => ({
 
 let sdkMock: SDKMock;
 vi.mock('../client.js', () => ({
-  getClient: vi.fn(() => sdkMock),
+  getClientAsync: vi.fn(async () => sdkMock),
 }));
 
 import { loadConfig, loadConfigAsync, saveConfig, getCredentialManager } from '../config.js';
@@ -72,7 +72,7 @@ describe('auth commands', () => {
     mockCredentialManager.saveCredentials.mockResolvedValue(undefined);
     mockCredentialManager.clearCredentials.mockResolvedValue(undefined);
     mockCredentialManager.getStorageMethod.mockResolvedValue('encrypted-config');
-    mockedLoadConfigAsync.mockResolvedValue({ apiUrl: 'http://localhost:4660' });
+    mockedLoadConfigAsync.mockResolvedValue({ apiUrl: 'https://vault.lifestreamdynamics.com' });
     mockedHasPlaintextCredentials.mockReturnValue(false);
   });
 
@@ -140,7 +140,7 @@ describe('auth commands', () => {
     it('should display storage method and config', async () => {
       mockCredentialManager.getStorageMethod.mockResolvedValue('keychain');
       mockedLoadConfigAsync.mockResolvedValue({
-        apiUrl: 'http://localhost:4660',
+        apiUrl: 'https://vault.lifestreamdynamics.com',
         apiKey: 'lsv_k_abcdefghij',
       });
 
@@ -201,7 +201,7 @@ describe('auth commands', () => {
   describe('whoami', () => {
     it('should display API URL and masked API key', async () => {
       mockedLoadConfigAsync.mockResolvedValue({
-        apiUrl: 'http://localhost:4660',
+        apiUrl: 'https://vault.lifestreamdynamics.com',
         apiKey: 'lsv_k_abcdefghij',
       });
       sdkMock.user.me.mockResolvedValue({
@@ -217,7 +217,7 @@ describe('auth commands', () => {
 
       await program.parseAsync(['node', 'cli', 'auth', 'whoami']);
 
-      expect(consoleSpy.logs.some(l => l.includes('http://localhost:4660'))).toBe(true);
+      expect(consoleSpy.logs.some(l => l.includes('https://vault.lifestreamdynamics.com'))).toBe(true);
       expect(consoleSpy.logs.some(l => l.includes('lsv_k_abcdef'))).toBe(true);
       // Should be masked (not show full key)
       expect(consoleSpy.logs.some(l => l.includes('lsv_k_abcdefghij'))).toBe(false);
@@ -225,7 +225,7 @@ describe('auth commands', () => {
 
     it('should show "not set" when no API key is configured', async () => {
       mockedLoadConfigAsync.mockResolvedValue({
-        apiUrl: 'http://localhost:4660',
+        apiUrl: 'https://vault.lifestreamdynamics.com',
       });
 
       await program.parseAsync(['node', 'cli', 'auth', 'whoami']);
@@ -235,7 +235,7 @@ describe('auth commands', () => {
 
     it('should fetch and display user info when API key is set', async () => {
       mockedLoadConfigAsync.mockResolvedValue({
-        apiUrl: 'http://localhost:4660',
+        apiUrl: 'https://vault.lifestreamdynamics.com',
         apiKey: 'lsv_k_testkey123',
       });
       sdkMock.user.me.mockResolvedValue({
@@ -259,7 +259,7 @@ describe('auth commands', () => {
 
     it('should handle API errors gracefully in whoami', async () => {
       mockedLoadConfigAsync.mockResolvedValue({
-        apiUrl: 'http://localhost:4660',
+        apiUrl: 'https://vault.lifestreamdynamics.com',
         apiKey: 'lsv_k_testkey123',
       });
       sdkMock.user.me.mockRejectedValue(new Error('Connection refused'));

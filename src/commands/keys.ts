@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { CreateApiKeyParams, UpdateApiKeyParams } from '@lifestreamdynamics/vault-sdk';
@@ -15,7 +15,7 @@ export function registerKeyCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching API keys...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const apiKeys = await client.apiKeys.list();
         out.stopSpinner();
         out.list(
@@ -59,7 +59,7 @@ export function registerKeyCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching API key...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const key = await client.apiKeys.get(keyId);
         out.stopSpinner();
         out.record({
@@ -94,7 +94,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Creating API key...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const params: CreateApiKeyParams = {
           name,
           scopes: String(_opts.scopes || 'read,write').split(',').map((s: string) => s.trim()),
@@ -137,7 +137,7 @@ EXAMPLES
 
       out.startSpinner('Updating API key...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const params: UpdateApiKeyParams = {};
         if (_opts.name) params.name = String(_opts.name);
         if (_opts.active) params.isActive = true;
@@ -158,7 +158,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Revoking API key...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.apiKeys.delete(keyId);
         out.success('API key revoked successfully', { id: keyId, revoked: true });
       } catch (err) {

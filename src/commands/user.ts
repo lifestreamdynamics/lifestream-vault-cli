@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { formatBytes } from '../utils/format.js';
@@ -15,7 +15,7 @@ export function registerUserCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching storage usage...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const storage = await client.user.getStorage();
         out.stopSpinner();
 

@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { CreateHookParams } from '@lifestreamdynamics/vault-sdk';
@@ -16,7 +16,7 @@ export function registerHookCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching hooks...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const hookList = await client.hooks.list(vaultId);
         out.stopSpinner();
         out.list(
@@ -84,7 +84,7 @@ export function registerHookCommands(program: Command): void {
 
       out.startSpinner('Creating hook...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const params: CreateHookParams = {
           name,
           triggerEvent: String(_opts.trigger),
@@ -114,7 +114,7 @@ export function registerHookCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Deleting hook...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.hooks.delete(vaultId, hookId);
         out.success('Hook deleted successfully', { id: hookId, deleted: true });
       } catch (err) {
@@ -131,7 +131,7 @@ export function registerHookCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching executions...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const executions = await client.hooks.listExecutions(vaultId, hookId);
         out.stopSpinner();
         out.list(

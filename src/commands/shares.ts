@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { CreateShareLinkParams } from '@lifestreamdynamics/vault-sdk';
@@ -17,7 +17,7 @@ export function registerShareCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching share links...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const links = await client.shares.list(vaultId, docPath);
         out.stopSpinner();
         out.list(
@@ -69,7 +69,7 @@ export function registerShareCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Creating share link...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const params: CreateShareLinkParams = {};
         if (_opts.permission) params.permission = String(_opts.permission) as 'view' | 'edit';
         if (_opts.password) params.password = String(_opts.password);
@@ -113,7 +113,7 @@ export function registerShareCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Revoking share link...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         await client.shares.revoke(vaultId, shareId);
         out.success('Share link revoked successfully', { id: shareId, revoked: true });
       } catch (err) {

@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { getClient } from '../client.js';
+import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { formatBytes, formatUptime } from '../utils/format.js';
@@ -17,7 +17,7 @@ export function registerAdminCommands(program: Command): void {
     const out = createOutput(flags);
     out.startSpinner('Fetching system stats...');
     try {
-      const client = getClient();
+      const client = await getClientAsync();
       const data = await client.admin.getStats();
       out.stopSpinner();
       out.record({
@@ -48,7 +48,7 @@ export function registerAdminCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching timeseries data...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const data = await client.admin.getTimeseries(String(_opts.metric), String(_opts.period));
         out.stopSpinner();
 
@@ -93,7 +93,7 @@ export function registerAdminCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching users...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const result = await client.admin.listUsers({
           page: _opts.page as number | undefined,
           limit: _opts.limit as number | undefined,
@@ -144,7 +144,7 @@ export function registerAdminCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching user...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const user = await client.admin.getUser(userId);
         out.stopSpinner();
         out.record({
@@ -188,7 +188,7 @@ export function registerAdminCommands(program: Command): void {
 
       out.startSpinner('Updating user...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const updated = await client.admin.updateUser(userId, params);
         out.success(`User updated: ${chalk.cyan(updated.email)} -- ${chalk.magenta(updated.role)} -- ${updated.isActive ? chalk.green('active') : chalk.red('inactive')}`, {
           email: updated.email,
@@ -210,7 +210,7 @@ export function registerAdminCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching activity...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const activity = await client.admin.getActivity(_opts.limit as number | undefined);
         out.stopSpinner();
         out.list(
@@ -248,7 +248,7 @@ export function registerAdminCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching subscription summary...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const summary = await client.admin.getSubscriptionSummary();
         out.stopSpinner();
         out.record({
@@ -271,7 +271,7 @@ export function registerAdminCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Checking system health...');
       try {
-        const client = getClient();
+        const client = await getClientAsync();
         const health = await client.admin.getHealth();
         out.stopSpinner();
         out.record({

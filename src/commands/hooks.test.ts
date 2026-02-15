@@ -16,7 +16,7 @@ vi.mock('ora', () => ({
 
 let sdkMock: SDKMock;
 vi.mock('../client.js', () => ({
-  getClient: vi.fn(() => sdkMock),
+  getClientAsync: vi.fn(async () => sdkMock),
 }));
 
 describe('hooks commands', () => {

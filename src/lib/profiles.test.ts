@@ -107,7 +107,7 @@ describe('profiles', () => {
     it('should create profiles directory if it does not exist', () => {
       mockedFs.existsSync.mockReturnValueOnce(false) // PROFILES_DIR check
         .mockReturnValueOnce(false); // profile file check in loadProfile
-      setProfileValue('dev', 'apiUrl', 'http://localhost:4660');
+      setProfileValue('dev', 'apiUrl', 'https://vault.lifestreamdynamics.com');
       expect(mockedFs.mkdirSync).toHaveBeenCalledWith(PROFILES_DIR, { recursive: true });
     });
 

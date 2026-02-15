@@ -1,7 +1,10 @@
 {
   "name": "@lifestreamdynamics/vault-cli",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Command-line interface for Lifestream Vault",
+  "engines": {
+    "node": ">=20"
+  },
   "type": "module",
   "bin": {
     "lsvault": "./dist/index.js"
