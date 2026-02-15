@@ -17,6 +17,12 @@ export const createSDKMock = () => ({
     delete: vi.fn(),
     move: vi.fn(),
     copy: vi.fn(),
+    listVersions: vi.fn(),
+    getVersion: vi.fn(),
+    diffVersions: vi.fn(),
+    restoreVersion: vi.fn(),
+    pinVersion: vi.fn(),
+    unpinVersion: vi.fn(),
   },
   search: {
     search: vi.fn(),
