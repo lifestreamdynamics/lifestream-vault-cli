@@ -1,5 +1,5 @@
 {
-  "name": "@lifestream-vault/cli",
+  "name": "@lifestreamdynamics/vault-cli",
   "version": "1.0.0",
   "description": "Command-line interface for Lifestream Vault",
   "type": "module",
@@ -41,7 +41,7 @@
     "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
-    "@lifestream-vault/sdk": "^1.0.0",
+    "@lifestreamdynamics/vault-sdk": "^1.0.0",
     "chalk": "^5.4.0",
     "chokidar": "^4.0.3",
     "commander": "^13.0.0",
