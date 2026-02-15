@@ -11,6 +11,8 @@ import { removePid } from './daemon.js';
 import { loadConfig } from '../config.js';
 import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import type { FSWatcher } from 'chokidar';
+import { scanLocalFiles, scanRemoteFiles, computePushDiff, computePullDiff, executePush, executePull } from './engine.js';
+import { loadSyncState } from './state.js';
 
 interface ManagedSync {
   syncId: string;
@@ -50,6 +52,66 @@ async function start(): Promise<void> {
   log(`Found ${configs.length} auto-sync configuration(s)`);
 
   const client = createClient();
+
+  // Startup reconciliation: catch changes made while daemon was stopped
+  for (const config of configs) {
+    try {
+      log(`Reconciling ${config.id.slice(0, 8)} (${config.mode} mode)...`);
+      const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
+      const lastState = loadSyncState(config.id);
+      const localFiles = scanLocalFiles(config.localPath, ignorePatterns);
+      const remoteFiles = await scanRemoteFiles(client, config.vaultId, ignorePatterns);
+
+      let pushed = 0;
+      let pulled = 0;
+      let deleted = 0;
+
+      if (config.mode === 'push' || config.mode === 'sync') {
+        const pushDiff = computePushDiff(localFiles, remoteFiles, lastState);
+        const pushOps = pushDiff.uploads.length + pushDiff.deletes.length;
+        if (pushOps > 0) {
+          const result = await executePush(client, config, pushDiff);
+          pushed = result.filesUploaded;
+          deleted += result.filesDeleted;
+          if (result.errors.length > 0) {
+            for (const err of result.errors) {
+              log(`  Push error: ${err.path}: ${err.error}`);
+            }
+          }
+        }
+      }
+
+      if (config.mode === 'pull' || config.mode === 'sync') {
+        const pullDiff = computePullDiff(localFiles, remoteFiles, lastState);
+        const pullOps = pullDiff.downloads.length + pullDiff.deletes.length;
+        if (pullOps > 0) {
+          const result = await executePull(client, config, pullDiff);
+          pulled = result.filesDownloaded;
+          deleted += result.filesDeleted;
+          if (result.errors.length > 0) {
+            for (const err of result.errors) {
+              log(`  Pull error: ${err.path}: ${err.error}`);
+            }
+          }
+        }
+      }
+
+      const total = pushed + pulled + deleted;
+      if (total > 0) {
+        const parts: string[] = [];
+        if (pushed > 0) parts.push(`${pushed} uploaded`);
+        if (pulled > 0) parts.push(`${pulled} downloaded`);
+        if (deleted > 0) parts.push(`${deleted} deleted`);
+        log(`Reconciled ${config.id.slice(0, 8)}: ${parts.join(', ')}`);
+      } else {
+        log(`Reconciled ${config.id.slice(0, 8)}: up to date`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`Reconciliation failed for ${config.id.slice(0, 8)}: ${msg}`);
+      // Continue — still start the watcher even if reconciliation fails
+    }
+  }
 
   for (const config of configs) {
     try {

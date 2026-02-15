@@ -567,8 +567,11 @@ export function registerSyncCommands(program: Command): void {
       const out = createOutput(flags);
       try {
         const logFile = _opts.logFile as string | undefined;
-        const pid = startDaemon(logFile);
+        const { pid, lingerWarning } = startDaemon(logFile);
         out.success('Daemon started', { pid, status: 'running' });
+        if (lingerWarning) {
+          out.warn(`Warning: ${lingerWarning}`);
+        }
       } catch (err) {
         handleError(out, err, 'Failed to start daemon');
       }

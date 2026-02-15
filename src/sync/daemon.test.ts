@@ -20,6 +20,7 @@ import {
   rotateLogIfNeeded,
   startDaemon,
   stopDaemon,
+  checkLingerStatus,
   PID_FILE,
   LOG_FILE,
 } from './daemon.js';
@@ -149,6 +150,40 @@ describe('sync daemon', () => {
       mockedFs.readFileSync.mockReturnValue(`${process.pid}\n`);
       mockedFs.statSync.mockReturnValue({ birthtime: new Date(), birthtimeMs: Date.now() } as fs.Stats);
       expect(() => startDaemon()).toThrow('already running');
+    });
+  });
+
+  describe('checkLingerStatus', () => {
+    it('should return "unknown" on non-Linux platforms', () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      try {
+        expect(checkLingerStatus()).toBe('unknown');
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      }
+    });
+
+    it('should return "enabled" when linger file exists on Linux', () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      mockedFs.existsSync.mockReturnValue(true);
+      try {
+        expect(checkLingerStatus()).toBe('enabled');
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      }
+    });
+
+    it('should return "disabled" when linger file does not exist on Linux', () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+      mockedFs.existsSync.mockReturnValue(false);
+      try {
+        expect(checkLingerStatus()).toBe('disabled');
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      }
     });
   });
 });

@@ -145,7 +145,7 @@ export function rotateLogIfNeeded(logFile?: string): void {
  * Start the daemon as a detached child process.
  * Returns the PID of the spawned process.
  */
-export function startDaemon(logFile?: string): number {
+export function startDaemon(logFile?: string): { pid: number; lingerWarning?: string } {
   const status = getDaemonStatus();
   if (status.running) {
     throw new Error(`Daemon is already running (PID: ${status.pid})`);
@@ -174,7 +174,12 @@ export function startDaemon(logFile?: string): number {
   child.unref();
   fs.closeSync(logFd);
 
-  return child.pid;
+  const result: { pid: number; lingerWarning?: string } = { pid: child.pid };
+  const lingerStatus = checkLingerStatus();
+  if (lingerStatus === 'disabled') {
+    result.lingerWarning = 'systemd lingering is not enabled for your user. The daemon will stop when you log out. To fix:\n  sudo loginctl enable-linger $(whoami)';
+  }
+  return result;
 }
 
 /**
@@ -194,6 +199,21 @@ export function stopDaemon(): boolean {
   } catch {
     removePid();
     return false;
+  }
+}
+
+/**
+ * Check if systemd linger is enabled for the current user (Linux only).
+ * When linger is disabled, user services stop when the SSH session ends.
+ */
+export function checkLingerStatus(): 'enabled' | 'disabled' | 'unknown' {
+  if (process.platform !== 'linux') return 'unknown';
+  try {
+    const username = os.userInfo().username;
+    const lingerFile = `/var/lib/systemd/linger/${username}`;
+    return fs.existsSync(lingerFile) ? 'enabled' : 'disabled';
+  } catch {
+    return 'unknown';
   }
 }
 
