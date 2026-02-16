@@ -35,7 +35,7 @@ export function registerSubscriptionCommands(program: Command): void {
           process.stdout.write(chalk.dim('Usage:') + '\n');
           process.stdout.write(`  Vaults:            ${data.usage.vaultCount}\n`);
           process.stdout.write(`  Storage:           ${formatBytes(data.usage.totalStorageBytes)}\n`);
-          process.stdout.write(`  API calls today:   ${data.usage.apiCallsToday}\n`);
+          process.stdout.write(`  API calls this month: ${data.usage.apiCallsThisMonth}\n`);
           process.stdout.write(`  AI tokens:         ${data.usage.aiTokens}\n`);
           process.stdout.write(`  Hook executions:   ${data.usage.hookExecutions}\n`);
           process.stdout.write(`  Webhook deliveries: ${data.usage.webhookDeliveries}\n`);
