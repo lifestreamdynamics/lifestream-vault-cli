@@ -59,6 +59,7 @@ describe('search command', () => {
       vault: undefined,
       tags: undefined,
       limit: 20,
+      mode: 'text',
     });
     // "1 result(s)" goes to stderr via status()
     const stderr = outputSpy.stderr.join('');
@@ -139,5 +140,33 @@ describe('search command', () => {
     const stderr = outputSpy.stderr.join('');
     expect(stderr).toContain('Server error');
     expect(process.exitCode).toBe(1);
+  });
+
+  it('should pass mode parameter when --mode is provided', async () => {
+    sdkMock.search.search.mockResolvedValue({ results: [], total: 0, query: 'ml', mode: 'semantic' });
+
+    await program.parseAsync(['node', 'cli', 'search', 'ml', '--mode', 'semantic']);
+
+    expect(sdkMock.search.search).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'semantic' }),
+    );
+  });
+
+  it('should display mode in output when not text mode', async () => {
+    sdkMock.search.search.mockResolvedValue({ results: [], total: 0, query: 'ml', mode: 'semantic' });
+
+    await program.parseAsync(['node', 'cli', 'search', 'ml', '--mode', 'semantic']);
+
+    const stderr = outputSpy.stderr.join('');
+    expect(stderr).toContain('[semantic]');
+  });
+
+  it('should not display mode in output for text mode', async () => {
+    sdkMock.search.search.mockResolvedValue({ results: [], total: 0, query: 'test' });
+
+    await program.parseAsync(['node', 'cli', 'search', 'test']);
+
+    const stderr = outputSpy.stderr.join('');
+    expect(stderr).not.toContain('[text]');
   });
 });

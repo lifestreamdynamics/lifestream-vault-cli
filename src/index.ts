@@ -20,6 +20,7 @@ import { registerConfigCommands } from './commands/config.js';
 import { registerSyncCommands } from './commands/sync.js';
 import { registerVersionCommands } from './commands/versions.js';
 import { registerLinkCommands } from './commands/links.js';
+import { registerCalendarCommands } from './commands/calendar.js';
 
 const program = new Command();
 program
@@ -66,5 +67,6 @@ registerConfigCommands(program);
 registerSyncCommands(program);
 registerVersionCommands(program);
 registerLinkCommands(program);
+registerCalendarCommands(program);
 
 program.parse();

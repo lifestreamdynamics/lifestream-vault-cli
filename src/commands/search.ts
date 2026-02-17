@@ -11,27 +11,32 @@ export function registerSearchCommands(program: Command): void {
     .option('--vault <vaultId>', 'Limit search to a specific vault')
     .option('--tags <tags>', 'Filter by tags (comma-separated)')
     .option('--limit <n>', 'Maximum number of results', '20')
+    .option('--mode <mode>', 'Search mode: text, semantic, hybrid', 'text')
     .addHelpText('after', `
 EXAMPLES
   lsvault search "meeting notes"
   lsvault search "project plan" --vault abc123
-  lsvault search "typescript" --tags dev,code --limit 5`))
+  lsvault search "typescript" --tags dev,code --limit 5
+  lsvault search "machine learning" --mode semantic`))
     .action(async (query: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Searching...');
       try {
         const client = await getClientAsync();
+        const mode = _opts.mode as string | undefined;
         const response = await client.search.search({
           q: query,
           vault: _opts.vault as string | undefined,
           tags: _opts.tags as string | undefined,
           limit: parseInt(String(_opts.limit || '20'), 10),
+          mode: mode as 'text' | 'semantic' | 'hybrid' | undefined,
         });
         out.stopSpinner();
 
         if (flags.output === 'text') {
-          out.status(chalk.dim(`${response.total} result(s) for "${response.query}":\n`));
+          const modeInfo = mode && mode !== 'text' ? `[${mode}] ` : '';
+          out.status(chalk.dim(`${modeInfo}${response.total} result(s) for "${response.query}":\n`));
         }
 
         out.list(

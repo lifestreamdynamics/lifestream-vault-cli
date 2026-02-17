@@ -124,6 +124,16 @@ export const createSDKMock = () => ({
     renamePasskey: vi.fn(),
     regenerateBackupCodes: vi.fn(),
   },
+  calendar: {
+    getCalendar: vi.fn(),
+    getActivity: vi.fn(),
+    getDueDates: vi.fn(),
+    listEvents: vi.fn(),
+    createEvent: vi.fn(),
+    updateEvent: vi.fn(),
+    deleteEvent: vi.fn(),
+    setDocumentDue: vi.fn(),
+  },
 });
 
 export type SDKMock = ReturnType<typeof createSDKMock>;

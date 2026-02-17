@@ -20,6 +20,7 @@ A powerful command-line interface for Lifestream Vault - the multi-user Markdown
   - [Team Commands](#team-commands)
   - [Sharing & Publishing](#sharing--publishing)
   - [Hooks & Webhooks](#hooks--webhooks)
+  - [Links & Backlinks](#links--backlinks)
   - [Admin Commands](#admin-commands)
 - [Sync & Watch Mode](#-sync--watch-mode)
 - [Configuration](#️-configuration)
@@ -370,6 +371,30 @@ lsvault webhooks create \
   --url https://api.example.com/webhook \
   --events document.created,document.updated \
   --secret webhook_secret_key
+```
+
+### Links & Backlinks
+
+| Command | Description |
+|---------|-------------|
+| `lsvault links list <vaultId> <path>` | List forward links from a document |
+| `lsvault links backlinks <vaultId> <path>` | List backlinks pointing to a document |
+| `lsvault links graph <vaultId>` | Get the link graph for a vault |
+| `lsvault links broken <vaultId>` | List unresolved (broken) links in a vault |
+
+**Example:**
+```bash
+# List forward links from a document
+lsvault links list vault_abc123 notes/index.md
+
+# Find all documents linking to a specific document
+lsvault links backlinks vault_abc123 notes/important.md
+
+# Get the full link graph for visualization
+lsvault links graph vault_abc123 --output json > graph.json
+
+# Find broken links
+lsvault links broken vault_abc123
 ```
 
 ### Admin Commands
