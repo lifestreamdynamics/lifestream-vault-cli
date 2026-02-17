@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { registerAuthCommands } from './commands/auth.js';
+import { registerMfaCommands } from './commands/mfa.js';
 import { registerVaultCommands } from './commands/vaults.js';
 import { registerDocCommands } from './commands/docs.js';
 import { registerSearchCommands } from './commands/search.js';
@@ -45,6 +46,7 @@ LEARN MORE
   lsvault <command> <subcommand> --help      Show help for a subcommand`);
 
 registerAuthCommands(program);
+registerMfaCommands(program);
 registerVaultCommands(program);
 registerDocCommands(program);
 registerSearchCommands(program);

@@ -118,6 +118,18 @@ describe('auth commands', () => {
 
       expect(consoleSpy.errors.some(l => l.includes('keychain locked'))).toBe(true);
     });
+
+    it('should accept --mfa-code option', async () => {
+      // Note: Full password+MFA login flow requires stdin mocking and SDK mocking.
+      // This test verifies the option is recognized by commander.
+      // The actual MFA flow is tested in integration tests.
+      const command = program.commands.find(c => c.name() === 'auth')?.commands.find(c => c.name() === 'login');
+      expect(command).toBeDefined();
+
+      const mfaOption = command?.options.find(o => o.long === '--mfa-code');
+      expect(mfaOption).toBeDefined();
+      expect(mfaOption?.description).toContain('MFA');
+    });
   });
 
   describe('logout', () => {

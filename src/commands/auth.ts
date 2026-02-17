@@ -14,13 +14,15 @@ export function registerAuthCommands(program: Command): void {
     .option('--api-key <key>', 'API key (lsv_k_... prefix)')
     .option('--email <email>', 'Email address for password login')
     .option('--password <password>', 'Password (prompts interactively if omitted)')
+    .option('--mfa-code <code>', 'MFA code (TOTP or backup code) if account has MFA enabled')
     .option('--api-url <url>', 'API server URL (default: https://vault.lifestreamdynamics.com)')
     .addHelpText('after', `
 EXAMPLES
   lsvault auth login --api-key lsv_k_abc123
   lsvault auth login --email user@example.com
+  lsvault auth login --email user@example.com --mfa-code 123456
   lsvault auth login --email user@example.com --api-url https://api.example.com`)
-    .action(async (opts: { apiKey?: string; email?: string; password?: string; apiUrl?: string }) => {
+    .action(async (opts: { apiKey?: string; email?: string; password?: string; mfaCode?: string; apiUrl?: string }) => {
       const cm = getCredentialManager();
 
       // Set API URL first if provided
@@ -52,6 +54,23 @@ EXAMPLES
             apiUrl,
             opts.email,
             password,
+            {},
+            {
+              mfaCode: opts.mfaCode,
+              onMfaRequired: async (challenge) => {
+                spinner.stop();
+                console.log(chalk.yellow('MFA required for this account.'));
+                console.log(`Available methods: ${challenge.methods.join(', ')}`);
+
+                const code = await promptMfaCode();
+                if (!code) {
+                  throw new Error('MFA code is required');
+                }
+
+                spinner.start('Verifying MFA code...');
+                return { method: 'totp', code };
+              },
+            },
           );
 
           // Save tokens to secure storage
@@ -265,6 +284,60 @@ async function promptPassword(): Promise<string | null> {
         }
       } else {
         password += char;
+      }
+    };
+
+    process.stdin.on('data', onData);
+    process.stdin.resume();
+  });
+}
+
+/**
+ * Prompt for an MFA code from stdin (6 digits, non-echoing).
+ * Returns the code or null if stdin is not a TTY.
+ */
+async function promptMfaCode(): Promise<string | null> {
+  // In non-interactive mode, cannot prompt
+  if (!process.stdin.isTTY) {
+    return null;
+  }
+
+  const readline = await import('node:readline');
+
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stderr,
+      terminal: true,
+    });
+
+    // Disable echoing
+    process.stderr.write('MFA code: ');
+    (process.stdin as NodeJS.ReadStream).setRawMode?.(true);
+
+    let code = '';
+    const onData = (chunk: Buffer) => {
+      const char = chunk.toString('utf-8');
+      if (char === '\n' || char === '\r' || char === '\u0004') {
+        process.stderr.write('\n');
+        (process.stdin as NodeJS.ReadStream).setRawMode?.(false);
+        process.stdin.removeListener('data', onData);
+        rl.close();
+        resolve(code);
+      } else if (char === '\u0003') {
+        // Ctrl+C
+        process.stderr.write('\n');
+        (process.stdin as NodeJS.ReadStream).setRawMode?.(false);
+        process.stdin.removeListener('data', onData);
+        rl.close();
+        resolve(null);
+      } else if (char === '\u007F' || char === '\b') {
+        // Backspace
+        if (code.length > 0) {
+          code = code.slice(0, -1);
+        }
+      } else {
+        code += char;
       }
     };
 
