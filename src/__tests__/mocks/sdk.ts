@@ -7,6 +7,8 @@ export const createSDKMock = () => ({
     create: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    getGraph: vi.fn(),
+    getUnresolvedLinks: vi.fn(),
   },
   documents: {
     list: vi.fn(),
@@ -23,6 +25,8 @@ export const createSDKMock = () => ({
     restoreVersion: vi.fn(),
     pinVersion: vi.fn(),
     unpinVersion: vi.fn(),
+    getLinks: vi.fn(),
+    getBacklinks: vi.fn(),
   },
   search: {
     search: vi.fn(),

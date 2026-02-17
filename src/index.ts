@@ -19,6 +19,7 @@ import { registerWebhookCommands } from './commands/webhooks.js';
 import { registerConfigCommands } from './commands/config.js';
 import { registerSyncCommands } from './commands/sync.js';
 import { registerVersionCommands } from './commands/versions.js';
+import { registerLinkCommands } from './commands/links.js';
 
 const program = new Command();
 program
@@ -64,5 +65,6 @@ registerWebhookCommands(program);
 registerConfigCommands(program);
 registerSyncCommands(program);
 registerVersionCommands(program);
+registerLinkCommands(program);
 
 program.parse();
