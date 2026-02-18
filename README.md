@@ -373,6 +373,17 @@ lsvault webhooks create \
   --secret webhook_secret_key
 ```
 
+### Calendar
+
+| Command | Description |
+|---------|-------------|
+| `lsvault calendar view <vaultId>` | Browse calendar views and activity heatmap |
+| `lsvault calendar due <vaultId>` | List documents by due date |
+| `lsvault calendar events <vaultId>` | List calendar events |
+| `lsvault calendar create-event <vaultId>` | Create a calendar event |
+| `lsvault calendar update-event <vaultId> <eventId>` | Update a calendar event |
+| `lsvault calendar delete-event <vaultId> <eventId>` | Delete a calendar event |
+
 ### Links & Backlinks
 
 | Command | Description |
