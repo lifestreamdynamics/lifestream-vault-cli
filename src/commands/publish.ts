@@ -135,4 +135,56 @@ export function registerPublishCommands(program: Command): void {
         handleError(out, err, 'Failed to unpublish document');
       }
     });
+
+  const subdomain = publish.command('subdomain').description('Subdomain management for published vaults');
+
+  addGlobalFlags(subdomain.command('get')
+    .description('Get the subdomain for a published vault')
+    .argument('<vaultId>', 'Vault ID'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching subdomain...');
+      try {
+        const client = await getClientAsync();
+        const result = await client.publish.getSubdomain(vaultId);
+        out.stopSpinner();
+        out.record({ subdomain: result.subdomain });
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch subdomain');
+      }
+    });
+
+  addGlobalFlags(subdomain.command('set')
+    .description('Set a subdomain for a published vault')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<subdomain>', 'Subdomain to assign'))
+    .action(async (vaultId: string, subdomainArg: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Setting subdomain...');
+      try {
+        const client = await getClientAsync();
+        const result = await client.publish.setSubdomain(vaultId, subdomainArg);
+        out.success(`Subdomain set: ${result.subdomain}`, { subdomain: result.subdomain });
+      } catch (err) {
+        handleError(out, err, 'Failed to set subdomain');
+      }
+    });
+
+  addGlobalFlags(subdomain.command('delete')
+    .description('Remove the subdomain for a published vault')
+    .argument('<vaultId>', 'Vault ID'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Removing subdomain...');
+      try {
+        const client = await getClientAsync();
+        const result = await client.publish.deleteSubdomain(vaultId);
+        out.success(result.message, { message: result.message });
+      } catch (err) {
+        handleError(out, err, 'Failed to delete subdomain');
+      }
+    });
 }

@@ -21,6 +21,10 @@ import { registerSyncCommands } from './commands/sync.js';
 import { registerVersionCommands } from './commands/versions.js';
 import { registerLinkCommands } from './commands/links.js';
 import { registerCalendarCommands } from './commands/calendar.js';
+import { registerAiCommands } from './commands/ai.js';
+import { registerAnalyticsCommands } from './commands/analytics.js';
+import { registerCustomDomainCommands } from './commands/custom-domains.js';
+import { registerPublishVaultCommands } from './commands/publish-vault.js';
 
 const program = new Command();
 program
@@ -68,5 +72,9 @@ registerSyncCommands(program);
 registerVersionCommands(program);
 registerLinkCommands(program);
 registerCalendarCommands(program);
+registerAiCommands(program);
+registerAnalyticsCommands(program);
+registerCustomDomainCommands(program);
+registerPublishVaultCommands(program);
 
 program.parse();

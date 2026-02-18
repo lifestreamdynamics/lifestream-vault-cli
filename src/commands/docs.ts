@@ -198,4 +198,136 @@ EXAMPLES
         handleError(out, err, 'Failed to move document');
       }
     });
+
+  addGlobalFlags(docs.command('bulk-move')
+    .description('Move multiple documents to a target directory')
+    .argument('<vaultId>', 'Vault ID')
+    .requiredOption('--paths <csv>', 'Comma-separated list of document paths')
+    .requiredOption('--target <dir>', 'Target directory'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Moving documents...');
+      try {
+        const client = await getClientAsync();
+        const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
+        const result = await client.documents.bulkMove(vaultId, { paths, targetDirectory: _opts.target as string });
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(result, null, 2) + '\n');
+        } else {
+          process.stdout.write(`Succeeded: ${result.succeeded.length}, Failed: ${result.failed.length}\n`);
+          if (result.failed.length > 0) {
+            for (const f of result.failed) process.stdout.write(`  ${chalk.red('✗')} ${f.path}: ${f.error}\n`);
+          }
+        }
+      } catch (err) {
+        handleError(out, err, 'Failed to bulk move documents');
+      }
+    });
+
+  addGlobalFlags(docs.command('bulk-copy')
+    .description('Copy multiple documents to a target directory')
+    .argument('<vaultId>', 'Vault ID')
+    .requiredOption('--paths <csv>', 'Comma-separated list of document paths')
+    .requiredOption('--target <dir>', 'Target directory'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Copying documents...');
+      try {
+        const client = await getClientAsync();
+        const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
+        const result = await client.documents.bulkCopy(vaultId, { paths, targetDirectory: _opts.target as string });
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(result, null, 2) + '\n');
+        } else {
+          process.stdout.write(`Succeeded: ${result.succeeded.length}, Failed: ${result.failed.length}\n`);
+          if (result.failed.length > 0) {
+            for (const f of result.failed) process.stdout.write(`  ${chalk.red('✗')} ${f.path}: ${f.error}\n`);
+          }
+        }
+      } catch (err) {
+        handleError(out, err, 'Failed to bulk copy documents');
+      }
+    });
+
+  addGlobalFlags(docs.command('bulk-delete')
+    .description('Delete multiple documents')
+    .argument('<vaultId>', 'Vault ID')
+    .requiredOption('--paths <csv>', 'Comma-separated list of document paths'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Deleting documents...');
+      try {
+        const client = await getClientAsync();
+        const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
+        const result = await client.documents.bulkDelete(vaultId, { paths });
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(result, null, 2) + '\n');
+        } else {
+          process.stdout.write(`Succeeded: ${result.succeeded.length}, Failed: ${result.failed.length}\n`);
+          if (result.failed.length > 0) {
+            for (const f of result.failed) process.stdout.write(`  ${chalk.red('✗')} ${f.path}: ${f.error}\n`);
+          }
+        }
+      } catch (err) {
+        handleError(out, err, 'Failed to bulk delete documents');
+      }
+    });
+
+  addGlobalFlags(docs.command('bulk-tag')
+    .description('Add or remove tags from multiple documents')
+    .argument('<vaultId>', 'Vault ID')
+    .requiredOption('--paths <csv>', 'Comma-separated list of document paths')
+    .option('--add <csv>', 'Tags to add (comma-separated)')
+    .option('--remove <csv>', 'Tags to remove (comma-separated)'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      if (!_opts.add && !_opts.remove) {
+        out.error('At least one of --add or --remove must be specified');
+        process.exitCode = 1;
+        return;
+      }
+      out.startSpinner('Tagging documents...');
+      try {
+        const client = await getClientAsync();
+        const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
+        const addTags = _opts.add ? (String(_opts.add)).split(',').map(t => t.trim()).filter(Boolean) : undefined;
+        const removeTags = _opts.remove ? (String(_opts.remove)).split(',').map(t => t.trim()).filter(Boolean) : undefined;
+        const result = await client.documents.bulkTag(vaultId, { paths, addTags, removeTags });
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(result, null, 2) + '\n');
+        } else {
+          process.stdout.write(`Succeeded: ${result.succeeded.length}, Failed: ${result.failed.length}\n`);
+          if (result.failed.length > 0) {
+            for (const f of result.failed) process.stdout.write(`  ${chalk.red('✗')} ${f.path}: ${f.error}\n`);
+          }
+        }
+      } catch (err) {
+        handleError(out, err, 'Failed to bulk tag documents');
+      }
+    });
+
+  addGlobalFlags(docs.command('mkdir')
+    .description('Create a directory in a vault')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<path>', 'Directory path to create'))
+    .action(async (vaultId: string, path: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Creating directory...');
+      try {
+        const client = await getClientAsync();
+        const result = await client.documents.createDirectory(vaultId, path);
+        out.success(`Directory ${result.created ? 'created' : 'already exists'}: ${result.path}`, { path: result.path, created: result.created });
+      } catch (err) {
+        handleError(out, err, 'Failed to create directory');
+      }
+    });
 }

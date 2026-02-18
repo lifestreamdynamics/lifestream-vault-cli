@@ -340,4 +340,102 @@ EXAMPLES
         handleError(out, err, 'Failed to create team vault');
       }
     });
+
+  const teamCalendar = teams.command('calendar').description('Team calendar operations');
+
+  addGlobalFlags(teamCalendar.command('view')
+    .description('View team calendar')
+    .argument('<teamId>', 'Team ID')
+    .requiredOption('--start <date>', 'Start date (YYYY-MM-DD)')
+    .requiredOption('--end <date>', 'End date (YYYY-MM-DD)')
+    .option('--types <types>', 'Event types to include'))
+    .action(async (teamId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching team calendar...');
+      try {
+        const client = await getClientAsync();
+        const cal = await client.teams.getCalendar(teamId, {
+          start: _opts.start as string,
+          end: _opts.end as string,
+          types: _opts.types as string | undefined,
+        });
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(cal, null, 2) + '\n');
+        } else {
+          for (const [date, day] of Object.entries(cal.days ?? {})) {
+            if (day && (day as { count?: number }).count) {
+              process.stdout.write(`${chalk.cyan(date)}: ${(day as { count?: number }).count} events\n`);
+            }
+          }
+        }
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch team calendar');
+      }
+    });
+
+  addGlobalFlags(teamCalendar.command('activity')
+    .description('View team calendar activity')
+    .argument('<teamId>', 'Team ID')
+    .requiredOption('--start <date>', 'Start date (YYYY-MM-DD)')
+    .requiredOption('--end <date>', 'End date (YYYY-MM-DD)'))
+    .action(async (teamId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching team calendar activity...');
+      try {
+        const client = await getClientAsync();
+        const activity = await client.teams.getCalendarActivity(teamId, {
+          start: _opts.start as string,
+          end: _opts.end as string,
+        });
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(activity, null, 2) + '\n');
+        } else {
+          for (const day of activity.days ?? []) {
+            if ((day as { count?: number }).count) {
+              process.stdout.write(`${chalk.cyan((day as { date?: string }).date)}: ${(day as { count?: number }).count} activities\n`);
+            }
+          }
+        }
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch team calendar activity');
+      }
+    });
+
+  addGlobalFlags(teamCalendar.command('events')
+    .description('List team calendar events')
+    .argument('<teamId>', 'Team ID')
+    .option('--start <date>', 'Start date (YYYY-MM-DD)')
+    .option('--end <date>', 'End date (YYYY-MM-DD)'))
+    .action(async (teamId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching team calendar events...');
+      try {
+        const client = await getClientAsync();
+        const events = await client.teams.getCalendarEvents(teamId, {
+          start: _opts.start as string | undefined,
+          end: _opts.end as string | undefined,
+        });
+        out.stopSpinner();
+        out.list(
+          events.map(e => ({ id: e.id, title: e.title, startDate: e.startDate, endDate: e.endDate ?? '' })),
+          {
+            emptyMessage: 'No events found.',
+            columns: [
+              { key: 'id', header: 'ID' },
+              { key: 'title', header: 'Title' },
+              { key: 'startDate', header: 'Start' },
+              { key: 'endDate', header: 'End' },
+            ],
+            textFn: (e) => `${chalk.cyan(String(e.title))} — ${String(e.startDate)}`,
+          },
+        );
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch team calendar events');
+      }
+    });
 }

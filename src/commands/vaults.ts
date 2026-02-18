@@ -160,4 +160,229 @@ EXAMPLES
         handleError(out, err, 'Failed to import vault key');
       }
     });
+
+  // vault tree
+  addGlobalFlags(vaults.command('tree')
+    .description('Show vault file tree')
+    .argument('<vaultId>', 'Vault ID'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching vault tree...');
+      try {
+        const client = await getClientAsync();
+        const tree = await client.vaults.getTree(vaultId);
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(tree, null, 2) + '\n');
+        } else {
+          function printNode(node: { name: string; type: string; path: string; children?: typeof tree }, depth: number): void {
+            const indent = '  '.repeat(depth);
+            const icon = node.type === 'directory' ? chalk.yellow('📁') : chalk.cyan('📄');
+            process.stdout.write(`${indent}${icon} ${node.name}\n`);
+            if (node.children) {
+              for (const child of node.children) printNode(child, depth + 1);
+            }
+          }
+          for (const node of tree) printNode(node, 0);
+        }
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch vault tree');
+      }
+    });
+
+  // vault archive
+  addGlobalFlags(vaults.command('archive')
+    .description('Archive a vault')
+    .argument('<vaultId>', 'Vault ID'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Archiving vault...');
+      try {
+        const client = await getClientAsync();
+        const vault = await client.vaults.archive(vaultId);
+        out.success(`Vault archived: ${vault.name}`, { id: vault.id, name: vault.name, isArchived: vault.isArchived });
+      } catch (err) {
+        handleError(out, err, 'Failed to archive vault');
+      }
+    });
+
+  // vault unarchive
+  addGlobalFlags(vaults.command('unarchive')
+    .description('Unarchive a vault')
+    .argument('<vaultId>', 'Vault ID'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Unarchiving vault...');
+      try {
+        const client = await getClientAsync();
+        const vault = await client.vaults.unarchive(vaultId);
+        out.success(`Vault unarchived: ${vault.name}`, { id: vault.id, name: vault.name, isArchived: vault.isArchived });
+      } catch (err) {
+        handleError(out, err, 'Failed to unarchive vault');
+      }
+    });
+
+  // vault transfer
+  addGlobalFlags(vaults.command('transfer')
+    .description('Transfer vault ownership to another user')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<targetEmail>', 'Email of the user to transfer to'))
+    .action(async (vaultId: string, targetEmail: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Transferring vault...');
+      try {
+        const client = await getClientAsync();
+        const vault = await client.vaults.transfer(vaultId, targetEmail);
+        out.success(`Vault transferred to ${targetEmail}`, { id: vault.id, name: vault.name });
+      } catch (err) {
+        handleError(out, err, 'Failed to transfer vault');
+      }
+    });
+
+  // vault export-vault subgroup
+  const exportVault = vaults.command('export-vault').description('Vault export operations');
+
+  addGlobalFlags(exportVault.command('create')
+    .description('Create a vault export')
+    .argument('<vaultId>', 'Vault ID')
+    .option('--metadata', 'Include metadata in export')
+    .option('--format <fmt>', 'Export format', 'zip'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Creating export...');
+      try {
+        const client = await getClientAsync();
+        const exp = await client.vaults.createExport(vaultId, {
+          includeMetadata: _opts.metadata === true,
+          format: (_opts.format as 'zip') || 'zip',
+        });
+        out.success('Export created', { id: exp.id, status: exp.status, format: exp.format });
+      } catch (err) {
+        handleError(out, err, 'Failed to create export');
+      }
+    });
+
+  addGlobalFlags(exportVault.command('list')
+    .description('List vault exports')
+    .argument('<vaultId>', 'Vault ID'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching exports...');
+      try {
+        const client = await getClientAsync();
+        const exports = await client.vaults.listExports(vaultId);
+        out.stopSpinner();
+        out.list(
+          exports.map(e => ({ id: e.id, status: e.status, format: e.format, createdAt: e.createdAt, completedAt: e.completedAt || '' })),
+          {
+            emptyMessage: 'No exports found.',
+            columns: [
+              { key: 'id', header: 'ID' },
+              { key: 'status', header: 'Status' },
+              { key: 'format', header: 'Format' },
+              { key: 'createdAt', header: 'Created' },
+              { key: 'completedAt', header: 'Completed' },
+            ],
+            textFn: (e) => `${chalk.cyan(String(e.id))} [${String(e.status)}] ${String(e.format)} created: ${String(e.createdAt)}`,
+          },
+        );
+      } catch (err) {
+        handleError(out, err, 'Failed to list exports');
+      }
+    });
+
+  addGlobalFlags(exportVault.command('download')
+    .description('Download a vault export')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<exportId>', 'Export ID')
+    .requiredOption('--file <path>', 'Output file path'))
+    .action(async (vaultId: string, exportId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Downloading export...');
+      try {
+        const { writeFile } = await import('node:fs/promises');
+        const client = await getClientAsync();
+        const blob = await client.vaults.downloadExport(vaultId, exportId);
+        const buffer = Buffer.from(await blob.arrayBuffer());
+        await writeFile(_opts.file as string, buffer);
+        out.success(`Export downloaded to ${String(_opts.file)}`, { path: _opts.file, size: buffer.length });
+      } catch (err) {
+        handleError(out, err, 'Failed to download export');
+      }
+    });
+
+  // vault mfa subgroup
+  const mfa = vaults.command('mfa').description('Vault MFA configuration');
+
+  addGlobalFlags(mfa.command('get')
+    .description('Get vault MFA configuration')
+    .argument('<vaultId>', 'Vault ID'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching MFA config...');
+      try {
+        const client = await getClientAsync();
+        const config = await client.vaults.getMfaConfig(vaultId);
+        out.stopSpinner();
+        out.record({
+          mfaRequired: config.mfaRequired,
+          sessionWindowMinutes: config.sessionWindowMinutes,
+          userVerified: config.userVerified,
+          verificationExpiresAt: config.verificationExpiresAt,
+        });
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch MFA config');
+      }
+    });
+
+  addGlobalFlags(mfa.command('set')
+    .description('Set vault MFA configuration')
+    .argument('<vaultId>', 'Vault ID')
+    .option('--require', 'Require MFA for vault access')
+    .option('--no-require', 'Disable MFA requirement')
+    .option('--window <minutes>', 'Session window in minutes', '60'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Updating MFA config...');
+      try {
+        const client = await getClientAsync();
+        const config = await client.vaults.setMfaConfig(vaultId, {
+          mfaRequired: _opts.require !== false,
+          sessionWindowMinutes: parseInt(String(_opts.window || '60'), 10),
+        });
+        out.success('MFA config updated', { mfaRequired: config.mfaRequired, sessionWindowMinutes: config.sessionWindowMinutes });
+      } catch (err) {
+        handleError(out, err, 'Failed to update MFA config');
+      }
+    });
+
+  addGlobalFlags(mfa.command('verify')
+    .description('Verify MFA for vault access')
+    .argument('<vaultId>', 'Vault ID')
+    .requiredOption('--method <totp|backup_code>', 'MFA method')
+    .requiredOption('--code <code>', 'MFA code'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Verifying MFA...');
+      try {
+        const client = await getClientAsync();
+        const result = await client.vaults.verifyMfa(vaultId, {
+          method: _opts.method as 'totp' | 'backup_code',
+          code: _opts.code as string,
+        });
+        out.success('MFA verified', { verified: result.verified, expiresAt: result.expiresAt });
+      } catch (err) {
+        handleError(out, err, 'Failed to verify MFA');
+      }
+    });
 }

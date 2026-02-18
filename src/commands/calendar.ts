@@ -166,6 +166,58 @@ export function registerCalendarCommands(program: Command): void {
         handleError(out, err, 'Calendar events failed');
       }
     });
+
+  addGlobalFlags(calendar.command('agenda')
+    .description('View due-date agenda grouped by time period')
+    .argument('<vaultId>', 'Vault ID')
+    .option('--status <status>', 'Filter by status')
+    .option('--range <range>', 'Time range (e.g., week, month)')
+    .option('--group-by <groupBy>', 'Group by field'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching agenda...');
+      try {
+        const client = await getClientAsync();
+        const agenda = await client.calendar.getAgenda(vaultId, {
+          status: _opts.status as string | undefined,
+          range: _opts.range as string | undefined,
+          groupBy: _opts.groupBy as string | undefined,
+        });
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(agenda, null, 2) + '\n');
+        } else {
+          process.stdout.write(`Total: ${agenda.total} items\n\n`);
+          for (const group of agenda.groups) {
+            process.stdout.write(`${chalk.bold(group.label)}\n`);
+            for (const item of group.items) {
+              process.stdout.write(`  ${chalk.cyan((item as { path?: string }).path ?? '')} — due: ${String((item as { dueAt?: string }).dueAt ?? 'N/A')}\n`);
+            }
+          }
+        }
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch agenda');
+      }
+    });
+
+  addGlobalFlags(calendar.command('ical')
+    .description('Output iCal feed for a vault to stdout')
+    .argument('<vaultId>', 'Vault ID')
+    .option('--include <types>', 'Types to include'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      try {
+        const client = await getClientAsync();
+        const ical = await client.calendar.getIcalFeed(vaultId, {
+          include: _opts.include as string | undefined,
+        });
+        process.stdout.write(ical);
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch iCal feed');
+      }
+    });
 }
 
 function getDefaultStart(): string {
