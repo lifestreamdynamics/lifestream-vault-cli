@@ -282,14 +282,8 @@ export function registerCalendarCommands(program: Command): void {
       out.startSpinner('Loading event...');
       try {
         const client = await getClientAsync();
-        // listEvents does not support single-event lookup; fetch the list and filter
-        const events = await client.calendar.listEvents(vaultId);
-        const ev = events.find(e => e.id === eventId);
+        const ev = await client.calendar.getEvent(vaultId, eventId);
         out.stopSpinner();
-        if (!ev) {
-          out.status(chalk.red(`Event ${eventId} not found.`));
-          return;
-        }
         if (flags.output === 'json') {
           out.raw(JSON.stringify(ev, null, 2) + '\n');
         } else {
@@ -544,7 +538,7 @@ export function registerCalendarCommands(program: Command): void {
               { key: 'expires', header: 'Expires' },
               { key: 'created', header: 'Created' },
             ],
-            textFn: (c) => `${chalk.cyan(String(c.provider))} (${c.account}) — ${c.direction} — last sync: ${chalk.dim(String(c.lastSync))}`,
+            textFn: (c) => `${chalk.cyan(String(c.provider))} — expires: ${chalk.dim(String(c.expires))} — created: ${chalk.dim(String(c.created))}`,
           },
         );
       } catch (err) {
@@ -596,6 +590,139 @@ export function registerCalendarCommands(program: Command): void {
         out.status(chalk.green(`Connector ${connectorId} disconnected.`));
       } catch (err) {
         handleError(out, err, 'Disconnect connector failed');
+      }
+    });
+
+  // ---------------------------------------------------------------------------
+  // calendar participants subgroup (Pro tier)
+  // ---------------------------------------------------------------------------
+  const participants = calendar.command('participants').description('Manage event participants');
+
+  // calendar participants list <vaultId> <eventId>
+  addGlobalFlags(participants.command('list')
+    .description('List participants for a calendar event')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<eventId>', 'Calendar event ID'))
+    .action(async (vaultId: string, eventId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Loading participants...');
+      try {
+        const client = await getClientAsync();
+        const items = await client.calendar.listParticipants(vaultId, eventId);
+        out.stopSpinner();
+        out.list(
+          items.map((p) => ({
+            id: p.id,
+            email: p.email,
+            name: p.name ?? '-',
+            role: p.role,
+            status: p.status,
+          })),
+          {
+            emptyMessage: 'No participants for this event.',
+            columns: [
+              { key: 'id', header: 'ID' },
+              { key: 'email', header: 'Email' },
+              { key: 'name', header: 'Name' },
+              { key: 'role', header: 'Role' },
+              { key: 'status', header: 'Status' },
+            ],
+            textFn: (p) => {
+              const statusColor =
+                p.status === 'accepted'
+                  ? chalk.green
+                  : p.status === 'declined'
+                    ? chalk.red
+                    : chalk.yellow;
+              return `${chalk.cyan(String(p.email))} (${p.role}) — ${statusColor(String(p.status))}`;
+            },
+          },
+        );
+      } catch (err) {
+        handleError(out, err, 'List participants failed');
+      }
+    });
+
+  // calendar participants add <vaultId> <eventId> --email <email> [--name <name>] [--role <role>]
+  addGlobalFlags(participants.command('add')
+    .description('Add a participant to a calendar event')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<eventId>', 'Calendar event ID')
+    .requiredOption('--email <email>', 'Participant email address')
+    .option('--name <name>', 'Participant display name')
+    .option('--role <role>', 'Participant role: organizer, attendee, optional', 'attendee'))
+    .action(async (vaultId: string, eventId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Adding participant...');
+      try {
+        const client = await getClientAsync();
+        const participant = await client.calendar.addParticipant(vaultId, eventId, {
+          email: _opts.email as string,
+          name: _opts.name as string | undefined,
+          role: _opts.role as string | undefined,
+        });
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(participant, null, 2) + '\n');
+        } else {
+          out.status(chalk.green(`Participant added: ${participant.email} (${participant.id})`));
+        }
+      } catch (err) {
+        handleError(out, err, 'Add participant failed');
+      }
+    });
+
+  // calendar participants update <vaultId> <eventId> <participantId> --status <status>
+  addGlobalFlags(participants.command('update')
+    .description('Update a participant status')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<eventId>', 'Calendar event ID')
+    .argument('<participantId>', 'Participant ID')
+    .requiredOption('--status <status>', 'New status: accepted, declined, tentative'))
+    .action(async (vaultId: string, eventId: string, participantId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Updating participant...');
+      try {
+        const client = await getClientAsync();
+        const participant = await client.calendar.updateParticipant(vaultId, eventId, participantId, {
+          status: _opts.status as string,
+        });
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(participant, null, 2) + '\n');
+        } else {
+          out.status(chalk.green(`Participant ${participant.email} updated to ${participant.status}.`));
+        }
+      } catch (err) {
+        handleError(out, err, 'Update participant failed');
+      }
+    });
+
+  // calendar participants remove <vaultId> <eventId> <participantId>
+  addGlobalFlags(participants.command('remove')
+    .description('Remove a participant from a calendar event')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<eventId>', 'Calendar event ID')
+    .argument('<participantId>', 'Participant ID')
+    .option('--confirm', 'Skip confirmation prompt'))
+    .action(async (vaultId: string, eventId: string, participantId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      if (!_opts.confirm) {
+        out.status(chalk.yellow(`Pass --confirm to remove participant ${participantId}.`));
+        return;
+      }
+      out.startSpinner('Removing participant...');
+      try {
+        const client = await getClientAsync();
+        await client.calendar.removeParticipant(vaultId, eventId, participantId);
+        out.stopSpinner();
+        out.status(chalk.green(`Participant ${participantId} removed.`));
+      } catch (err) {
+        handleError(out, err, 'Remove participant failed');
       }
     });
 }
