@@ -26,6 +26,9 @@ import { registerAiCommands } from './commands/ai.js';
 import { registerAnalyticsCommands } from './commands/analytics.js';
 import { registerCustomDomainCommands } from './commands/custom-domains.js';
 import { registerPublishVaultCommands } from './commands/publish-vault.js';
+import { registerSamlCommands } from './commands/saml.js';
+import { registerScimCommands } from './commands/scim.js';
+import { registerPluginCommands } from './commands/plugins.js';
 
 const program = new Command();
 program
@@ -78,5 +81,8 @@ registerAiCommands(program);
 registerAnalyticsCommands(program);
 registerCustomDomainCommands(program);
 registerPublishVaultCommands(program);
+registerSamlCommands(program);
+registerScimCommands(program);
+registerPluginCommands(program);
 
 program.parse();

@@ -464,7 +464,7 @@ export function registerBookingCommands(program: Command): void {
       out.startSpinner('Loading booking groups...');
       try {
         const client = await getClientAsync();
-        const list = await client.booking.listBookingGroups(teamId);
+        const list = await client.teamBookingGroups.listGroups(teamId);
         out.stopSpinner();
         out.list(
           list.map((g) => ({
@@ -502,7 +502,7 @@ export function registerBookingCommands(program: Command): void {
       out.startSpinner('Creating booking group...');
       try {
         const client = await getClientAsync();
-        const created = await client.booking.createBookingGroup(teamId, {
+        const created = await client.teamBookingGroups.createGroup(teamId, {
           name: _opts.name as string,
           assignmentMode: _opts.mode as 'round_robin' | 'least_busy' | 'attendee_choice',
         });
@@ -535,7 +535,7 @@ export function registerBookingCommands(program: Command): void {
         if (_opts.name) data.name = _opts.name;
         if (_opts.mode) data.assignmentMode = _opts.mode;
         if (_opts.active !== undefined) data.isActive = String(_opts.active) !== 'false';
-        const updated = await client.booking.updateBookingGroup(teamId, groupId, data);
+        const updated = await client.teamBookingGroups.updateGroup(teamId, groupId, data);
         out.stopSpinner();
         if (flags.output === 'json') {
           out.raw(JSON.stringify(updated, null, 2) + '\n');
@@ -563,7 +563,7 @@ export function registerBookingCommands(program: Command): void {
       out.startSpinner('Deleting booking group...');
       try {
         const client = await getClientAsync();
-        await client.booking.deleteBookingGroup(teamId, groupId);
+        await client.teamBookingGroups.deleteGroup(teamId, groupId);
         out.stopSpinner();
         out.status(chalk.green(`Booking group ${groupId} deleted.`));
       } catch (err) {
@@ -589,7 +589,7 @@ export function registerBookingCommands(program: Command): void {
       out.startSpinner('Loading group members...');
       try {
         const client = await getClientAsync();
-        const members = await client.booking.listGroupMembers(teamId, groupId);
+        const members = await client.teamBookingGroups.listMembers(teamId, groupId);
         out.stopSpinner();
         out.list(
           members.map((m) => ({
@@ -627,7 +627,7 @@ export function registerBookingCommands(program: Command): void {
       out.startSpinner('Adding group member...');
       try {
         const client = await getClientAsync();
-        const member = await client.booking.addGroupMember(teamId, groupId, {
+        const member = await client.teamBookingGroups.addMember(teamId, groupId, {
           userId: _opts.userId as string,
           weight: Number(_opts.weight ?? 1),
         });
@@ -656,7 +656,7 @@ export function registerBookingCommands(program: Command): void {
       out.startSpinner('Removing group member...');
       try {
         const client = await getClientAsync();
-        await client.booking.removeGroupMember(teamId, groupId, userId);
+        await client.teamBookingGroups.removeMember(teamId, groupId, userId);
         out.stopSpinner();
         out.status(chalk.green(`User ${userId} removed from booking group.`));
       } catch (err) {

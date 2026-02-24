@@ -134,6 +134,43 @@ export const createSDKMock = () => ({
     deleteEvent: vi.fn(),
     setDocumentDue: vi.fn(),
   },
+  teamBookingGroups: {
+    listGroups: vi.fn(),
+    createGroup: vi.fn(),
+    updateGroup: vi.fn(),
+    deleteGroup: vi.fn(),
+    listMembers: vi.fn(),
+    addMember: vi.fn(),
+    removeMember: vi.fn(),
+  },
+  saml: {
+    listConfigs: vi.fn(),
+    getConfig: vi.fn(),
+    createConfig: vi.fn(),
+    updateConfig: vi.fn(),
+    deleteConfig: vi.fn(),
+    getMetadata: vi.fn(),
+    getLoginUrl: vi.fn(),
+  },
+  scim: {
+    listUsers: vi.fn(),
+    getUser: vi.fn(),
+    createUser: vi.fn(),
+    updateUser: vi.fn(),
+    deleteUser: vi.fn(),
+    getServiceProviderConfig: vi.fn(),
+  },
+  plugins: {
+    list: vi.fn(),
+    install: vi.fn(),
+    uninstall: vi.fn(),
+    enable: vi.fn(),
+    disable: vi.fn(),
+    updateSettings: vi.fn(),
+  },
+  collaboration: {
+    getWebSocketUrl: vi.fn(),
+  },
 });
 
 export type SDKMock = ReturnType<typeof createSDKMock>;
