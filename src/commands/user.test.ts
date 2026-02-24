@@ -89,4 +89,87 @@ describe('user commands', () => {
       expect(process.exitCode).toBe(1);
     });
   });
+
+  // ── Data Export ────────────────────────────────────────────────────
+
+  describe('user export list', () => {
+    it('should list data exports', async () => {
+      sdkMock.user.listDataExports.mockResolvedValue([
+        { id: 'exp1', status: 'completed', format: 'json', createdAt: '2026-02-01T10:00:00Z', completedAt: '2026-02-01T10:05:00Z' },
+        { id: 'exp2', status: 'pending', format: 'json', createdAt: '2026-02-24T08:00:00Z', completedAt: null },
+      ]);
+
+      await program.parseAsync(['node', 'cli', 'user', 'export', 'list']);
+
+      expect(sdkMock.user.listDataExports).toHaveBeenCalled();
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('exp1');
+      expect(stdout).toContain('completed');
+      expect(stdout).toContain('exp2');
+      expect(stdout).toContain('pending');
+    });
+
+    it('should show message when no exports exist', async () => {
+      sdkMock.user.listDataExports.mockResolvedValue([]);
+
+      await program.parseAsync(['node', 'cli', 'user', 'export', 'list']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('No data exports found');
+    });
+
+    it('should handle errors gracefully', async () => {
+      sdkMock.user.listDataExports.mockRejectedValue(new Error('Unauthorized'));
+
+      await program.parseAsync(['node', 'cli', 'user', 'export', 'list']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Unauthorized');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  describe('user export download', () => {
+    it('should write export to stdout when no --file flag and not a TTY', async () => {
+      const content = '{"documents":[]}';
+      const blob = new Blob([content], { type: 'application/json' });
+      sdkMock.user.downloadDataExport.mockResolvedValue(blob);
+      // Simulate piped/non-TTY stdout (safe to write binary)
+      const origIsTTY = process.stdout.isTTY;
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+
+      await program.parseAsync(['node', 'cli', 'user', 'export', 'download', 'exp1']);
+
+      Object.defineProperty(process.stdout, 'isTTY', { value: origIsTTY, configurable: true });
+      expect(sdkMock.user.downloadDataExport).toHaveBeenCalledWith('exp1');
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('{"documents":[]}');
+    });
+
+    it('should warn and exit when stdout is a TTY and no --file flag is given', async () => {
+      Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+
+      await program.parseAsync(['node', 'cli', 'user', 'export', 'download', 'exp1']);
+
+      Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true });
+      expect(sdkMock.user.downloadDataExport).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('binary export data would corrupt your terminal');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should handle errors gracefully', async () => {
+      sdkMock.user.downloadDataExport.mockRejectedValue(new Error('Export not ready'));
+      // Simulate piped/non-TTY stdout so the download attempt actually runs
+      const origIsTTY = process.stdout.isTTY;
+      Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+
+      await program.parseAsync(['node', 'cli', 'user', 'export', 'download', 'exp1']);
+
+      Object.defineProperty(process.stdout, 'isTTY', { value: origIsTTY, configurable: true });
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Export not ready');
+      expect(process.exitCode).toBe(1);
+    });
+  });
 });

@@ -495,11 +495,13 @@ export function registerCalendarCommands(program: Command): void {
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      out.startSpinner('Fetching iCal feed...');
       try {
         const client = await getClientAsync();
         const ical = await client.calendar.getIcalFeed(vaultId, {
           include: _opts.include as string | undefined,
         });
+        out.stopSpinner();
         process.stdout.write(ical);
       } catch (err) {
         handleError(out, err, 'Failed to fetch iCal feed');
@@ -590,6 +592,37 @@ export function registerCalendarCommands(program: Command): void {
         out.status(chalk.green(`Connector ${connectorId} disconnected.`));
       } catch (err) {
         handleError(out, err, 'Disconnect connector failed');
+      }
+    });
+
+  // calendar connector connect
+  addGlobalFlags(connector.command('connect')
+    .description('Connect a Google or Outlook calendar to a vault via OAuth')
+    .argument('<vaultId>', 'Vault ID')
+    .requiredOption('--provider <provider>', 'Calendar provider: google or outlook'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      const provider = _opts.provider as string;
+      if (provider !== 'google' && provider !== 'outlook') {
+        out.status(chalk.red('--provider must be "google" or "outlook"'));
+        process.exitCode = 1;
+        return;
+      }
+      out.startSpinner(`Connecting ${provider} calendar...`);
+      try {
+        const client = await getClientAsync();
+        const result = provider === 'google'
+          ? await client.calendar.connectGoogleCalendar(vaultId)
+          : await client.calendar.connectOutlookCalendar(vaultId);
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.record({ authUrl: result.authUrl });
+        } else {
+          out.status(chalk.cyan('Open this URL to connect: ') + result.authUrl);
+        }
+      } catch (err) {
+        handleError(out, err, 'Connect calendar failed');
       }
     });
 
@@ -723,6 +756,163 @@ export function registerCalendarCommands(program: Command): void {
         out.status(chalk.green(`Participant ${participantId} removed.`));
       } catch (err) {
         handleError(out, err, 'Remove participant failed');
+      }
+    });
+
+  // ---------------------------------------------------------------------------
+  // calendar templates subgroup (Pro tier)
+  // ---------------------------------------------------------------------------
+  const templates = calendar.command('templates').description('Manage calendar event templates');
+
+  // calendar templates list
+  addGlobalFlags(templates.command('list')
+    .description('List event templates for a vault')
+    .argument('<vaultId>', 'Vault ID'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Loading templates...');
+      try {
+        const client = await getClientAsync();
+        const items = await client.calendar.listTemplates(vaultId);
+        out.stopSpinner();
+        out.list(
+          items.map((t) => ({
+            id: t.id,
+            name: t.name,
+            duration: String(t.duration),
+            description: t.description ?? '-',
+          })),
+          {
+            emptyMessage: 'No event templates.',
+            columns: [
+              { key: 'id', header: 'ID' },
+              { key: 'name', header: 'Name' },
+              { key: 'duration', header: 'Duration (min)' },
+              { key: 'description', header: 'Description' },
+            ],
+            textFn: (t) => `${chalk.cyan(String(t.name))} — ${chalk.dim(String(t.duration))} min${t.description !== '-' ? ` — ${t.description}` : ''}`,
+          },
+        );
+      } catch (err) {
+        handleError(out, err, 'List templates failed');
+      }
+    });
+
+  // calendar templates create
+  addGlobalFlags(templates.command('create')
+    .description('Create a new event template for a vault')
+    .argument('<vaultId>', 'Vault ID')
+    .requiredOption('--name <name>', 'Template name')
+    .requiredOption('--duration <minutes>', 'Duration in minutes')
+    .option('--description <description>', 'Template description')
+    .option('--location <location>', 'Default location')
+    .option('--color <color>', 'Default color (e.g. red, blue, #ff0000)'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Creating template...');
+      try {
+        const client = await getClientAsync();
+        const created = await client.calendar.createTemplate(vaultId, {
+          name: _opts.name as string,
+          duration: Number(_opts.duration),
+          description: _opts.description as string | undefined,
+          location: _opts.location as string | undefined,
+          color: _opts.color as string | undefined,
+        });
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(created, null, 2) + '\n');
+        } else {
+          out.success(`Template created: ${created.name} (${created.id})`);
+        }
+      } catch (err) {
+        handleError(out, err, 'Create template failed');
+      }
+    });
+
+  // calendar templates get
+  addGlobalFlags(templates.command('get')
+    .description('Get a single event template by ID')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<templateId>', 'Template ID'))
+    .action(async (vaultId: string, templateId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Loading template...');
+      try {
+        const client = await getClientAsync();
+        const t = await client.calendar.getTemplate(vaultId, templateId);
+        out.stopSpinner();
+        out.record({
+          id: t.id,
+          name: t.name,
+          duration: String(t.duration),
+          description: t.description ?? '-',
+          location: t.location ?? '-',
+          color: t.color ?? '-',
+        });
+      } catch (err) {
+        handleError(out, err, 'Get template failed');
+      }
+    });
+
+  // calendar templates update
+  addGlobalFlags(templates.command('update')
+    .description('Update an event template')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<templateId>', 'Template ID')
+    .option('--name <name>', 'New template name')
+    .option('--duration <minutes>', 'New duration in minutes')
+    .option('--description <description>', 'New description')
+    .option('--location <location>', 'Default location')
+    .option('--color <color>', 'Default color (e.g. red, blue, #ff0000)'))
+    .action(async (vaultId: string, templateId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Updating template...');
+      try {
+        const client = await getClientAsync();
+        const data: Record<string, unknown> = {};
+        if (_opts.name) data.name = _opts.name;
+        if (_opts.duration) data.duration = Number(_opts.duration);
+        if (_opts.description) data.description = _opts.description;
+        if (_opts.location) data.location = _opts.location;
+        if (_opts.color) data.color = _opts.color;
+        const updated = await client.calendar.updateTemplate(vaultId, templateId, data);
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(updated, null, 2) + '\n');
+        } else {
+          out.success(`Template updated: ${updated.name}`);
+        }
+      } catch (err) {
+        handleError(out, err, 'Update template failed');
+      }
+    });
+
+  // calendar templates delete
+  addGlobalFlags(templates.command('delete')
+    .description('Delete an event template')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<templateId>', 'Template ID')
+    .option('--confirm', 'Skip confirmation prompt'))
+    .action(async (vaultId: string, templateId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      if (!_opts.confirm) {
+        out.status(chalk.yellow(`Pass --confirm to delete template ${templateId}`));
+        return;
+      }
+      out.startSpinner('Deleting template...');
+      try {
+        const client = await getClientAsync();
+        await client.calendar.deleteTemplate(vaultId, templateId);
+        out.stopSpinner();
+        out.success(`Template ${templateId} deleted.`);
+      } catch (err) {
+        handleError(out, err, 'Delete template failed');
       }
     });
 }

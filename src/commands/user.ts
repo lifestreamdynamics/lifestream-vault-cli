@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
+import { writeFile } from 'node:fs/promises';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
@@ -272,6 +273,71 @@ export function registerUserCommands(program: Command): void {
         out.record({ id: exp.id, status: exp.status, format: exp.format, createdAt: exp.createdAt, completedAt: exp.completedAt, downloadUrl: exp.downloadUrl });
       } catch (err) {
         handleError(out, err, 'Failed to fetch export status');
+      }
+    });
+
+  addGlobalFlags(userExport.command('list')
+    .description('List all data exports'))
+    .action(async (_opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching data exports...');
+      try {
+        const client = await getClientAsync();
+        const exports = await client.user.listDataExports();
+        out.stopSpinner();
+        out.list(
+          exports.map(e => ({
+            id: e.id,
+            status: e.status,
+            format: e.format,
+            createdAt: e.createdAt,
+            completedAt: e.completedAt ?? '',
+          })),
+          {
+            emptyMessage: 'No data exports found.',
+            columns: [
+              { key: 'id', header: 'ID' },
+              { key: 'status', header: 'Status' },
+              { key: 'format', header: 'Format' },
+              { key: 'createdAt', header: 'Created' },
+              { key: 'completedAt', header: 'Completed' },
+            ],
+            textFn: (e) => `${chalk.cyan(String(e.id))} [${String(e.status)}] ${String(e.format)} — created ${String(e.createdAt)}`,
+          },
+        );
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch data exports');
+      }
+    });
+
+  addGlobalFlags(userExport.command('download')
+    .description('Download a completed data export')
+    .argument('<exportId>', 'Export ID')
+    .option('-f, --file <filepath>', 'File path to write the export to'))
+    .action(async (exportId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      const outputPath = _opts.file as string | undefined;
+      if (!outputPath && process.stdout.isTTY) {
+        process.stderr.write(chalk.yellow('Warning: binary export data would corrupt your terminal. Use -f <filepath> to save to a file.\n'));
+        process.exitCode = 1;
+        return;
+      }
+      out.startSpinner('Downloading data export...');
+      try {
+        const client = await getClientAsync();
+        const blob = await client.user.downloadDataExport(exportId);
+        out.stopSpinner();
+        const buffer = Buffer.from(await blob.arrayBuffer());
+        if (outputPath) {
+          await writeFile(outputPath, buffer);
+          out.success(`Export saved to ${chalk.cyan(outputPath)}`, { exportId, path: outputPath });
+        } else {
+          process.stdout.write(buffer);
+        }
+      } catch (err) {
+        handleError(out, err, 'Failed to download data export');
       }
     });
 

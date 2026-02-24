@@ -365,8 +365,8 @@ EXAMPLES
           out.raw(JSON.stringify(cal, null, 2) + '\n');
         } else {
           for (const [date, day] of Object.entries(cal.days ?? {})) {
-            if (day && (day as { count?: number }).count) {
-              process.stdout.write(`${chalk.cyan(date)}: ${(day as { count?: number }).count} events\n`);
+            if (day && day.activityCount) {
+              process.stdout.write(`${chalk.cyan(date)}: ${day.activityCount} events\n`);
             }
           }
         }
@@ -395,8 +395,8 @@ EXAMPLES
           out.raw(JSON.stringify(activity, null, 2) + '\n');
         } else {
           for (const day of activity.days ?? []) {
-            if ((day as { count?: number }).count) {
-              process.stdout.write(`${chalk.cyan((day as { date?: string }).date)}: ${(day as { count?: number }).count} activities\n`);
+            if (day.total) {
+              process.stdout.write(`${chalk.cyan(day.date)}: ${day.total} activities\n`);
             }
           }
         }
@@ -436,6 +436,128 @@ EXAMPLES
         );
       } catch (err) {
         handleError(out, err, 'Failed to fetch team calendar events');
+      }
+    });
+
+  addGlobalFlags(teamCalendar.command('upcoming')
+    .description('View upcoming events and due items for a team')
+    .argument('<teamId>', 'Team ID'))
+    .action(async (teamId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching upcoming items...');
+      try {
+        const client = await getClientAsync();
+        const upcoming = await client.teams.getUpcoming(teamId);
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(upcoming, null, 2) + '\n');
+        } else {
+          if (upcoming.events && upcoming.events.length > 0) {
+            process.stdout.write(chalk.bold('Events:\n'));
+            for (const e of upcoming.events) {
+              process.stdout.write(`  ${chalk.cyan(String(e.title))} — ${String(e.startDate)}\n`);
+            }
+          } else {
+            process.stdout.write(chalk.dim('No upcoming events.\n'));
+          }
+          if (upcoming.dueDocs && upcoming.dueDocs.length > 0) {
+            process.stdout.write(chalk.bold('Due Documents:\n'));
+            for (const d of upcoming.dueDocs) {
+              process.stdout.write(`  ${chalk.cyan(String(d.path))} — due ${String(d.dueAt)}\n`);
+            }
+          } else {
+            process.stdout.write(chalk.dim('No upcoming due documents.\n'));
+          }
+        }
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch upcoming items');
+      }
+    });
+
+  addGlobalFlags(teamCalendar.command('due')
+    .description('List due documents for a team')
+    .argument('<teamId>', 'Team ID')
+    .option('--status <status>', 'Filter by status (overdue|upcoming|all)'))
+    .action(async (teamId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching due documents...');
+      try {
+        const client = await getClientAsync();
+        const dueDocs = await client.teams.getDue(teamId, {
+          status: _opts.status as 'overdue' | 'upcoming' | 'all' | undefined,
+        });
+        out.stopSpinner();
+        out.list(
+          dueDocs.map(d => ({
+            path: d.path,
+            title: d.title ?? '',
+            dueAt: d.dueAt,
+            overdue: d.overdue ? 'yes' : 'no',
+          })),
+          {
+            emptyMessage: 'No due documents found.',
+            columns: [
+              { key: 'path', header: 'Path' },
+              { key: 'title', header: 'Title' },
+              { key: 'dueAt', header: 'Due At' },
+              { key: 'overdue', header: 'Overdue' },
+            ],
+            textFn: (d) => `${chalk.cyan(String(d.path))} — due ${String(d.dueAt)} ${d.overdue === 'yes' ? chalk.red('[overdue]') : ''}`,
+          },
+        );
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch due documents');
+      }
+    });
+
+  addGlobalFlags(teamCalendar.command('agenda')
+    .description('View the team calendar agenda')
+    .argument('<teamId>', 'Team ID')
+    .option('--range <days>', 'Number of days to include')
+    .option('--group-by <period>', 'Group by period (day|week|month)'))
+    .action(async (teamId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching team agenda...');
+      try {
+        const client = await getClientAsync();
+        const agenda = await client.teams.getAgenda(teamId, {
+          range: _opts.range as string | undefined,
+          groupBy: _opts.groupBy as string | undefined,
+        });
+        out.stopSpinner();
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify(agenda, null, 2) + '\n');
+        } else {
+          process.stdout.write(`Total items: ${chalk.cyan(String(agenda.total))}\n`);
+          for (const group of agenda.groups ?? []) {
+            process.stdout.write(`\n${chalk.bold(String(group.label))}:\n`);
+            for (const item of group.items ?? []) {
+              process.stdout.write(`  ${chalk.cyan(String(item.title ?? item.path))} — ${String(item.dueAt ?? '')}\n`);
+            }
+          }
+        }
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch team agenda');
+      }
+    });
+
+  addGlobalFlags(teamCalendar.command('ical')
+    .description('Get the iCal feed for a team calendar')
+    .argument('<teamId>', 'Team ID'))
+    .action(async (teamId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Fetching iCal feed...');
+      try {
+        const client = await getClientAsync();
+        const ical = await client.teams.getICalFeed(teamId);
+        out.stopSpinner();
+        out.raw(ical);
+      } catch (err) {
+        handleError(out, err, 'Failed to fetch iCal feed');
       }
     });
 }

@@ -44,6 +44,8 @@ export const createSDKMock = () => ({
   user: {
     me: vi.fn(),
     getStorage: vi.fn(),
+    listDataExports: vi.fn(),
+    downloadDataExport: vi.fn(),
   },
   subscription: {
     get: vi.fn(),
@@ -68,6 +70,10 @@ export const createSDKMock = () => ({
     revokeInvitation: vi.fn(),
     createVault: vi.fn(),
     listVaults: vi.fn(),
+    getUpcoming: vi.fn(),
+    getDue: vi.fn(),
+    getAgenda: vi.fn(),
+    getICalFeed: vi.fn(),
   },
   admin: {
     getStats: vi.fn(),
@@ -133,6 +139,13 @@ export const createSDKMock = () => ({
     updateEvent: vi.fn(),
     deleteEvent: vi.fn(),
     setDocumentDue: vi.fn(),
+    listTemplates: vi.fn(),
+    createTemplate: vi.fn(),
+    getTemplate: vi.fn(),
+    updateTemplate: vi.fn(),
+    deleteTemplate: vi.fn(),
+    connectGoogleCalendar: vi.fn(),
+    connectOutlookCalendar: vi.fn(),
   },
   teamBookingGroups: {
     listGroups: vi.fn(),

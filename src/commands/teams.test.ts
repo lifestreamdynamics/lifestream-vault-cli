@@ -402,4 +402,184 @@ describe('teams commands', () => {
       expect(process.exitCode).toBe(1);
     });
   });
+
+  // ── Team Calendar (new subcommands) ────────────────────────────────
+
+  describe('teams calendar upcoming', () => {
+    it('should display upcoming events and due docs in text mode', async () => {
+      sdkMock.teams.getUpcoming.mockResolvedValue({
+        events: [
+          { id: 'e1', title: 'Sprint Review', startDate: '2026-03-01', endDate: '2026-03-01' },
+        ],
+        dueDocs: [
+          { path: 'notes/roadmap.md', title: 'Roadmap', dueAt: '2026-03-05', overdue: false },
+        ],
+      });
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'upcoming', 't1']);
+
+      expect(sdkMock.teams.getUpcoming).toHaveBeenCalledWith('t1');
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('Sprint Review');
+      expect(stdout).toContain('2026-03-01');
+      expect(stdout).toContain('notes/roadmap.md');
+      expect(stdout).toContain('2026-03-05');
+    });
+
+    it('should output JSON when --output json is passed', async () => {
+      const upcoming = {
+        events: [{ id: 'e1', title: 'Planning', startDate: '2026-03-01', endDate: '2026-03-01' }],
+        dueDocs: [],
+      };
+      sdkMock.teams.getUpcoming.mockResolvedValue(upcoming);
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'upcoming', 't1', '--output', 'json']);
+
+      const stdout = outputSpy.stdout.join('');
+      const parsed = JSON.parse(stdout);
+      expect(parsed.events[0].title).toBe('Planning');
+    });
+
+    it('should show empty messages when no events or due docs', async () => {
+      sdkMock.teams.getUpcoming.mockResolvedValue({ events: [], dueDocs: [] });
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'upcoming', 't1']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('No upcoming events');
+      expect(stdout).toContain('No upcoming due documents');
+    });
+
+    it('should handle errors gracefully', async () => {
+      sdkMock.teams.getUpcoming.mockRejectedValue(new Error('Team not found'));
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'upcoming', 't1']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Team not found');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  describe('teams calendar due', () => {
+    it('should list due documents', async () => {
+      sdkMock.teams.getDue.mockResolvedValue([
+        { path: 'tasks/todo.md', title: 'Todo List', dueAt: '2026-02-25', overdue: true },
+        { path: 'notes/review.md', title: 'Review', dueAt: '2026-03-10', overdue: false },
+      ]);
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'due', 't1']);
+
+      expect(sdkMock.teams.getDue).toHaveBeenCalledWith('t1', { status: undefined });
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('tasks/todo.md');
+      expect(stdout).toContain('notes/review.md');
+    });
+
+    it('should pass status filter to SDK', async () => {
+      sdkMock.teams.getDue.mockResolvedValue([]);
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'due', 't1', '--status', 'overdue']);
+
+      expect(sdkMock.teams.getDue).toHaveBeenCalledWith('t1', { status: 'overdue' });
+    });
+
+    it('should show message when no due docs found', async () => {
+      sdkMock.teams.getDue.mockResolvedValue([]);
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'due', 't1', '--status', 'upcoming']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('No due documents found');
+    });
+
+    it('should handle errors gracefully', async () => {
+      sdkMock.teams.getDue.mockRejectedValue(new Error('Unauthorized'));
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'due', 't1']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Unauthorized');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  describe('teams calendar agenda', () => {
+    it('should display agenda groups in text mode', async () => {
+      sdkMock.teams.getAgenda.mockResolvedValue({
+        total: 3,
+        groups: [
+          {
+            label: 'March 2026',
+            items: [
+              { title: 'Sprint Review', startDate: '2026-03-01' },
+              { title: 'Roadmap Due', dueAt: '2026-03-05' },
+            ],
+          },
+        ],
+      });
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'agenda', 't1']);
+
+      expect(sdkMock.teams.getAgenda).toHaveBeenCalledWith('t1', { range: undefined, groupBy: undefined });
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('Total items: 3');
+      expect(stdout).toContain('March 2026');
+      expect(stdout).toContain('Sprint Review');
+      expect(stdout).toContain('Roadmap Due');
+    });
+
+    it('should pass range and groupBy to SDK', async () => {
+      sdkMock.teams.getAgenda.mockResolvedValue({ total: 0, groups: [] });
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'agenda', 't1', '--range', '30', '--group-by', 'week']);
+
+      expect(sdkMock.teams.getAgenda).toHaveBeenCalledWith('t1', { range: '30', groupBy: 'week' });
+    });
+
+    it('should output JSON when --output json is passed', async () => {
+      const agenda = { total: 1, groups: [{ label: 'Week 1', items: [{ title: 'Event', startDate: '2026-03-01' }] }] };
+      sdkMock.teams.getAgenda.mockResolvedValue(agenda);
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'agenda', 't1', '--output', 'json']);
+
+      const stdout = outputSpy.stdout.join('');
+      const parsed = JSON.parse(stdout);
+      expect(parsed.total).toBe(1);
+    });
+
+    it('should handle errors gracefully', async () => {
+      sdkMock.teams.getAgenda.mockRejectedValue(new Error('Server error'));
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'agenda', 't1']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Server error');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  describe('teams calendar ical', () => {
+    it('should output raw iCal text', async () => {
+      const icalText = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\nEND:VCALENDAR\r\n';
+      sdkMock.teams.getICalFeed.mockResolvedValue(icalText);
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'ical', 't1']);
+
+      expect(sdkMock.teams.getICalFeed).toHaveBeenCalledWith('t1');
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('BEGIN:VCALENDAR');
+      expect(stdout).toContain('END:VCALENDAR');
+    });
+
+    it('should handle errors gracefully', async () => {
+      sdkMock.teams.getICalFeed.mockRejectedValue(new Error('Not found'));
+
+      await program.parseAsync(['node', 'cli', 'teams', 'calendar', 'ical', 't1']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Not found');
+      expect(process.exitCode).toBe(1);
+    });
+  });
 });
