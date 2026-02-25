@@ -129,6 +129,7 @@ describe('config', () => {
     });
 
     it('should fall back to plaintext config when no secure credentials', async () => {
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
       mockCredentialManager.getCredentials.mockResolvedValue({});
       mockedFs.existsSync.mockReturnValue(true);
       mockedFs.readFileSync.mockReturnValue(
@@ -138,6 +139,13 @@ describe('config', () => {
       const config = await loadConfigAsync();
 
       expect(config.apiKey).toBe('lsv_k_plaintext');
+      expect(stderrSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Warning: API key loaded from plaintext config'),
+      );
+      expect(stderrSpy).toHaveBeenCalledWith(
+        expect.stringContaining('lsvault auth migrate'),
+      );
+      stderrSpy.mockRestore();
     });
 
     it('should use default API URL when nothing else available', async () => {

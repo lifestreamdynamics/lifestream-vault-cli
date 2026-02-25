@@ -90,7 +90,14 @@ export async function loadConfigAsync(): Promise<CliConfig> {
   if (fs.existsSync(CONFIG_FILE)) {
     const fileConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
     if (fileConfig.apiUrl && !config.apiUrl) config.apiUrl = fileConfig.apiUrl;
-    if (fileConfig.apiKey && !config.apiKey) config.apiKey = fileConfig.apiKey;
+    if (fileConfig.apiKey && !config.apiKey) {
+      config.apiKey = fileConfig.apiKey;
+      process.stderr.write(
+        '\x1b[33mWarning: API key loaded from plaintext config (~/.lsvault/config.json).\n' +
+        'Run `lsvault auth migrate` to migrate to secure storage.\n' +
+        'See: https://docs.lifestreamdynamics.com/migration-to-secure-storage\x1b[0m\n',
+      );
+    }
   }
 
   return config;
