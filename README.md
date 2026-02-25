@@ -19,8 +19,14 @@ A powerful command-line interface for Lifestream Vault - the multi-user Markdown
   - [Search Commands](#search-commands)
   - [Team Commands](#team-commands)
   - [Sharing & Publishing](#sharing--publishing)
+  - [Publish Vault Commands](#publish-vault-commands)
   - [Hooks & Webhooks](#hooks--webhooks)
   - [Links & Backlinks](#links--backlinks)
+  - [Calendar Commands](#calendar)
+  - [Booking Commands](#booking-commands)
+  - [AI Commands](#ai-commands)
+  - [Analytics Commands](#analytics-commands)
+  - [Custom Domain Commands](#custom-domain-commands)
   - [Admin Commands](#admin-commands)
 - [Sync & Watch Mode](#-sync--watch-mode)
 - [Configuration](#️-configuration)
@@ -135,7 +141,7 @@ lsvault sync watch <syncId>
 lsvault search "project notes"
 
 # Semantic search (AI-powered)
-lsvault search semantic "how to deploy the app"
+lsvault search "how to deploy the app" --mode semantic
 ```
 
 ## 🔐 Authentication
@@ -202,16 +208,17 @@ lsvault auth logout
 | Command | Description |
 |---------|-------------|
 | `lsvault vaults list` | List all accessible vaults |
-| `lsvault vaults create` | Create a new vault |
+| `lsvault vaults create <name>` | Create a new vault |
 | `lsvault vaults get <vaultId>` | Get vault details |
-| `lsvault vaults update <vaultId>` | Update vault settings |
-| `lsvault vaults delete <vaultId>` | Delete a vault |
 | `lsvault vaults tree <vaultId>` | Display vault directory tree |
+| `lsvault vaults archive <vaultId>` | Archive a vault |
+| `lsvault vaults unarchive <vaultId>` | Unarchive a vault |
+| `lsvault vaults transfer <vaultId> <targetEmail>` | Transfer vault ownership |
 
 **Example:**
 ```bash
 # Create a vault
-lsvault vaults create --name "Work Notes" --description "Professional documentation"
+lsvault vaults create "Work Notes" --description "Professional documentation"
 
 # Get vault details
 lsvault vaults get vault_abc123
@@ -223,9 +230,10 @@ lsvault vaults get vault_abc123
 |---------|-------------|
 | `lsvault docs list <vaultId>` | List all documents in a vault |
 | `lsvault docs get <vaultId> <path>` | Get document content |
-| `lsvault docs create <vaultId> <path>` | Create a new document |
-| `lsvault docs update <vaultId> <path>` | Update a document |
+| `lsvault docs put <vaultId> <path>` | Create or update a document (reads from stdin) |
 | `lsvault docs delete <vaultId> <path>` | Delete a document |
+| `lsvault docs move <vaultId> <source> <dest>` | Move or rename a document |
+| `lsvault docs mkdir <vaultId> <path>` | Create a directory |
 
 **Example:**
 ```bash
@@ -233,16 +241,16 @@ lsvault vaults get vault_abc123
 lsvault docs list vault_abc123
 
 # Read a document (outputs to stdout)
-lsvault docs get vault_abc123 /notes/meeting.md
+lsvault docs get vault_abc123 notes/meeting.md
 
-# Create a document from file
-lsvault docs create vault_abc123 /notes/new.md --file ~/draft.md
+# Create or update a document from a local file (via stdin)
+cat ~/draft.md | lsvault docs put vault_abc123 notes/new.md
 
 # Create with inline content
-lsvault docs create vault_abc123 /notes/quick.md --content "# Quick Note\n\nThis is a test."
+echo "# Quick Note\n\nThis is a test." | lsvault docs put vault_abc123 notes/quick.md
 
-# Update a document
-lsvault docs update vault_abc123 /notes/meeting.md --file ~/updated.md
+# Show document metadata
+lsvault docs get vault_abc123 notes/meeting.md --meta
 ```
 
 ### Sync Commands
@@ -285,7 +293,8 @@ lsvault sync daemon start
 | Command | Description |
 |---------|-------------|
 | `lsvault search <query>` | Full-text search across all documents |
-| `lsvault search semantic <query>` | Semantic search using AI embeddings |
+| `lsvault search <query> --mode semantic` | Semantic search using AI embeddings |
+| `lsvault search <query> --mode hybrid` | Hybrid text + semantic search |
 
 **Example:**
 ```bash
@@ -293,7 +302,7 @@ lsvault sync daemon start
 lsvault search "project timeline" --vault vault_abc123
 
 # Semantic search
-lsvault search semantic "explain the deployment process"
+lsvault search "explain the deployment process" --mode semantic
 
 # Search with filters
 lsvault search "meeting" --tags work,urgent --limit 10
@@ -346,6 +355,32 @@ lsvault shares create vault_abc123 /reports/Q1.md \
 lsvault publish create vault_abc123 /blog/post.md --slug my-first-post
 ```
 
+### Publish Vault Commands
+
+Publish a whole vault as a multi-document public site (Pro tier).
+
+| Command | Description |
+|---------|-------------|
+| `lsvault publish-vault list` | List your published vault sites |
+| `lsvault publish-vault publish <vaultId>` | Publish a vault as a public site |
+| `lsvault publish-vault update <vaultId>` | Update a published vault site |
+| `lsvault publish-vault unpublish <vaultId>` | Unpublish a vault site |
+
+**Example:**
+```bash
+# Publish a vault as a public site
+lsvault publish-vault publish vault_abc123 \
+  --slug my-docs \
+  --title "My Documentation" \
+  --enable-search
+
+# List published vault sites
+lsvault publish-vault list
+
+# Unpublish
+lsvault publish-vault unpublish vault_abc123
+```
+
 ### Hooks & Webhooks
 
 | Command | Description |
@@ -384,6 +419,81 @@ lsvault webhooks create \
 | `lsvault calendar update-event <vaultId> <eventId>` | Update a calendar event |
 | `lsvault calendar delete-event <vaultId> <eventId>` | Delete a calendar event |
 
+### Booking Commands
+
+Manage bookable event slots and guest bookings. Slot CRUD requires Pro tier; team booking groups and waitlist require Business tier.
+
+| Command | Description |
+|---------|-------------|
+| `lsvault booking slots list <vaultId>` | List all event slots for a vault |
+| `lsvault booking slots create <vaultId>` | Create a new bookable event slot |
+| `lsvault booking slots update <vaultId> <slotId>` | Update an event slot |
+| `lsvault booking slots delete <vaultId> <slotId>` | Delete an event slot |
+| `lsvault booking list <vaultId>` | List bookings for a vault |
+| `lsvault booking confirm <vaultId> <bookingId>` | Confirm a pending booking |
+| `lsvault booking cancel <vaultId> <bookingId>` | Cancel a booking |
+| `lsvault booking reschedule <token> <newStartAt>` | Reschedule via guest token |
+| `lsvault booking analytics <vaultId>` | View booking analytics (Business tier) |
+| `lsvault booking templates list <vaultId>` | List event templates |
+| `lsvault booking templates create <vaultId>` | Create an event template |
+| `lsvault booking templates delete <vaultId> <templateId>` | Delete an event template |
+| `lsvault booking groups list <teamId>` | List team booking groups |
+| `lsvault booking groups create <teamId>` | Create a team booking group |
+| `lsvault booking groups update <teamId> <groupId>` | Update a team booking group |
+| `lsvault booking groups delete <teamId> <groupId>` | Delete a team booking group |
+| `lsvault booking group-members list <teamId> <groupId>` | List booking group members |
+| `lsvault booking group-members add <teamId> <groupId>` | Add member to booking group |
+| `lsvault booking group-members remove <teamId> <groupId> <userId>` | Remove member from group |
+| `lsvault booking waitlist list <vaultId> <slotId>` | List waitlist entries for a slot |
+
+### AI Commands
+
+| Command | Description |
+|---------|-------------|
+| `lsvault ai sessions list` | List AI chat sessions |
+| `lsvault ai sessions get <sessionId>` | Get session with messages |
+| `lsvault ai sessions delete <sessionId>` | Delete an AI chat session |
+| `lsvault ai chat <sessionId> <message>` | Send a message in a session |
+| `lsvault ai summarize <vaultId> <docPath>` | Summarize a document with AI |
+
+**Example:**
+```bash
+# Chat with AI
+lsvault ai chat session_abc123 "Summarize the key points"
+
+# Summarize a document
+lsvault ai summarize vault_abc123 notes/meeting.md
+```
+
+### Analytics Commands
+
+| Command | Description |
+|---------|-------------|
+| `lsvault analytics published` | Summary of published document views |
+| `lsvault analytics share <vaultId> <shareId>` | Analytics for a share link |
+| `lsvault analytics doc <vaultId> <publishedDocId>` | Analytics for a published document |
+
+### Custom Domain Commands
+
+| Command | Description |
+|---------|-------------|
+| `lsvault custom-domains list` | List custom domains |
+| `lsvault custom-domains get <domainId>` | Get a custom domain |
+| `lsvault custom-domains add <domain>` | Add a custom domain |
+| `lsvault custom-domains update <domainId>` | Update a custom domain |
+| `lsvault custom-domains remove <domainId>` | Remove a custom domain |
+| `lsvault custom-domains verify <domainId>` | Verify domain via DNS TXT record |
+| `lsvault custom-domains check <domainId>` | Check DNS configuration |
+
+**Example:**
+```bash
+# Add a custom domain
+lsvault custom-domains add docs.example.com
+
+# Verify after adding DNS TXT record
+lsvault custom-domains verify domain_abc123
+```
+
 ### Links & Backlinks
 
 | Command | Description |
@@ -416,10 +526,12 @@ lsvault links broken vault_abc123
 |---------|-------------|
 | `lsvault admin users list` | List all users |
 | `lsvault admin users get <userId>` | Get user details |
-| `lsvault admin users update <userId>` | Update user settings |
-| `lsvault admin users delete <userId>` | Delete a user |
+| `lsvault admin users update <userId>` | Update user (role, active status) |
 | `lsvault admin stats` | View system statistics |
-| `lsvault audit logs` | View audit logs |
+| `lsvault admin stats timeseries` | Show timeseries data for a metric |
+| `lsvault admin activity` | Show recent system-wide activity |
+| `lsvault admin subscriptions` | Show subscription tier distribution |
+| `lsvault admin health` | Check system health (DB, Redis, uptime) |
 
 **Example:**
 ```bash
@@ -429,8 +541,8 @@ lsvault admin users list
 # View system stats
 lsvault admin stats
 
-# View audit logs
-lsvault audit logs --limit 100 --filter-action document.created
+# View system health
+lsvault admin health
 ```
 
 ## 🔄 Sync & Watch Mode
@@ -562,8 +674,6 @@ Sync configurations are stored per vault in `~/.lsvault/sync/`:
 |----------|-------------|---------|
 | `LSVAULT_API_URL` | API server base URL | `https://vault.lifestreamdynamics.com` |
 | `LSVAULT_API_KEY` | API key for authentication | - |
-| `LSVAULT_CONFIG_DIR` | Configuration directory | `~/.lsvault` |
-| `LSVAULT_PROFILE` | Active configuration profile | `default` |
 
 **Example:**
 ```bash
@@ -646,7 +756,7 @@ lsvault sync watch sync_xyz789
 
 ```bash
 # Search for documents
-lsvault search "quarterly report" --vault vault_abc123 --json
+lsvault search "quarterly report" --vault vault_abc123 -o json
 
 # Create a share link for the found document
 lsvault shares create vault_abc123 /reports/Q4-2025.md \
@@ -664,8 +774,8 @@ lsvault publish create vault_abc123 /blog/announcement.md \
 # Create a team
 lsvault teams create --name "Product Team" --description "Product docs"
 
-# Create a shared vault
-lsvault vaults create --name "Product Docs" --team team_abc123
+# Create a vault
+lsvault vaults create "Product Docs" --description "Product documentation"
 
 # Invite team members
 lsvault teams invite team_abc123 --email pm@example.com --role admin
@@ -689,7 +799,7 @@ lsvault keys create \
 
 # Use API key in scripts
 export LSVAULT_API_KEY=lsv_k_generated_key
-lsvault vaults list --json | jq '.[] | .name'
+lsvault vaults list -o json | jq '.[] | .name'
 ```
 
 ## 🐛 Troubleshooting
@@ -762,11 +872,11 @@ lsvault auth migrate
 
 **Problem:** Need machine-readable output
 
-**Solution:** Use `--json` or `--quiet` flags:
+**Solution:** Use `-o json` (or `--output json`) or `--quiet` flags:
 ```bash
-lsvault vaults list --json
-lsvault search "query" --json | jq '.[] | .path'
-lsvault docs get vault_abc123 /path.md --quiet > output.md
+lsvault vaults list -o json
+lsvault search "query" -o json | jq '.[] | .path'
+lsvault docs get vault_abc123 path.md --quiet > output.md
 ```
 
 ## 🔗 Related Packages

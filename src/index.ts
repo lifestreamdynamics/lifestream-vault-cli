@@ -1,5 +1,8 @@
 #!/usr/bin/env node
+import { createRequire } from 'node:module';
 import { Command } from 'commander';
+const require = createRequire(import.meta.url);
+const pkg = require('../package.json') as { version: string };
 import { registerAuthCommands } from './commands/auth.js';
 import { registerMfaCommands } from './commands/mfa.js';
 import { registerVaultCommands } from './commands/vaults.js';
@@ -35,7 +38,7 @@ const program = new Command();
 program
   .name('lsvault')
   .description('Lifestream Vault CLI - manage vaults, documents, and settings')
-  .version('0.1.0')
+  .version(pkg.version)
   .addHelpText('after', `
 GETTING STARTED
   lsvault auth login --email <email>         Log in with email/password

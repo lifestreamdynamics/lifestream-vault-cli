@@ -33,6 +33,10 @@ export const createSDKMock = () => ({
   },
   ai: {
     chat: vi.fn(),
+    listSessions: vi.fn(),
+    getSession: vi.fn(),
+    deleteSession: vi.fn(),
+    summarize: vi.fn(),
   },
   apiKeys: {
     list: vi.fn(),
@@ -74,6 +78,9 @@ export const createSDKMock = () => ({
     getDue: vi.fn(),
     getAgenda: vi.fn(),
     getICalFeed: vi.fn(),
+    getCalendar: vi.fn(),
+    getCalendarActivity: vi.fn(),
+    getCalendarEvents: vi.fn(),
   },
   admin: {
     getStats: vi.fn(),
@@ -105,6 +112,15 @@ export const createSDKMock = () => ({
     create: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    getSubdomain: vi.fn(),
+    setSubdomain: vi.fn(),
+    deleteSubdomain: vi.fn(),
+  },
+  publishVault: {
+    listMine: vi.fn(),
+    publish: vi.fn(),
+    update: vi.fn(),
+    unpublish: vi.fn(),
   },
   hooks: {
     list: vi.fn(),
@@ -183,6 +199,39 @@ export const createSDKMock = () => ({
   },
   collaboration: {
     getWebSocketUrl: vi.fn(),
+  },
+  analytics: {
+    getPublishedSummary: vi.fn(),
+    getShareAnalytics: vi.fn(),
+    getPublishedDocAnalytics: vi.fn(),
+  },
+  customDomains: {
+    list: vi.fn(),
+    get: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+    verify: vi.fn(),
+    checkDns: vi.fn(),
+  },
+  booking: {
+    listSlots: vi.fn(),
+    createSlot: vi.fn(),
+    updateSlot: vi.fn(),
+    deleteSlot: vi.fn(),
+    getAvailability: vi.fn(),
+    listBookings: vi.fn(),
+    getBooking: vi.fn(),
+    updateBookingStatus: vi.fn(),
+    listTemplates: vi.fn(),
+    createTemplate: vi.fn(),
+    updateTemplate: vi.fn(),
+    deleteTemplate: vi.fn(),
+    getWaitlist: vi.fn(),
+    joinWaitlist: vi.fn(),
+    leaveWaitlist: vi.fn(),
+    rescheduleBooking: vi.fn(),
+    getBookingAnalytics: vi.fn(),
   },
 });
 
