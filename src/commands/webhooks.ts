@@ -126,10 +126,15 @@ export function registerWebhookCommands(program: Command): void {
   addGlobalFlags(webhooks.command('delete')
     .description('Delete a webhook')
     .argument('<vaultId>', 'Vault ID')
-    .argument('<webhookId>', 'Webhook ID'))
+    .argument('<webhookId>', 'Webhook ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, webhookId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!_opts.yes) {
+        out.status(chalk.yellow(`Pass --yes to delete webhook ${webhookId}.`));
+        return;
+      }
       out.startSpinner('Deleting webhook...');
       try {
         const client = await getClientAsync();

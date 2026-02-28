@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import { getClientAsync } from '../client.js';
+import { promptPassword, promptMfaCode } from '../utils/prompt.js';
 
 export function registerMfaCommands(program: Command): void {
   const mfa = program.command('mfa').description('Multi-factor authentication management');
@@ -166,81 +167,4 @@ export function registerMfaCommands(program: Command): void {
         }
       }
     });
-}
-
-/**
- * Prompt for a password from stdin (non-echoing).
- * Returns the password or null if stdin is not a TTY.
- */
-async function promptPassword(): Promise<string | null> {
-  if (!process.stdin.isTTY) {
-    return null;
-  }
-
-  const readline = await import('node:readline');
-
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stderr,
-      terminal: true,
-    });
-
-    process.stderr.write('Password: ');
-    (process.stdin as NodeJS.ReadStream).setRawMode?.(true);
-
-    let password = '';
-    const onData = (chunk: Buffer) => {
-      const char = chunk.toString('utf-8');
-      if (char === '\n' || char === '\r' || char === '\u0004') {
-        process.stderr.write('\n');
-        (process.stdin as NodeJS.ReadStream).setRawMode?.(false);
-        process.stdin.removeListener('data', onData);
-        rl.close();
-        resolve(password);
-      } else if (char === '\u0003') {
-        // Ctrl+C
-        process.stderr.write('\n');
-        (process.stdin as NodeJS.ReadStream).setRawMode?.(false);
-        process.stdin.removeListener('data', onData);
-        rl.close();
-        resolve(null);
-      } else if (char === '\u007F' || char === '\b') {
-        // Backspace
-        if (password.length > 0) {
-          password = password.slice(0, -1);
-        }
-      } else {
-        password += char;
-      }
-    };
-
-    process.stdin.on('data', onData);
-    process.stdin.resume();
-  });
-}
-
-/**
- * Prompt for an MFA code from stdin (6 digits, echoed for visibility).
- * Returns the code or null if stdin is not a TTY.
- */
-async function promptMfaCode(): Promise<string | null> {
-  if (!process.stdin.isTTY) {
-    return null;
-  }
-
-  const readline = await import('node:readline');
-
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stderr,
-      terminal: true,
-    });
-
-    rl.question('Enter 6-digit code from authenticator app: ', (answer) => {
-      rl.close();
-      resolve(answer.trim() || null);
-    });
-  });
 }

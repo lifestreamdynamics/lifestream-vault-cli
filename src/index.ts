@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 import { createRequire } from 'node:module';
 import { Command } from 'commander';
+import chalk from 'chalk';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version: string };
+
+// Apply --no-color / NO_COLOR at startup so it takes effect for all output,
+// including messages printed before any action handler runs.
+if (process.argv.includes('--no-color') || process.env.NO_COLOR !== undefined) {
+  chalk.level = 0;
+}
 import { registerAuthCommands } from './commands/auth.js';
 import { registerMfaCommands } from './commands/mfa.js';
 import { registerVaultCommands } from './commands/vaults.js';

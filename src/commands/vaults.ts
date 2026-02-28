@@ -4,7 +4,7 @@ import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { generateVaultKey } from '@lifestreamdynamics/vault-sdk';
-import { createCredentialManager } from '../lib/credential-manager.js';
+import { getCredentialManager } from '../config.js';
 
 export function registerVaultCommands(program: Command): void {
   const vaults = program.command('vaults').description('Create, list, and inspect document vaults');
@@ -91,7 +91,7 @@ EXAMPLES
 
         if (isEncrypted) {
           const key = generateVaultKey();
-          const credManager = createCredentialManager();
+          const credManager = getCredentialManager();
           await credManager.saveVaultKey(vault.id, key);
 
           out.success(`Encrypted vault created: ${chalk.cyan(vault.name)} (${vault.slug})`, {
@@ -101,10 +101,13 @@ EXAMPLES
             encrypted: true,
             vaultKey: key,
           });
-          out.warn('IMPORTANT: Save this encryption key securely. If lost, your data cannot be recovered.');
-          out.status(`Vault Key: ${chalk.green(key)}`);
-          out.status(chalk.dim('The key has been saved to your credential store.'));
-          out.status(chalk.dim('You can export it later with: lsvault vaults export-key ' + vault.id));
+          // Always write key warning to stderr — even in JSON mode the caller must not miss this.
+          process.stderr.write(chalk.yellow('WARNING: Save this encryption key securely. If lost, your data cannot be recovered.\n'));
+          if (flags.output !== 'json') {
+            out.status(`Vault Key: ${chalk.green(key)}`);
+            out.status(chalk.dim('The key has been saved to your credential store.'));
+            out.status(chalk.dim('You can export it later with: lsvault vaults export-key ' + vault.id));
+          }
           out.warn('Encrypted vaults disable: full-text search, AI features, hooks, and webhooks.');
         } else {
           out.success(`Vault created: ${chalk.cyan(vault.name)} (${vault.slug})`, {
@@ -125,7 +128,7 @@ EXAMPLES
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       try {
-        const credManager = createCredentialManager();
+        const credManager = getCredentialManager();
         const key = await credManager.getVaultKey(vaultId);
         if (!key) {
           out.error('No encryption key found for vault ' + vaultId);
@@ -153,7 +156,7 @@ EXAMPLES
           process.exitCode = 1;
           return;
         }
-        const credManager = createCredentialManager();
+        const credManager = getCredentialManager();
         await credManager.saveVaultKey(vaultId, keyValue);
         out.success('Vault encryption key saved successfully.', { vaultId });
       } catch (err) {
@@ -352,6 +355,14 @@ EXAMPLES
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+
+      // Require an explicit --require or --no-require flag to avoid silent side-effects.
+      if (_opts.require === undefined) {
+        out.error('You must pass --require or --no-require to set the MFA policy.');
+        process.exitCode = 1;
+        return;
+      }
+
       out.startSpinner('Updating MFA config...');
       try {
         const client = await getClientAsync();

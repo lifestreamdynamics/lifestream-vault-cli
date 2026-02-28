@@ -11,6 +11,8 @@ import {
   deleteProfile,
 } from '../lib/profiles.js';
 
+const SENSITIVE_KEY_PATTERN = /key|token|secret|password|credential/i;
+
 export function registerConfigCommands(program: Command): void {
   const config = program
     .command('config')
@@ -38,7 +40,7 @@ EXAMPLES
     .action((key: string, value: string, opts: { profile?: string }) => {
       const profile = resolveProfileName(opts.profile);
       setProfileValue(profile, key, value);
-      console.log(chalk.green(`Set ${chalk.bold(key)} in profile ${chalk.bold(profile)}`));
+      process.stdout.write(chalk.green(`Set ${chalk.bold(key)} in profile ${chalk.bold(profile)}`) + '\n');
     });
 
   config
@@ -54,9 +56,9 @@ EXAMPLES
       const profile = resolveProfileName(opts.profile);
       const value = getProfileValue(profile, key);
       if (value !== undefined) {
-        console.log(value);
+        process.stdout.write(value + '\n');
       } else {
-        console.log(chalk.yellow(`Key "${key}" not set in profile "${profile}"`));
+        process.stdout.write(chalk.yellow(`Key "${key}" not set in profile "${profile}"`) + '\n');
       }
     });
 
@@ -74,18 +76,18 @@ EXAMPLES
       const keys = Object.keys(profileConfig);
 
       if (keys.length === 0) {
-        console.log(chalk.yellow(`Profile "${profile}" has no configuration values.`));
+        process.stdout.write(chalk.yellow(`Profile "${profile}" has no configuration values.`) + '\n');
         return;
       }
 
-      console.log(chalk.bold(`Profile: ${profile}\n`));
+      process.stdout.write(chalk.bold(`Profile: ${profile}\n`) + '\n');
       for (const key of keys) {
         const value = profileConfig[key];
-        // Mask API keys for display
-        const display = key.toLowerCase().includes('key') && value
+        // Mask sensitive values for display
+        const display = SENSITIVE_KEY_PATTERN.test(key) && value
           ? value.slice(0, 12) + '...'
           : value;
-        console.log(`  ${chalk.cyan(key)}: ${display}`);
+        process.stdout.write(`  ${chalk.cyan(key)}: ${display}\n`);
       }
     });
 
@@ -99,7 +101,7 @@ EXAMPLES
   lsvault config use dev`)
     .action((name: string) => {
       setActiveProfile(name);
-      console.log(chalk.green(`Active profile set to ${chalk.bold(name)}`));
+      process.stdout.write(chalk.green(`Active profile set to ${chalk.bold(name)}`) + '\n');
     });
 
   config
@@ -113,15 +115,15 @@ EXAMPLES
       const active = getActiveProfile();
 
       if (profiles.length === 0) {
-        console.log(chalk.yellow('No profiles configured.'));
-        console.log(chalk.dim('Create one with: lsvault config set <key> <value> --profile <name>'));
+        process.stdout.write(chalk.yellow('No profiles configured.') + '\n');
+        process.stdout.write(chalk.dim('Create one with: lsvault config set <key> <value> --profile <name>') + '\n');
         return;
       }
 
-      console.log(chalk.bold('Available profiles:\n'));
+      process.stdout.write(chalk.bold('Available profiles:\n') + '\n');
       for (const name of profiles) {
         const marker = name === active ? chalk.green(' (active)') : '';
-        console.log(`  ${chalk.cyan(name)}${marker}`);
+        process.stdout.write(`  ${chalk.cyan(name)}${marker}\n`);
       }
     });
 
@@ -134,9 +136,9 @@ EXAMPLES
   lsvault config delete staging`)
     .action((name: string) => {
       if (deleteProfile(name)) {
-        console.log(chalk.green(`Profile "${name}" deleted.`));
+        process.stdout.write(chalk.green(`Profile "${name}" deleted.`) + '\n');
       } else {
-        console.log(chalk.yellow(`Profile "${name}" not found.`));
+        process.stdout.write(chalk.yellow(`Profile "${name}" not found.`) + '\n');
       }
     });
 
@@ -145,6 +147,6 @@ EXAMPLES
     .description('Show the active profile name')
     .action(() => {
       const active = getActiveProfile();
-      console.log(active);
+      process.stdout.write(active + '\n');
     });
 }

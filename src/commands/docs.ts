@@ -3,7 +3,8 @@ import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
-import { createCredentialManager } from '../lib/credential-manager.js';
+import { getCredentialManager } from '../config.js';
+import { confirmAction } from '../utils/confirm.js';
 
 export function registerDocCommands(program: Command): void {
   const docs = program.command('docs').description('Read, write, move, and delete documents in a vault');
@@ -73,7 +74,7 @@ EXAMPLES
 
         // Auto-decrypt if the document is encrypted
         if (result.document.encrypted && !_opts.meta) {
-          const credManager = createCredentialManager();
+          const credManager = getCredentialManager();
           const vaultKey = await credManager.getVaultKey(vaultId);
           if (!vaultKey) {
             out.error('Document is encrypted but no vault key found.');
@@ -133,7 +134,7 @@ EXAMPLES
         const vault = await client.vaults.get(vaultId);
         let doc;
         if (vault.encryptionEnabled) {
-          const credManager = createCredentialManager();
+          const credManager = getCredentialManager();
           const vaultKey = await credManager.getVaultKey(vaultId);
           if (!vaultKey) {
             out.failSpinner('Failed to save document');
@@ -159,12 +160,21 @@ EXAMPLES
   addGlobalFlags(docs.command('delete')
     .description('Permanently delete a document from a vault')
     .argument('<vaultId>', 'Vault ID')
-    .argument('<path>', 'Document path to delete'))
+    .argument('<path>', 'Document path to delete')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, docPath: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      out.startSpinner('Deleting document...');
       try {
+        const confirmed = await confirmAction(
+          `Permanently delete "${docPath}" from vault ${vaultId}?`,
+          { yes: _opts.yes as boolean | undefined },
+        );
+        if (!confirmed) {
+          out.status('Deletion cancelled.');
+          return;
+        }
+        out.startSpinner('Deleting document...');
         const client = await getClientAsync();
         await client.documents.delete(vaultId, docPath);
         out.success(`Deleted: ${chalk.cyan(docPath)}`, { path: docPath, deleted: true });

@@ -52,6 +52,9 @@ export function registerSyncCommands(program: Command): void {
 
         const mode = (_opts.mode as SyncMode | undefined) ?? 'sync';
         const onConflict = (_opts.onConflict as ConflictStrategy | undefined) ?? 'newer';
+        if (!_opts.onConflict) {
+          out.warn('No --on-conflict strategy specified; defaulting to "newer" (keeps the file with the more recent modification time). Use --on-conflict local|remote|ask to override.');
+        }
         const ignore = _opts.ignore as string[] | undefined;
         const syncInterval = _opts.interval as string | undefined;
         const autoSync = _opts.autoSync === true;

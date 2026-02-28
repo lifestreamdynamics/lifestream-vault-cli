@@ -22,11 +22,13 @@ vi.mock('../client.js', () => ({
 }));
 
 // Mock credential manager for encryption tests
-vi.mock('../lib/credential-manager.js', () => ({
-  createCredentialManager: vi.fn(() => ({
+vi.mock('../config.js', () => ({
+  getCredentialManager: vi.fn(() => ({
     saveVaultKey: vi.fn(async () => {}),
     getVaultKey: vi.fn(async () => null),
   })),
+  loadConfigAsync: vi.fn(async () => ({ apiUrl: 'https://test.example.com', apiKey: 'lsv_k_test' })),
+  DEFAULT_API_URL: 'https://vault.lifestreamdynamics.com',
 }));
 
 // Mock SDK generateVaultKey

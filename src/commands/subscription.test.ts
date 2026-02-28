@@ -165,29 +165,41 @@ describe('subscription commands', () => {
   });
 
   describe('subscription cancel', () => {
-    it('should cancel with reason', async () => {
+    it('should cancel with reason when --yes is provided', async () => {
       sdkMock.subscription.cancel.mockResolvedValue(undefined);
 
       await program.parseAsync([
         'node', 'cli', 'subscription', 'cancel',
-        '--reason', 'Too expensive',
+        '--reason', 'Too expensive', '--yes',
       ]);
 
       expect(sdkMock.subscription.cancel).toHaveBeenCalledWith('Too expensive');
     });
 
-    it('should cancel without reason', async () => {
+    it('should cancel without reason when --yes is provided', async () => {
       sdkMock.subscription.cancel.mockResolvedValue(undefined);
+
+      await program.parseAsync(['node', 'cli', 'subscription', 'cancel', '--yes']);
+
+      expect(sdkMock.subscription.cancel).toHaveBeenCalledWith(undefined);
+    });
+
+    it('should abort when non-interactive and --yes not provided', async () => {
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
 
       await program.parseAsync(['node', 'cli', 'subscription', 'cancel']);
 
-      expect(sdkMock.subscription.cancel).toHaveBeenCalledWith(undefined);
+      // SDK should NOT have been called because the action threw before reaching it
+      expect(sdkMock.subscription.cancel).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('non-interactive');
+      expect(process.exitCode).toBe(1);
     });
 
     it('should handle errors', async () => {
       sdkMock.subscription.cancel.mockRejectedValue(new Error('No active subscription'));
 
-      await program.parseAsync(['node', 'cli', 'subscription', 'cancel']);
+      await program.parseAsync(['node', 'cli', 'subscription', 'cancel', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('No active subscription');

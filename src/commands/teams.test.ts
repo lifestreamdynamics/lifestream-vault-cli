@@ -172,7 +172,7 @@ describe('teams commands', () => {
     it('should delete a team', async () => {
       sdkMock.teams.delete.mockResolvedValue(undefined);
 
-      await program.parseAsync(['node', 'cli', 'teams', 'delete', 't1']);
+      await program.parseAsync(['node', 'cli', 'teams', 'delete', 't1', '--yes']);
 
       expect(sdkMock.teams.delete).toHaveBeenCalledWith('t1');
     });
@@ -180,7 +180,7 @@ describe('teams commands', () => {
     it('should handle deletion errors', async () => {
       sdkMock.teams.delete.mockRejectedValue(new Error('Not owner'));
 
-      await program.parseAsync(['node', 'cli', 'teams', 'delete', 't1']);
+      await program.parseAsync(['node', 'cli', 'teams', 'delete', 't1', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Not owner');
@@ -193,8 +193,8 @@ describe('teams commands', () => {
   describe('teams members list', () => {
     it('should list team members', async () => {
       sdkMock.teams.listMembers.mockResolvedValue([
-        { id: 'm1', teamId: 't1', userId: 'u1', role: 'owner', joinedAt: '2024-01-01', user: { id: 'u1', email: 'owner@test.com', name: 'Owner' } },
-        { id: 'm2', teamId: 't1', userId: 'u2', role: 'member', joinedAt: '2024-01-02', user: { id: 'u2', email: 'member@test.com', name: null } },
+        { id: 'm1', teamId: 't1', userId: 'u1', role: 'owner', joinedAt: '2024-01-01', user: { id: 'u1', email: 'owner@test.com', displayName: 'Owner' } },
+        { id: 'm2', teamId: 't1', userId: 'u2', role: 'member', joinedAt: '2024-01-02', user: { id: 'u2', email: 'member@test.com', displayName: null } },
       ]);
 
       await program.parseAsync(['node', 'cli', 'teams', 'members', 'list', 't1']);
@@ -219,7 +219,7 @@ describe('teams commands', () => {
   describe('teams members update', () => {
     it('should update a member role', async () => {
       sdkMock.teams.updateMemberRole.mockResolvedValue({
-        id: 'm2', teamId: 't1', userId: 'u2', role: 'admin', joinedAt: '2024-01-02', user: { id: 'u2', email: 'user@test.com', name: 'User' },
+        id: 'm2', teamId: 't1', userId: 'u2', role: 'admin', joinedAt: '2024-01-02', user: { id: 'u2', email: 'user@test.com', displayName: 'User' },
       });
 
       await program.parseAsync(['node', 'cli', 'teams', 'members', 'update', 't1', 'u2', '--role', 'admin']);
@@ -242,7 +242,7 @@ describe('teams commands', () => {
     it('should remove a member', async () => {
       sdkMock.teams.removeMember.mockResolvedValue(undefined);
 
-      await program.parseAsync(['node', 'cli', 'teams', 'members', 'remove', 't1', 'u2']);
+      await program.parseAsync(['node', 'cli', 'teams', 'members', 'remove', 't1', 'u2', '--yes']);
 
       expect(sdkMock.teams.removeMember).toHaveBeenCalledWith('t1', 'u2');
     });
@@ -250,7 +250,7 @@ describe('teams commands', () => {
     it('should handle removal errors', async () => {
       sdkMock.teams.removeMember.mockRejectedValue(new Error('Cannot remove owner'));
 
-      await program.parseAsync(['node', 'cli', 'teams', 'members', 'remove', 't1', 'u1']);
+      await program.parseAsync(['node', 'cli', 'teams', 'members', 'remove', 't1', 'u1', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Cannot remove owner');

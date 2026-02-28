@@ -103,7 +103,9 @@ export function createRemotePoller(
             if (resolution === 'remote') {
               conflictFile = createConflictFile(config.localPath, doc.path, localContent, 'local');
               onLocalWrite?.(doc.path);
-              fs.writeFileSync(localFile, content, 'utf-8');
+              const tmpConflict = localFile + '.tmp';
+              fs.writeFileSync(tmpConflict, content, 'utf-8');
+              fs.renameSync(tmpConflict, localFile);
               log(`Conflict: ${doc.path} — used remote, saved local as ${conflictFile}`);
             } else {
               conflictFile = createConflictFile(config.localPath, doc.path, content, 'remote');
@@ -122,13 +124,15 @@ export function createRemotePoller(
           }
         }
 
-        // No conflict — download the file
+        // No conflict — download the file atomically
         const dir = path.dirname(localFile);
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
         onLocalWrite?.(doc.path);
-        fs.writeFileSync(localFile, content, 'utf-8');
+        const tmpFile = localFile + '.tmp';
+        fs.writeFileSync(tmpFile, content, 'utf-8');
+        fs.renameSync(tmpFile, localFile);
         log(`Pulled: ${doc.path}`);
         changes++;
 

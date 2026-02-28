@@ -13,6 +13,8 @@ export interface CliConfig {
   apiKey?: string;
   accessToken?: string;
   refreshToken?: string;
+  /** Per-vault client-side encryption keys, keyed by vaultId */
+  vaultKeys?: Record<string, string>;
 }
 
 // Singleton credential manager
@@ -105,7 +107,7 @@ export async function loadConfigAsync(): Promise<CliConfig> {
 
 export function saveConfig(config: Partial<CliConfig>): void {
   if (!fs.existsSync(CONFIG_DIR)) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   }
 
   let existing: Record<string, unknown> = {};
@@ -114,5 +116,5 @@ export function saveConfig(config: Partial<CliConfig>): void {
   }
 
   const merged = { ...existing, ...config };
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2) + '\n');
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2) + '\n', { mode: 0o600 });
 }

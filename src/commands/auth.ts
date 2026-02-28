@@ -5,6 +5,7 @@ import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import { loadConfig, loadConfigAsync, getCredentialManager } from '../config.js';
 import { getClientAsync } from '../client.js';
 import { migrateCredentials, hasPlaintextCredentials, checkAndPromptMigration } from '../lib/migration.js';
+import { promptPassword, promptMfaCode } from '../utils/prompt.js';
 
 export function registerAuthCommands(program: Command): void {
   const auth = program.command('auth').description('Authentication and credential management');
@@ -42,6 +43,7 @@ EXAMPLES
         const password = opts.password ?? await promptPassword();
         if (!password) {
           console.error(chalk.red('Password is required for email login.'));
+          process.exitCode = 1;
           return;
         }
 
@@ -80,7 +82,7 @@ EXAMPLES
           });
 
           spinner.succeed(`Logged in as ${chalk.cyan(tokens.user.email)}`);
-          console.log(`  Name: ${tokens.user.name || chalk.dim('not set')}`);
+          console.log(`  Name: ${tokens.user.displayName || chalk.dim('not set')}`);
           console.log(`  Role: ${tokens.user.role}`);
 
           if (!refreshToken) {
@@ -89,6 +91,7 @@ EXAMPLES
         } catch (err) {
           spinner.fail('Login failed');
           console.error(err instanceof Error ? err.message : String(err));
+          process.exitCode = 1;
         }
         return;
       }
@@ -103,6 +106,7 @@ EXAMPLES
         } catch (err) {
           spinner.fail('Failed to save API key to secure storage');
           console.error(err instanceof Error ? err.message : String(err));
+          process.exitCode = 1;
         }
         return;
       }
@@ -121,6 +125,7 @@ EXAMPLES
 
       if (!config.refreshToken) {
         console.error(chalk.red('No refresh token stored. Login first with --email.'));
+        process.exitCode = 1;
         return;
       }
 
@@ -146,6 +151,7 @@ EXAMPLES
         spinner.fail('Token refresh failed');
         console.error(err instanceof Error ? err.message : String(err));
         console.log(chalk.dim('You may need to log in again: lsvault auth login --email <email>'));
+        process.exitCode = 1;
       }
     });
 
@@ -227,123 +233,16 @@ EXAMPLES
           const user = await client.user.me();
           spinner.stop();
           console.log(`User:    ${chalk.cyan(user.email)}`);
-          console.log(`Name:    ${user.name || chalk.dim('not set')}`);
+          console.log(`Name:    ${user.displayName || chalk.dim('not set')}`);
           console.log(`Role:    ${user.role}`);
           console.log(`Plan:    ${chalk.green(user.subscriptionTier)}`);
         } catch (err) {
           spinner.fail('Could not fetch user info');
-          console.error(err instanceof Error ? err.message : err);
+          console.error(err instanceof Error ? err.message : String(err));
+          process.exitCode = 1;
         }
       }
     });
-}
-
-/**
- * Prompt for a password from stdin (non-echoing).
- * Returns the password or null if stdin is not a TTY.
- */
-async function promptPassword(): Promise<string | null> {
-  // In non-interactive mode, cannot prompt
-  if (!process.stdin.isTTY) {
-    return null;
-  }
-
-  const readline = await import('node:readline');
-
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stderr,
-      terminal: true,
-    });
-
-    // Disable echoing
-    process.stderr.write('Password: ');
-    (process.stdin as NodeJS.ReadStream).setRawMode?.(true);
-
-    let password = '';
-    const onData = (chunk: Buffer) => {
-      const char = chunk.toString('utf-8');
-      if (char === '\n' || char === '\r' || char === '\u0004') {
-        process.stderr.write('\n');
-        (process.stdin as NodeJS.ReadStream).setRawMode?.(false);
-        process.stdin.removeListener('data', onData);
-        rl.close();
-        resolve(password);
-      } else if (char === '\u0003') {
-        // Ctrl+C
-        process.stderr.write('\n');
-        (process.stdin as NodeJS.ReadStream).setRawMode?.(false);
-        process.stdin.removeListener('data', onData);
-        rl.close();
-        resolve(null);
-      } else if (char === '\u007F' || char === '\b') {
-        // Backspace
-        if (password.length > 0) {
-          password = password.slice(0, -1);
-        }
-      } else {
-        password += char;
-      }
-    };
-
-    process.stdin.on('data', onData);
-    process.stdin.resume();
-  });
-}
-
-/**
- * Prompt for an MFA code from stdin (6 digits, non-echoing).
- * Returns the code or null if stdin is not a TTY.
- */
-async function promptMfaCode(): Promise<string | null> {
-  // In non-interactive mode, cannot prompt
-  if (!process.stdin.isTTY) {
-    return null;
-  }
-
-  const readline = await import('node:readline');
-
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stderr,
-      terminal: true,
-    });
-
-    // Disable echoing
-    process.stderr.write('MFA code: ');
-    (process.stdin as NodeJS.ReadStream).setRawMode?.(true);
-
-    let code = '';
-    const onData = (chunk: Buffer) => {
-      const char = chunk.toString('utf-8');
-      if (char === '\n' || char === '\r' || char === '\u0004') {
-        process.stderr.write('\n');
-        (process.stdin as NodeJS.ReadStream).setRawMode?.(false);
-        process.stdin.removeListener('data', onData);
-        rl.close();
-        resolve(code);
-      } else if (char === '\u0003') {
-        // Ctrl+C
-        process.stderr.write('\n');
-        (process.stdin as NodeJS.ReadStream).setRawMode?.(false);
-        process.stdin.removeListener('data', onData);
-        rl.close();
-        resolve(null);
-      } else if (char === '\u007F' || char === '\b') {
-        // Backspace
-        if (code.length > 0) {
-          code = code.slice(0, -1);
-        }
-      } else {
-        code += char;
-      }
-    };
-
-    process.stdin.on('data', onData);
-    process.stdin.resume();
-  });
 }
 
 function formatMethod(method: string): string {

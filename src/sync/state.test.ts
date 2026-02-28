@@ -69,7 +69,7 @@ describe('sync state', () => {
       });
       expect(mockedFs.mkdirSync).toHaveBeenCalledWith(
         expect.stringContaining('sync-state'),
-        { recursive: true },
+        { recursive: true, mode: 0o700 },
       );
     });
 
@@ -86,6 +86,7 @@ describe('sync state', () => {
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
         expect.stringContaining('sync-1.json'),
         expect.any(String),
+        { mode: 0o600 },
       );
 
       // updatedAt should have been set

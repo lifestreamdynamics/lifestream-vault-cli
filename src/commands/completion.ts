@@ -1,10 +1,15 @@
 import type { Command } from 'commander';
 
+const SAFE_COMMAND_NAME = /^[a-z][a-z0-9-]*$/;
+
 function collectCommandNames(cmd: Command, prefix = ''): string[] {
   const names: string[] = [];
   for (const sub of cmd.commands) {
-    const full = prefix ? `${prefix} ${sub.name()}` : sub.name();
-    names.push(sub.name());
+    const name = sub.name();
+    // Skip any name that doesn't match the safe pattern to prevent shell injection
+    if (!SAFE_COMMAND_NAME.test(name)) continue;
+    const full = prefix ? `${prefix} ${name}` : name;
+    names.push(name);
     names.push(...collectCommandNames(sub, full));
   }
   return names;

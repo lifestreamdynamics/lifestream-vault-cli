@@ -4,6 +4,12 @@ import { registerShareCommands } from './shares.js';
 import { createSDKMock, type SDKMock } from '../__tests__/mocks/sdk.js';
 import { spyOutput } from '../__tests__/setup.js';
 
+// Mock the prompt utilities so tests never try to read from a real TTY.
+vi.mock('../utils/prompt.js', () => ({
+  promptPassword: vi.fn(async () => null),
+  readPasswordFromStdin: vi.fn(async () => null),
+}));
+
 vi.mock('ora', () => ({
   default: vi.fn(() => ({
     start: vi.fn().mockReturnThis(),
@@ -19,6 +25,9 @@ vi.mock('../client.js', () => ({
   getClientAsync: vi.fn(async () => sdkMock),
 }));
 
+import { readPasswordFromStdin } from '../utils/prompt.js';
+const mockedReadPasswordFromStdin = vi.mocked(readPasswordFromStdin);
+
 describe('shares commands', () => {
   let program: Command;
   let outputSpy: ReturnType<typeof spyOutput>;
@@ -30,6 +39,7 @@ describe('shares commands', () => {
     sdkMock = createSDKMock();
     outputSpy = spyOutput();
     process.exitCode = undefined;
+    mockedReadPasswordFromStdin.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -107,7 +117,8 @@ describe('shares commands', () => {
       expect(stderr).toContain('IMPORTANT');
     });
 
-    it('should create a share link with all options', async () => {
+    it('should create a password-protected share link via --password-stdin', async () => {
+      mockedReadPasswordFromStdin.mockResolvedValueOnce('mypassword');
       sdkMock.shares.create.mockResolvedValue({
         shareLink: {
           id: 'sl2', documentId: 'd1', vaultId: 'v1', createdBy: 'u1',
@@ -120,7 +131,7 @@ describe('shares commands', () => {
       await program.parseAsync([
         'node', 'cli', 'shares', 'create', 'v1', 'docs/secret.md',
         '--permission', 'edit',
-        '--password', 'mypassword',
+        '--password-stdin',
         '--expires', '2025-12-31T00:00:00Z',
         '--max-views', '50',
       ]);
@@ -133,6 +144,20 @@ describe('shares commands', () => {
       });
       const stdout = outputSpy.stdout.join('');
       expect(stdout).toContain('xyz98765_secret');
+    });
+
+    it('should error when --password-stdin is set but stdin is empty', async () => {
+      mockedReadPasswordFromStdin.mockResolvedValueOnce(null);
+
+      await program.parseAsync([
+        'node', 'cli', 'shares', 'create', 'v1', 'docs/secret.md',
+        '--password-stdin',
+      ]);
+
+      expect(sdkMock.shares.create).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('no password was provided on stdin');
+      expect(process.exitCode).toBe(1);
     });
 
     it('should handle creation errors', async () => {

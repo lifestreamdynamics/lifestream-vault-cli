@@ -8,7 +8,7 @@ import { resolveIgnorePatterns } from './ignore.js';
 import { createWatcher } from './watcher.js';
 import { createRemotePoller } from './remote-poller.js';
 import { removePid } from './daemon.js';
-import { loadConfig } from '../config.js';
+import { loadConfigAsync } from '../config.js';
 import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import type { FSWatcher } from 'chokidar';
 import { scanLocalFiles, scanRemoteFiles, computePushDiff, computePullDiff, executePush, executePull } from './engine.js';
@@ -28,14 +28,21 @@ function log(msg: string): void {
   process.stdout.write(`[${ts}] ${msg}\n`);
 }
 
-function createClient(): LifestreamVaultClient {
-  const config = loadConfig();
-  if (!config.apiKey) {
-    throw new Error('No API key configured. Run `lsvault auth login` first.');
+async function createClient(): Promise<LifestreamVaultClient> {
+  const config = await loadConfigAsync();
+  if (!config.apiKey && !config.accessToken) {
+    throw new Error('No credentials configured. Run `lsvault auth login` first.');
+  }
+  if (config.accessToken) {
+    return new LifestreamVaultClient({
+      baseUrl: config.apiUrl,
+      accessToken: config.accessToken,
+      refreshToken: config.refreshToken,
+    });
   }
   return new LifestreamVaultClient({
     baseUrl: config.apiUrl,
-    apiKey: config.apiKey,
+    apiKey: config.apiKey!,
   });
 }
 
@@ -51,7 +58,7 @@ async function start(): Promise<void> {
 
   log(`Found ${configs.length} auto-sync configuration(s)`);
 
-  const client = createClient();
+  const client = await createClient();
 
   // Startup reconciliation: catch changes made while daemon was stopped
   for (const config of configs) {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { spyConsole } from '../__tests__/setup.js';
+import { spyOutput } from '../__tests__/setup.js';
 
 // Mock profiles module — factory must be self-contained (no external refs) due to hoisting
 vi.mock('../lib/profiles.js', () => ({
@@ -48,18 +48,18 @@ describe('config commands', () => {
 
   describe('config set', () => {
     it('should set a value in the resolved profile', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       const program = createProgram();
 
       await program.parseAsync(['node', 'lsvault', 'config', 'set', 'apiUrl', 'https://prod.com']);
 
       expect(mSetProfileValue).toHaveBeenCalledWith('default', 'apiUrl', 'https://prod.com');
-      expect(spy.logs.some(l => l.includes('apiUrl'))).toBe(true);
+      expect(spy.stdout.join('').includes('apiUrl')).toBe(true);
       spy.restore();
     });
 
     it('should use explicit --profile flag', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       mResolveProfileName.mockReturnValue('prod');
       const program = createProgram();
 
@@ -72,31 +72,31 @@ describe('config commands', () => {
 
   describe('config get', () => {
     it('should print the value for a key', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       mGetProfileValue.mockReturnValue('https://prod.com');
       const program = createProgram();
 
       await program.parseAsync(['node', 'lsvault', 'config', 'get', 'apiUrl']);
 
-      expect(spy.logs.some(l => l.includes('https://prod.com'))).toBe(true);
+      expect(spy.stdout.join('').includes('https://prod.com')).toBe(true);
       spy.restore();
     });
 
     it('should show a message when key is not set', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       mGetProfileValue.mockReturnValue(undefined);
       const program = createProgram();
 
       await program.parseAsync(['node', 'lsvault', 'config', 'get', 'missing']);
 
-      expect(spy.logs.some(l => l.includes('not set'))).toBe(true);
+      expect(spy.stdout.join('').includes('not set')).toBe(true);
       spy.restore();
     });
   });
 
   describe('config list', () => {
     it('should list all values in the profile', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       mLoadProfile.mockReturnValue({
         apiUrl: 'https://prod.com',
         apiKey: 'lsv_k_abc123def456',
@@ -105,100 +105,144 @@ describe('config commands', () => {
 
       await program.parseAsync(['node', 'lsvault', 'config', 'list']);
 
-      expect(spy.logs.some(l => l.includes('apiUrl'))).toBe(true);
-      expect(spy.logs.some(l => l.includes('https://prod.com'))).toBe(true);
+      const out = spy.stdout.join('');
+      expect(out.includes('apiUrl')).toBe(true);
+      expect(out.includes('https://prod.com')).toBe(true);
       // API key should be masked
-      expect(spy.logs.some(l => l.includes('lsv_k_abc123...'))).toBe(true);
+      expect(out.includes('lsv_k_abc123...')).toBe(true);
       spy.restore();
     });
 
     it('should show message for empty profile', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       mLoadProfile.mockReturnValue({});
       const program = createProgram();
 
       await program.parseAsync(['node', 'lsvault', 'config', 'list']);
 
-      expect(spy.logs.some(l => l.includes('no configuration values'))).toBe(true);
+      expect(spy.stdout.join('').includes('no configuration values')).toBe(true);
       spy.restore();
     });
   });
 
   describe('config use', () => {
     it('should set the active profile', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       const program = createProgram();
 
       await program.parseAsync(['node', 'lsvault', 'config', 'use', 'prod']);
 
       expect(mSetActiveProfile).toHaveBeenCalledWith('prod');
-      expect(spy.logs.some(l => l.includes('prod'))).toBe(true);
+      expect(spy.stdout.join('').includes('prod')).toBe(true);
       spy.restore();
     });
   });
 
   describe('config profiles', () => {
     it('should list available profiles', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       mListProfiles.mockReturnValue(['dev', 'prod', 'staging']);
       mGetActiveProfile.mockReturnValue('prod');
       const program = createProgram();
 
       await program.parseAsync(['node', 'lsvault', 'config', 'profiles']);
 
-      expect(spy.logs.some(l => l.includes('dev'))).toBe(true);
-      expect(spy.logs.some(l => l.includes('prod'))).toBe(true);
-      expect(spy.logs.some(l => l.includes('staging'))).toBe(true);
-      expect(spy.logs.some(l => l.includes('active'))).toBe(true);
+      const out = spy.stdout.join('');
+      expect(out.includes('dev')).toBe(true);
+      expect(out.includes('prod')).toBe(true);
+      expect(out.includes('staging')).toBe(true);
+      expect(out.includes('active')).toBe(true);
       spy.restore();
     });
 
     it('should show message when no profiles exist', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       mListProfiles.mockReturnValue([]);
       const program = createProgram();
 
       await program.parseAsync(['node', 'lsvault', 'config', 'profiles']);
 
-      expect(spy.logs.some(l => l.includes('No profiles configured'))).toBe(true);
+      expect(spy.stdout.join('').includes('No profiles configured')).toBe(true);
       spy.restore();
     });
   });
 
   describe('config delete', () => {
     it('should delete a profile', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       mDeleteProfile.mockReturnValue(true);
       const program = createProgram();
 
       await program.parseAsync(['node', 'lsvault', 'config', 'delete', 'staging']);
 
       expect(mDeleteProfile).toHaveBeenCalledWith('staging');
-      expect(spy.logs.some(l => l.includes('deleted'))).toBe(true);
+      expect(spy.stdout.join('').includes('deleted')).toBe(true);
       spy.restore();
     });
 
     it('should show message when profile not found', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       mDeleteProfile.mockReturnValue(false);
       const program = createProgram();
 
       await program.parseAsync(['node', 'lsvault', 'config', 'delete', 'nonexistent']);
 
-      expect(spy.logs.some(l => l.includes('not found'))).toBe(true);
+      expect(spy.stdout.join('').includes('not found')).toBe(true);
       spy.restore();
     });
   });
 
   describe('config current', () => {
     it('should print the active profile name', async () => {
-      const spy = spyConsole();
+      const spy = spyOutput();
       mGetActiveProfile.mockReturnValue('prod');
       const program = createProgram();
 
       await program.parseAsync(['node', 'lsvault', 'config', 'current']);
 
-      expect(spy.logs.some(l => l.includes('prod'))).toBe(true);
+      expect(spy.stdout.join('').includes('prod')).toBe(true);
+      spy.restore();
+    });
+  });
+
+  describe('config list masking', () => {
+    it('should mask keys containing "token"', async () => {
+      const spy = spyOutput();
+      mLoadProfile.mockReturnValue({ accessToken: 'secret-token-value-xyz' });
+      const program = createProgram();
+
+      await program.parseAsync(['node', 'lsvault', 'config', 'list']);
+
+      const out = spy.stdout.join('');
+      // 'secret-token-value-xyz'.slice(0, 12) = 'secret-token' + '...'
+      expect(out.includes('secret-token...')).toBe(true);
+      expect(out.includes('secret-token-value-xyz')).toBe(false);
+      spy.restore();
+    });
+
+    it('should mask keys containing "secret"', async () => {
+      const spy = spyOutput();
+      mLoadProfile.mockReturnValue({ hmacSecret: 'my-super-secret-value' });
+      const program = createProgram();
+
+      await program.parseAsync(['node', 'lsvault', 'config', 'list']);
+
+      const out = spy.stdout.join('');
+      // 'my-super-secret-value'.slice(0, 12) = 'my-super-sec' + '...'
+      expect(out.includes('my-super-sec...')).toBe(true);
+      spy.restore();
+    });
+
+    it('should mask keys containing "password"', async () => {
+      const spy = spyOutput();
+      mLoadProfile.mockReturnValue({ userPassword: 'hunter2' });
+      const program = createProgram();
+
+      await program.parseAsync(['node', 'lsvault', 'config', 'list']);
+
+      const out = spy.stdout.join('');
+      // 'hunter2'.slice(0, 12) = 'hunter2' + '...' (shorter than 12 chars)
+      expect(out.includes('hunter2...')).toBe(true);
       spy.restore();
     });
   });

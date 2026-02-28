@@ -63,9 +63,7 @@ describe('client', () => {
       apiUrl: 'https://vault.lifestreamdynamics.com',
     });
 
-    getClient();
-
-    expect(consoleSpy.errors.some(l => l.includes('No credentials configured'))).toBe(true);
-    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(() => getClient()).toThrow('No credentials configured');
+    expect(mockExit).not.toHaveBeenCalled();
   });
 });

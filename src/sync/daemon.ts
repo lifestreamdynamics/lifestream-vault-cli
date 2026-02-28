@@ -158,7 +158,8 @@ export function startDaemon(logFile?: string): { pid: number; lingerWarning?: st
   const logFd = fs.openSync(targetLog, 'a');
 
   // Spawn the daemon worker as a detached process
-  const workerPath = path.join(import.meta.dirname, 'daemon-worker.js');
+  // Use URL constructor for Node 20.0-20.10 compatibility (import.meta.dirname was added in 20.11).
+  const workerPath = path.join(path.dirname(new URL(import.meta.url).pathname), 'daemon-worker.js');
   const child = spawn(process.execPath, [workerPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],

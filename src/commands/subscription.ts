@@ -4,6 +4,7 @@ import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { formatBytes } from '../utils/format.js';
+import { confirmAction } from '../utils/confirm.js';
 
 export function registerSubscriptionCommands(program: Command): void {
   const sub = program.command('subscription').description('View plans, manage subscription, and access billing');
@@ -104,12 +105,21 @@ EXAMPLES
 
   addGlobalFlags(sub.command('cancel')
     .description('Cancel your current subscription')
-    .option('--reason <text>', 'Reason for cancellation'))
+    .option('--reason <text>', 'Reason for cancellation')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (_opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      out.startSpinner('Cancelling subscription...');
       try {
+        const confirmed = await confirmAction(
+          'Are you sure you want to cancel your subscription?',
+          { yes: _opts.yes as boolean | undefined },
+        );
+        if (!confirmed) {
+          out.status('Cancellation aborted.');
+          return;
+        }
+        out.startSpinner('Cancelling subscription...');
         const client = await getClientAsync();
         await client.subscription.cancel(_opts.reason as string | undefined);
         out.success('Subscription cancelled', { cancelled: true });

@@ -183,7 +183,7 @@ describe('publish commands', () => {
     it('should unpublish a document', async () => {
       sdkMock.publish.delete.mockResolvedValue(undefined);
 
-      await program.parseAsync(['node', 'cli', 'publish', 'delete', 'v1', 'blog/post.md']);
+      await program.parseAsync(['node', 'cli', 'publish', 'delete', 'v1', 'blog/post.md', '--yes']);
 
       expect(sdkMock.publish.delete).toHaveBeenCalledWith('v1', 'blog/post.md');
     });
@@ -191,7 +191,7 @@ describe('publish commands', () => {
     it('should handle delete errors', async () => {
       sdkMock.publish.delete.mockRejectedValue(new Error('Published document not found'));
 
-      await program.parseAsync(['node', 'cli', 'publish', 'delete', 'v1', 'missing.md']);
+      await program.parseAsync(['node', 'cli', 'publish', 'delete', 'v1', 'missing.md', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Published document not found');

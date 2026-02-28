@@ -180,7 +180,7 @@ describe('hooks commands', () => {
     it('should delete a hook', async () => {
       sdkMock.hooks.delete.mockResolvedValue(undefined);
 
-      await program.parseAsync(['node', 'cli', 'hooks', 'delete', 'v1', 'h1']);
+      await program.parseAsync(['node', 'cli', 'hooks', 'delete', 'v1', 'h1', '--yes']);
 
       expect(sdkMock.hooks.delete).toHaveBeenCalledWith('v1', 'h1');
     });
@@ -188,7 +188,7 @@ describe('hooks commands', () => {
     it('should handle delete errors', async () => {
       sdkMock.hooks.delete.mockRejectedValue(new Error('Hook not found'));
 
-      await program.parseAsync(['node', 'cli', 'hooks', 'delete', 'v1', 'h1']);
+      await program.parseAsync(['node', 'cli', 'hooks', 'delete', 'v1', 'h1', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Hook not found');

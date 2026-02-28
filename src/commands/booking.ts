@@ -171,6 +171,8 @@ export function registerBookingCommands(program: Command): void {
   // ---------------------------------------------------------------------------
   // booking list
   // ---------------------------------------------------------------------------
+  const VALID_BOOKING_STATUSES: Booking['status'][] = ['pending', 'confirmed', 'cancelled', 'no_show', 'completed'];
+
   addGlobalFlags(booking.command('list')
     .description('List bookings for a vault')
     .argument('<vaultId>', 'Vault ID')
@@ -181,11 +183,17 @@ export function registerBookingCommands(program: Command): void {
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      const bookingStatus = _opts.status as string | undefined;
+      if (bookingStatus && !VALID_BOOKING_STATUSES.includes(bookingStatus as Booking['status'])) {
+        out.error(`Invalid --status "${bookingStatus}". Must be one of: ${VALID_BOOKING_STATUSES.join(', ')}`);
+        process.exitCode = 1;
+        return;
+      }
       out.startSpinner('Loading bookings...');
       try {
         const client = await getClientAsync();
         const result = await client.booking.listBookings(vaultId, {
-          status: _opts.status as Booking['status'] | undefined,
+          status: bookingStatus as Booking['status'] | undefined,
           slotId: _opts.slotId as string | undefined,
           startAfter: _opts.from as string | undefined,
           startBefore: _opts.to as string | undefined,
@@ -331,13 +339,23 @@ export function registerBookingCommands(program: Command): void {
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+
+      let defaults: Record<string, unknown>;
+      try {
+        defaults = JSON.parse(_opts.defaults as string) as Record<string, unknown>;
+      } catch {
+        out.error('--defaults must be valid JSON (e.g. \'{"key":"value"}\')');
+        process.exitCode = 2;
+        return;
+      }
+
       out.startSpinner('Creating template...');
       try {
         const client = await getClientAsync();
         const created = await client.booking.createTemplate(vaultId, {
           name: _opts.name as string,
           description: _opts.description as string | undefined,
-          defaults: JSON.parse(_opts.defaults as string) as Record<string, unknown>,
+          defaults,
         });
         out.stopSpinner();
         if (flags.output === 'json') {
@@ -406,6 +424,9 @@ export function registerBookingCommands(program: Command): void {
   // ---------------------------------------------------------------------------
   // booking analytics (Business tier)
   // ---------------------------------------------------------------------------
+  const VALID_ANALYTICS_VIEWS = ['volume', 'funnel', 'peak-times'] as const;
+  type AnalyticsView = typeof VALID_ANALYTICS_VIEWS[number];
+
   addGlobalFlags(booking.command('analytics')
     .description('View booking analytics (Business tier)')
     .argument('<vaultId>', 'Vault ID')
@@ -416,11 +437,17 @@ export function registerBookingCommands(program: Command): void {
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      const analyticsView = _opts.view as string | undefined;
+      if (analyticsView && !VALID_ANALYTICS_VIEWS.includes(analyticsView as AnalyticsView)) {
+        out.error(`Invalid --view "${analyticsView}". Must be one of: ${VALID_ANALYTICS_VIEWS.join(', ')}`);
+        process.exitCode = 1;
+        return;
+      }
       out.startSpinner('Loading analytics...');
       try {
         const client = await getClientAsync();
         const result = await client.booking.getBookingAnalytics(vaultId, {
-          view: _opts.view as 'volume' | 'funnel' | 'peak-times' | undefined,
+          view: analyticsView as AnalyticsView | undefined,
           from: _opts.from as string | undefined,
           to: _opts.to as string | undefined,
           slotId: _opts.slotId as string | undefined,
@@ -433,7 +460,7 @@ export function registerBookingCommands(program: Command): void {
           if (result.data.length === 0) {
             out.status(chalk.dim('No data available.'));
           } else {
-            const columns = Object.keys(result.data[0]).map((k) => ({ key: k, header: k }));
+            const columns = Object.keys(result.data?.[0] ?? {}).map((k) => ({ key: k, header: k }));
             out.list(result.data as Array<Record<string, unknown>>, {
               emptyMessage: 'No data.',
               columns,
@@ -524,7 +551,8 @@ export function registerBookingCommands(program: Command): void {
     .argument('<groupId>', 'Group ID')
     .option('--name <name>', 'Group name')
     .option('--mode <mode>', 'Assignment mode: round_robin, least_busy, attendee_choice')
-    .option('--active <bool>', 'Set active status (true/false)'))
+    .option('--active', 'Set group as active')
+    .option('--inactive', 'Set group as inactive'))
     .action(async (teamId: string, groupId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -534,7 +562,8 @@ export function registerBookingCommands(program: Command): void {
         const data: Record<string, unknown> = {};
         if (_opts.name) data.name = _opts.name;
         if (_opts.mode) data.assignmentMode = _opts.mode;
-        if (_opts.active !== undefined) data.isActive = String(_opts.active) !== 'false';
+        if (_opts.active) data.isActive = true;
+        if (_opts.inactive) data.isActive = false;
         const updated = await client.teamBookingGroups.updateGroup(teamId, groupId, data);
         out.stopSpinner();
         if (flags.output === 'json') {

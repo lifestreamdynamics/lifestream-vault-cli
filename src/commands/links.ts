@@ -95,8 +95,14 @@ export function registerLinkCommands(program: Command): void {
         const client = await getClientAsync();
         const graph = await client.vaults.getGraph(vaultId);
         out.stopSpinner();
-        // For graph, output as JSON structure
-        process.stdout.write(JSON.stringify({ nodes: graph.nodes, edges: graph.edges }) + '\n');
+        if (flags.output === 'json') {
+          process.stdout.write(JSON.stringify({ nodes: graph.nodes, edges: graph.edges }) + '\n');
+        } else {
+          process.stdout.write(chalk.bold(`Nodes: ${graph.nodes.length}  Edges: ${graph.edges.length}\n`));
+          for (const node of graph.nodes) {
+            process.stdout.write(`  ${chalk.cyan(String(node.path ?? node.id))}\n`);
+          }
+        }
       } catch (err) {
         handleError(out, err, 'Failed to fetch link graph');
       }

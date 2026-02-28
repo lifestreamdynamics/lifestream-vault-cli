@@ -33,9 +33,9 @@ export function loadSyncConfigs(): SyncConfig[] {
  */
 export function saveSyncConfigs(configs: SyncConfig[]): void {
   if (!fs.existsSync(CONFIG_DIR)) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   }
-  fs.writeFileSync(SYNCS_FILE, JSON.stringify(configs, null, 2) + '\n');
+  fs.writeFileSync(SYNCS_FILE, JSON.stringify(configs, null, 2) + '\n', { mode: 0o600 });
 }
 
 /**

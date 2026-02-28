@@ -1,9 +1,9 @@
 import type { Command } from 'commander';
+import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { PublishDocumentParams, UpdatePublishParams } from '@lifestreamdynamics/vault-sdk';
-import chalk from 'chalk';
 
 export function registerPublishCommands(program: Command): void {
   const publish = program.command('publish').description('Publish documents to public profile pages');
@@ -122,10 +122,15 @@ export function registerPublishCommands(program: Command): void {
   addGlobalFlags(publish.command('delete')
     .description('Unpublish a document')
     .argument('<vaultId>', 'Vault ID')
-    .argument('<docPath>', 'Document path (e.g., blog/post.md)'))
+    .argument('<docPath>', 'Document path (e.g., blog/post.md)')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, docPath: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!_opts.yes) {
+        out.status(chalk.yellow(`Pass --yes to unpublish document ${docPath}.`));
+        return;
+      }
       out.startSpinner('Unpublishing document...');
       try {
         const client = await getClientAsync();
@@ -174,10 +179,15 @@ export function registerPublishCommands(program: Command): void {
 
   addGlobalFlags(subdomain.command('delete')
     .description('Remove the subdomain for a published vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!_opts.yes) {
+        out.status(chalk.yellow(`Pass --yes to remove the subdomain for vault ${vaultId}.`));
+        return;
+      }
       out.startSpinner('Removing subdomain...');
       try {
         const client = await getClientAsync();

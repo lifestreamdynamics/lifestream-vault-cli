@@ -135,11 +135,13 @@ export class Output {
   ): void {
     if (data.length === 0) {
       if (this.flags.output === 'json') {
-        // empty json array: no output
+        process.stdout.write('[]\n');
         return;
       }
       if (options?.emptyMessage && !this.flags.quiet) {
         this.status(options.emptyMessage);
+      } else if (!this.flags.quiet && !options?.emptyMessage) {
+        process.stdout.write('No results found.\n');
       }
       return;
     }

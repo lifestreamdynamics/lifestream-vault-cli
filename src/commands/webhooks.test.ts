@@ -218,7 +218,7 @@ describe('webhooks commands', () => {
     it('should delete a webhook', async () => {
       sdkMock.webhooks.delete.mockResolvedValue(undefined);
 
-      await program.parseAsync(['node', 'cli', 'webhooks', 'delete', 'v1', 'wh1']);
+      await program.parseAsync(['node', 'cli', 'webhooks', 'delete', 'v1', 'wh1', '--yes']);
 
       expect(sdkMock.webhooks.delete).toHaveBeenCalledWith('v1', 'wh1');
     });
@@ -226,7 +226,7 @@ describe('webhooks commands', () => {
     it('should handle delete errors', async () => {
       sdkMock.webhooks.delete.mockRejectedValue(new Error('Webhook not found'));
 
-      await program.parseAsync(['node', 'cli', 'webhooks', 'delete', 'v1', 'wh1']);
+      await program.parseAsync(['node', 'cli', 'webhooks', 'delete', 'v1', 'wh1', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Webhook not found');

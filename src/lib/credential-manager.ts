@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import os from 'node:os';
 import type { CliConfig } from '../config.js';
 import { createKeychainBackend, type KeychainBackend } from './keychain.js';
 import { createEncryptedConfigBackend, type EncryptedConfigBackend } from './encrypted-config.js';
@@ -49,10 +53,29 @@ export interface CredentialManager {
   deleteVaultKey(vaultId: string): Promise<void>;
 }
 
-// Default passphrase for encrypted config when no interactive prompt is available.
-// This provides basic obfuscation — the real security benefit is file permissions (0600)
-// and the fact that credentials aren't in a JSON file that's easy to grep for API keys.
-const DEFAULT_PASSPHRASE = 'lsvault-cli-local-encryption-key';
+/**
+ * Returns the machine-specific passphrase used to encrypt the local credential
+ * store.  On first call it generates a cryptographically random 32-byte hex
+ * string, writes it to `~/.lsvault/.passphrase` (mode 0o600, directory 0o700),
+ * and returns it.  Subsequent calls read the stored value.
+ *
+ * This replaces the old hardcoded `DEFAULT_PASSPHRASE` constant so that the
+ * passphrase is never present in source code or version control.
+ */
+function getOrCreatePassphrase(): string {
+  const configDir = path.join(os.homedir(), '.lsvault');
+  const passphrasePath = path.join(configDir, '.passphrase');
+
+  try {
+    return fs.readFileSync(passphrasePath, 'utf-8').trim();
+  } catch {
+    // File does not exist yet — generate a new one.
+    const passphrase = crypto.randomBytes(32).toString('hex');
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(passphrasePath, passphrase, { mode: 0o600 });
+    return passphrase;
+  }
+}
 
 export interface CredentialManagerOptions {
   keychain?: KeychainBackend;
@@ -63,7 +86,9 @@ export interface CredentialManagerOptions {
 export function createCredentialManager(options: CredentialManagerOptions = {}): CredentialManager {
   const keychain = options.keychain ?? createKeychainBackend();
   const encryptedConfig = options.encryptedConfig ?? createEncryptedConfigBackend();
-  const passphrase = options.passphrase ?? DEFAULT_PASSPHRASE;
+  // Use the caller-supplied passphrase (tests pass one explicitly) or lazily
+  // generate / load the per-machine passphrase from ~/.lsvault/.passphrase.
+  const passphrase = options.passphrase ?? getOrCreatePassphrase();
 
   return {
     async getCredentials(): Promise<Partial<CliConfig>> {
@@ -141,7 +166,7 @@ export function createCredentialManager(options: CredentialManagerOptions = {}):
 
       // 2. Encrypted config: vaultKeys map
       const creds = encryptedConfig.getCredentials(passphrase);
-      const vaultKeys = (creds as Record<string, unknown>)?.vaultKeys as Record<string, string> | undefined;
+      const vaultKeys = creds?.vaultKeys;
       if (vaultKeys?.[vaultId]) {
         return vaultKeys[vaultId];
       }
@@ -152,16 +177,16 @@ export function createCredentialManager(options: CredentialManagerOptions = {}):
     async saveVaultKey(vaultId: string, keyHex: string): Promise<void> {
       // Read existing config, merge vault key, save
       const existing = encryptedConfig.getCredentials(passphrase) ?? {};
-      const vaultKeys = ((existing as Record<string, unknown>).vaultKeys as Record<string, string>) ?? {};
+      const vaultKeys: Record<string, string> = { ...(existing.vaultKeys ?? {}) };
       vaultKeys[vaultId] = keyHex;
-      encryptedConfig.saveCredentials({ ...existing, vaultKeys } as Partial<CliConfig>, passphrase);
+      encryptedConfig.saveCredentials({ ...existing, vaultKeys }, passphrase);
     },
 
     async deleteVaultKey(vaultId: string): Promise<void> {
       const existing = encryptedConfig.getCredentials(passphrase) ?? {};
-      const vaultKeys = ((existing as Record<string, unknown>).vaultKeys as Record<string, string>) ?? {};
+      const vaultKeys: Record<string, string> = { ...(existing.vaultKeys ?? {}) };
       delete vaultKeys[vaultId];
-      encryptedConfig.saveCredentials({ ...existing, vaultKeys } as Partial<CliConfig>, passphrase);
+      encryptedConfig.saveCredentials({ ...existing, vaultKeys }, passphrase);
     },
   };
 }

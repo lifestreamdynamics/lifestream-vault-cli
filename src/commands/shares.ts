@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
+import { promptPassword, readPasswordFromStdin } from '../utils/prompt.js';
 import type { CreateShareLinkParams } from '@lifestreamdynamics/vault-sdk';
 
 export function registerShareCommands(program: Command): void {
@@ -61,18 +62,40 @@ export function registerShareCommands(program: Command): void {
     .argument('<vaultId>', 'Vault ID')
     .argument('<docPath>', 'Document path (e.g., notes/meeting.md)')
     .option('--permission <perm>', 'Permission level: view or edit', 'view')
-    .option('--password <password>', 'Password to protect the link')
+    .option('--protect-with-password', 'Prompt for a password to protect the link (interactive TTY only)')
+    .option('--password-stdin', 'Read link password from stdin for CI usage')
     .option('--expires <date>', 'Expiration date (ISO 8601)')
     .option('--max-views <count>', 'Maximum number of views'))
     .action(async (vaultId: string, docPath: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+
+      // Resolve optional link password without exposing it in the process list.
+      let linkPassword: string | undefined;
+      if (_opts.passwordStdin) {
+        const pw = await readPasswordFromStdin();
+        if (!pw) {
+          out.error('--password-stdin was set but no password was provided on stdin.');
+          process.exitCode = 1;
+          return;
+        }
+        linkPassword = pw;
+      } else if (_opts.protectWithPassword) {
+        const pw = await promptPassword('Share link password: ');
+        if (!pw) {
+          out.error('A password is required when --protect-with-password is set.');
+          process.exitCode = 1;
+          return;
+        }
+        linkPassword = pw;
+      }
+
       out.startSpinner('Creating share link...');
       try {
         const client = await getClientAsync();
         const params: CreateShareLinkParams = {};
         if (_opts.permission) params.permission = String(_opts.permission) as 'view' | 'edit';
-        if (_opts.password) params.password = String(_opts.password);
+        if (linkPassword) params.password = linkPassword;
         if (_opts.expires) params.expiresAt = String(_opts.expires);
         if (_opts.maxViews) params.maxViews = parseInt(String(_opts.maxViews), 10);
 

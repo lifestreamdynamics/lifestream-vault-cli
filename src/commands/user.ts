@@ -5,6 +5,7 @@ import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { formatBytes } from '../utils/format.js';
+import { promptPassword, readPasswordFromStdin } from '../utils/prompt.js';
 
 export function registerUserCommands(program: Command): void {
   const user = program.command('user').description('View account details and storage usage');
@@ -61,7 +62,7 @@ export function registerUserCommands(program: Command): void {
         const client = await getClientAsync();
         const me = await client.user.me();
         out.stopSpinner();
-        out.record({ id: me.id, email: me.email, name: me.name, role: me.role, createdAt: me.createdAt });
+        out.record({ id: me.id, email: me.email, displayName: me.displayName, role: me.role, createdAt: me.createdAt });
       } catch (err) {
         handleError(out, err, 'Failed to fetch profile');
       }
@@ -70,15 +71,42 @@ export function registerUserCommands(program: Command): void {
   // user password
   addGlobalFlags(user.command('password')
     .description('Change your password')
-    .requiredOption('--current <pwd>', 'Current password')
-    .requiredOption('--new <pwd>', 'New password'))
+    .option('--password-stdin', 'Read current and new passwords from stdin (one per line) for CI usage'))
     .action(async (_opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+
+      let currentPassword: string | null;
+      let newPassword: string | null;
+
+      if (_opts.passwordStdin) {
+        currentPassword = await readPasswordFromStdin();
+        newPassword = await readPasswordFromStdin();
+      } else {
+        currentPassword = await promptPassword('Current password: ');
+        if (!currentPassword) {
+          out.error('Current password is required.');
+          process.exitCode = 1;
+          return;
+        }
+        newPassword = await promptPassword('New password: ');
+      }
+
+      if (!currentPassword) {
+        out.error('Current password is required.');
+        process.exitCode = 1;
+        return;
+      }
+      if (!newPassword) {
+        out.error('New password is required.');
+        process.exitCode = 1;
+        return;
+      }
+
       out.startSpinner('Changing password...');
       try {
         const client = await getClientAsync();
-        await client.user.changePassword({ currentPassword: _opts.current as string, newPassword: _opts.new as string });
+        await client.user.changePassword({ currentPassword, newPassword });
         out.success('Password changed successfully', { changed: true });
       } catch (err) {
         handleError(out, err, 'Failed to change password');
@@ -89,14 +117,28 @@ export function registerUserCommands(program: Command): void {
   addGlobalFlags(user.command('email')
     .description('Request email address change')
     .requiredOption('--new <email>', 'New email address')
-    .requiredOption('--password <pwd>', 'Current password'))
+    .option('--password-stdin', 'Read password from stdin for CI usage'))
     .action(async (_opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+
+      let password: string | null;
+      if (_opts.passwordStdin) {
+        password = await readPasswordFromStdin();
+      } else {
+        password = await promptPassword('Password: ');
+      }
+
+      if (!password) {
+        out.error('Password is required to change your email address.');
+        process.exitCode = 1;
+        return;
+      }
+
       out.startSpinner('Requesting email change...');
       try {
         const client = await getClientAsync();
-        const result = await client.user.requestEmailChange({ newEmail: _opts.new as string, password: _opts.password as string });
+        const result = await client.user.requestEmailChange({ newEmail: _opts.new as string, password });
         out.success(result.message, { message: result.message });
       } catch (err) {
         handleError(out, err, 'Failed to request email change');
@@ -131,7 +173,7 @@ export function registerUserCommands(program: Command): void {
       out.startSpinner('Updating profile...');
       try {
         const client = await getClientAsync();
-        const result = await client.user.updateProfile({ name: _opts.name as string | undefined, slug: _opts.slug as string | undefined });
+        const result = await client.user.updateProfile({ displayName: _opts.name as string | undefined, profileSlug: _opts.slug as string | undefined });
         out.success(result.message, { message: result.message });
       } catch (err) {
         handleError(out, err, 'Failed to update profile');
@@ -141,17 +183,31 @@ export function registerUserCommands(program: Command): void {
   // user delete
   addGlobalFlags(user.command('delete')
     .description('Request account deletion')
-    .requiredOption('--password <pwd>', 'Current password')
+    .option('--password-stdin', 'Read password from stdin for CI usage')
     .option('--reason <reason>', 'Reason for deletion')
     .option('--export-data', 'Request data export before deletion'))
     .action(async (_opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+
+      let password: string | null;
+      if (_opts.passwordStdin) {
+        password = await readPasswordFromStdin();
+      } else {
+        password = await promptPassword('Password: ');
+      }
+
+      if (!password) {
+        out.error('Password is required to delete your account.');
+        process.exitCode = 1;
+        return;
+      }
+
       out.startSpinner('Requesting account deletion...');
       try {
         const client = await getClientAsync();
         const result = await client.user.requestAccountDeletion({
-          password: _opts.password as string,
+          password,
           reason: _opts.reason as string | undefined,
           exportData: _opts.exportData === true,
         });

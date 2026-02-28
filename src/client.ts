@@ -1,11 +1,12 @@
 import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import { loadConfig, loadConfigAsync, getCredentialManager } from './config.js';
-import chalk from 'chalk';
 
 /**
  * Create an SDK client from CLI configuration.
  * Supports both API key and JWT (access + refresh token) authentication.
  * When using JWT tokens, auto-refresh is enabled and new tokens are persisted.
+ *
+ * @throws {Error} If no credentials are configured.
  */
 export function getClient(): LifestreamVaultClient {
   const config = loadConfig();
@@ -38,16 +39,19 @@ export function getClient(): LifestreamVaultClient {
     });
   }
 
-  console.error(chalk.red('No credentials configured.'));
-  console.error('Run: lsvault auth login --api-key <key>');
-  console.error('  or: lsvault auth login --email <email>');
-  console.error('Or set LSVAULT_API_KEY environment variable');
-  process.exit(1);
+  throw new Error(
+    'No credentials configured.\n' +
+    'Run: lsvault auth login --api-key <key>\n' +
+    '  or: lsvault auth login --email <email>\n' +
+    'Or set LSVAULT_API_KEY environment variable',
+  );
 }
 
 /**
  * Create an SDK client from async config resolution (secure credential manager).
  * This resolves credentials from keychain/encrypted storage.
+ *
+ * @throws {Error} If no credentials are configured.
  */
 export async function getClientAsync(): Promise<LifestreamVaultClient> {
   const config = await loadConfigAsync();
@@ -77,9 +81,10 @@ export async function getClientAsync(): Promise<LifestreamVaultClient> {
     });
   }
 
-  console.error(chalk.red('No credentials configured.'));
-  console.error('Run: lsvault auth login --api-key <key>');
-  console.error('  or: lsvault auth login --email <email>');
-  console.error('Or set LSVAULT_API_KEY environment variable');
-  process.exit(1);
+  throw new Error(
+    'No credentials configured.\n' +
+    'Run: lsvault auth login --api-key <key>\n' +
+    '  or: lsvault auth login --email <email>\n' +
+    'Or set LSVAULT_API_KEY environment variable',
+  );
 }

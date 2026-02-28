@@ -92,10 +92,15 @@ export function registerCustomDomainCommands(program: Command): void {
 
   addGlobalFlags(domains.command('remove')
     .description('Remove a custom domain')
-    .argument('<domainId>', 'Domain ID'))
+    .argument('<domainId>', 'Domain ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (domainId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!_opts.yes) {
+        out.status(chalk.yellow(`Pass --yes to remove custom domain ${domainId}.`));
+        return;
+      }
       out.startSpinner('Removing custom domain...');
       try {
         const client = await getClientAsync();

@@ -4,6 +4,12 @@ import { registerUserCommands } from './user.js';
 import { createSDKMock, type SDKMock } from '../__tests__/mocks/sdk.js';
 import { spyOutput } from '../__tests__/setup.js';
 
+// Mock the prompt utilities so tests never try to read from a real TTY.
+vi.mock('../utils/prompt.js', () => ({
+  promptPassword: vi.fn(async () => null),
+  readPasswordFromStdin: vi.fn(async () => null),
+}));
+
 vi.mock('ora', () => ({
   default: vi.fn(() => ({
     start: vi.fn().mockReturnThis(),
@@ -19,6 +25,10 @@ vi.mock('../client.js', () => ({
   getClientAsync: vi.fn(async () => sdkMock),
 }));
 
+import { promptPassword, readPasswordFromStdin } from '../utils/prompt.js';
+const mockedPromptPassword = vi.mocked(promptPassword);
+const mockedReadPasswordFromStdin = vi.mocked(readPasswordFromStdin);
+
 describe('user commands', () => {
   let program: Command;
   let outputSpy: ReturnType<typeof spyOutput>;
@@ -30,6 +40,8 @@ describe('user commands', () => {
     sdkMock = createSDKMock();
     outputSpy = spyOutput();
     process.exitCode = undefined;
+    mockedPromptPassword.mockResolvedValue(null);
+    mockedReadPasswordFromStdin.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -86,6 +98,156 @@ describe('user commands', () => {
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Server error');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  // ── Password Change ─────────────────────────────────────────────────
+
+  describe('user password', () => {
+    it('should change password using interactive prompts', async () => {
+      mockedPromptPassword
+        .mockResolvedValueOnce('oldpass')
+        .mockResolvedValueOnce('newpass');
+      sdkMock.user.changePassword.mockResolvedValue(undefined);
+
+      await program.parseAsync(['node', 'cli', 'user', 'password']);
+
+      expect(sdkMock.user.changePassword).toHaveBeenCalledWith({
+        currentPassword: 'oldpass',
+        newPassword: 'newpass',
+      });
+    });
+
+    it('should change password using --password-stdin (two lines)', async () => {
+      mockedReadPasswordFromStdin
+        .mockResolvedValueOnce('oldpass')
+        .mockResolvedValueOnce('newpass');
+      sdkMock.user.changePassword.mockResolvedValue(undefined);
+
+      await program.parseAsync(['node', 'cli', 'user', 'password', '--password-stdin']);
+
+      expect(sdkMock.user.changePassword).toHaveBeenCalledWith({
+        currentPassword: 'oldpass',
+        newPassword: 'newpass',
+      });
+    });
+
+    it('should error when current password is empty (non-TTY, no --password-stdin)', async () => {
+      // promptPassword returns null (non-TTY)
+      mockedPromptPassword.mockResolvedValue(null);
+
+      await program.parseAsync(['node', 'cli', 'user', 'password']);
+
+      expect(sdkMock.user.changePassword).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Current password is required');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should error when new password is empty', async () => {
+      mockedPromptPassword
+        .mockResolvedValueOnce('oldpass')
+        .mockResolvedValueOnce(null); // new password prompt returns nothing
+
+      await program.parseAsync(['node', 'cli', 'user', 'password']);
+
+      expect(sdkMock.user.changePassword).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('New password is required');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should handle API errors gracefully', async () => {
+      mockedPromptPassword
+        .mockResolvedValueOnce('oldpass')
+        .mockResolvedValueOnce('newpass');
+      sdkMock.user.changePassword.mockRejectedValue(new Error('Wrong password'));
+
+      await program.parseAsync(['node', 'cli', 'user', 'password']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Wrong password');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  // ── Email Change ─────────────────────────────────────────────────────
+
+  describe('user email', () => {
+    it('should request email change using interactive prompt', async () => {
+      mockedPromptPassword.mockResolvedValueOnce('mypassword');
+      sdkMock.user.requestEmailChange.mockResolvedValue({ message: 'Verification email sent' });
+
+      await program.parseAsync(['node', 'cli', 'user', 'email', '--new', 'new@example.com']);
+
+      expect(sdkMock.user.requestEmailChange).toHaveBeenCalledWith({
+        newEmail: 'new@example.com',
+        password: 'mypassword',
+      });
+    });
+
+    it('should request email change using --password-stdin', async () => {
+      mockedReadPasswordFromStdin.mockResolvedValueOnce('mypassword');
+      sdkMock.user.requestEmailChange.mockResolvedValue({ message: 'Verification email sent' });
+
+      await program.parseAsync(['node', 'cli', 'user', 'email', '--new', 'new@example.com', '--password-stdin']);
+
+      expect(sdkMock.user.requestEmailChange).toHaveBeenCalledWith({
+        newEmail: 'new@example.com',
+        password: 'mypassword',
+      });
+    });
+
+    it('should error when password is empty', async () => {
+      mockedPromptPassword.mockResolvedValue(null);
+
+      await program.parseAsync(['node', 'cli', 'user', 'email', '--new', 'new@example.com']);
+
+      expect(sdkMock.user.requestEmailChange).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Password is required');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  // ── Account Deletion ─────────────────────────────────────────────────
+
+  describe('user delete', () => {
+    it('should request account deletion using interactive prompt', async () => {
+      mockedPromptPassword.mockResolvedValueOnce('mypassword');
+      sdkMock.user.requestAccountDeletion.mockResolvedValue({ message: 'Deletion scheduled', scheduledAt: '2026-03-01T00:00:00Z' });
+
+      await program.parseAsync(['node', 'cli', 'user', 'delete']);
+
+      expect(sdkMock.user.requestAccountDeletion).toHaveBeenCalledWith({
+        password: 'mypassword',
+        reason: undefined,
+        exportData: false,
+      });
+    });
+
+    it('should request account deletion using --password-stdin', async () => {
+      mockedReadPasswordFromStdin.mockResolvedValueOnce('mypassword');
+      sdkMock.user.requestAccountDeletion.mockResolvedValue({ message: 'Deletion scheduled', scheduledAt: '2026-03-01T00:00:00Z' });
+
+      await program.parseAsync(['node', 'cli', 'user', 'delete', '--password-stdin', '--reason', 'No longer needed', '--export-data']);
+
+      expect(sdkMock.user.requestAccountDeletion).toHaveBeenCalledWith({
+        password: 'mypassword',
+        reason: 'No longer needed',
+        exportData: true,
+      });
+    });
+
+    it('should error when password is empty', async () => {
+      mockedPromptPassword.mockResolvedValue(null);
+
+      await program.parseAsync(['node', 'cli', 'user', 'delete']);
+
+      expect(sdkMock.user.requestAccountDeletion).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Password is required');
       expect(process.exitCode).toBe(1);
     });
   });

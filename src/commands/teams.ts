@@ -104,10 +104,15 @@ EXAMPLES
 
   addGlobalFlags(teams.command('delete')
     .description('Permanently delete a team and all its data')
-    .argument('<teamId>', 'Team ID'))
+    .argument('<teamId>', 'Team ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (teamId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!_opts.yes) {
+        out.status(chalk.yellow(`Pass --yes to permanently delete team ${teamId} and all its data.`));
+        return;
+      }
       out.startSpinner('Deleting team...');
       try {
         const client = await getClientAsync();
@@ -135,7 +140,7 @@ EXAMPLES
         out.stopSpinner();
         out.list(
           memberList.map(m => ({
-            name: m.user.name || m.user.email,
+            name: m.user.displayName || m.user.email,
             userId: m.userId,
             role: m.role,
             email: m.user.email,
@@ -181,10 +186,15 @@ EXAMPLES
   addGlobalFlags(members.command('remove')
     .description('Remove a member from the team')
     .argument('<teamId>', 'Team ID')
-    .argument('<userId>', 'User ID'))
+    .argument('<userId>', 'User ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (teamId: string, userId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!_opts.yes) {
+        out.status(chalk.yellow(`Pass --yes to remove user ${userId} from team ${teamId}.`));
+        return;
+      }
       out.startSpinner('Removing member...');
       try {
         const client = await getClientAsync();
@@ -304,7 +314,7 @@ EXAMPLES
         const vaultList = await client.teams.listVaults(teamId);
         out.stopSpinner();
         out.list(
-          vaultList.map(v => ({ name: String(v.name), slug: String(v.slug), description: String(v.description) || 'No description' })),
+          vaultList.map(v => ({ name: String(v.name), slug: String(v.slug), description: v.description ?? 'No description' })),
           {
             emptyMessage: 'No team vaults found.',
             columns: [

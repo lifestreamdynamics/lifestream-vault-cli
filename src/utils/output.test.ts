@@ -169,10 +169,16 @@ describe('Output', () => {
       expect(output).toContain('Nothing here.');
     });
 
-    it('should produce no output for empty data in json mode', () => {
+    it('should output empty JSON array for empty data in json mode', () => {
       const out = createOutput(makeFlags({ output: 'json' }));
       out.list([], { emptyMessage: 'Nothing here.' });
-      expect(stdoutChunks.join('')).toBe('');
+      expect(stdoutChunks.join('')).toBe('[]\n');
+    });
+
+    it('should output "No results found." for empty data in text mode with no emptyMessage', () => {
+      const out = createOutput(makeFlags());
+      out.list([]);
+      expect(stdoutChunks.join('')).toContain('No results found.');
     });
   });
 

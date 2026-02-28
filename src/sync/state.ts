@@ -47,10 +47,10 @@ export function loadSyncState(syncId: string): SyncState {
  */
 export function saveSyncState(state: SyncState): void {
   if (!fs.existsSync(STATE_DIR)) {
-    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
   }
   state.updatedAt = new Date().toISOString();
-  fs.writeFileSync(stateFilePath(state.syncId), JSON.stringify(state, null, 2) + '\n');
+  fs.writeFileSync(stateFilePath(state.syncId), JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
 }
 
 /**

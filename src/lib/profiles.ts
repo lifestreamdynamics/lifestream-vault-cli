@@ -38,9 +38,9 @@ export function getActiveProfile(): string {
  */
 export function setActiveProfile(name: string): void {
   if (!fs.existsSync(CONFIG_DIR)) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   }
-  fs.writeFileSync(ACTIVE_PROFILE_FILE, name + '\n');
+  fs.writeFileSync(ACTIVE_PROFILE_FILE, name + '\n', { mode: 0o600 });
 }
 
 /**
@@ -64,11 +64,11 @@ export function loadProfile(name: string): ProfileConfig {
  */
 export function setProfileValue(name: string, key: string, value: string): void {
   if (!fs.existsSync(PROFILES_DIR)) {
-    fs.mkdirSync(PROFILES_DIR, { recursive: true });
+    fs.mkdirSync(PROFILES_DIR, { recursive: true, mode: 0o700 });
   }
   const config = loadProfile(name);
   config[key] = value;
-  fs.writeFileSync(getProfilePath(name), JSON.stringify(config, null, 2) + '\n');
+  fs.writeFileSync(getProfilePath(name), JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
 }
 
 /**

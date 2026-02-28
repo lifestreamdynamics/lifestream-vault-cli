@@ -166,7 +166,7 @@ describe('config', () => {
 
       saveConfig({ apiKey: 'lsv_k_newkey' });
 
-      expect(mockedFs.mkdirSync).toHaveBeenCalledWith(CONFIG_DIR, { recursive: true });
+      expect(mockedFs.mkdirSync).toHaveBeenCalledWith(CONFIG_DIR, { recursive: true, mode: 0o700 });
     });
 
     it('should merge with existing config', () => {
@@ -181,10 +181,12 @@ describe('config', () => {
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
         CONFIG_FILE,
         expect.stringContaining('"apiKey": "lsv_k_new"'),
+        { mode: 0o600 },
       );
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
         CONFIG_FILE,
         expect.stringContaining('"apiUrl": "https://existing.com"'),
+        { mode: 0o600 },
       );
     });
 
@@ -197,6 +199,7 @@ describe('config', () => {
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
         CONFIG_FILE,
         expect.stringContaining('"apiUrl": "https://new.com"'),
+        { mode: 0o600 },
       );
     });
   });

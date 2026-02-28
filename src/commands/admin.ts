@@ -110,7 +110,7 @@ export function registerAdminCommands(program: Command): void {
           result.users.map(u => ({
             email: u.email,
             id: u.id,
-            name: u.name || '',
+            displayName: u.displayName || '',
             role: u.role,
             subscriptionTier: u.subscriptionTier,
             isActive: u.isActive,
@@ -119,15 +119,15 @@ export function registerAdminCommands(program: Command): void {
             emptyMessage: 'No users found.',
             columns: [
               { key: 'email', header: 'Email' },
-              { key: 'name', header: 'Name' },
+              { key: 'displayName', header: 'Name' },
               { key: 'role', header: 'Role' },
               { key: 'subscriptionTier', header: 'Tier' },
               { key: 'isActive', header: 'Active' },
             ],
             textFn: (u) => {
               const active = u.isActive ? chalk.green('active') : chalk.red('inactive');
-              const name = u.name || chalk.dim('no name');
-              return `  ${chalk.cyan(String(u.email))} ${chalk.dim(`(${String(u.id)})`)} -- ${name} -- ${chalk.magenta(String(u.role))} -- ${String(u.subscriptionTier)} -- ${active}`;
+              const displayName = u.displayName || chalk.dim('no name');
+              return `  ${chalk.cyan(String(u.email))} ${chalk.dim(`(${String(u.id)})`)} -- ${displayName} -- ${chalk.magenta(String(u.role))} -- ${String(u.subscriptionTier)} -- ${active}`;
             },
           },
         );
@@ -150,7 +150,7 @@ export function registerAdminCommands(program: Command): void {
         out.record({
           email: user.email,
           id: user.id,
-          name: user.name,
+          displayName: user.displayName,
           role: user.role,
           isActive: user.isActive,
           subscriptionTier: user.subscriptionTier,

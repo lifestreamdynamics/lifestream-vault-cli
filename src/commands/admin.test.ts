@@ -132,7 +132,7 @@ describe('admin commands', () => {
           {
             id: 'u1',
             email: 'alice@example.com',
-            name: 'Alice',
+            displayName: 'Alice',
             role: 'user',
             isActive: true,
             subscriptionTier: 'pro',
@@ -206,7 +206,7 @@ describe('admin commands', () => {
       sdkMock.admin.getUser.mockResolvedValue({
         id: 'u1',
         email: 'alice@example.com',
-        name: 'Alice',
+        displayName: 'Alice',
         role: 'admin',
         isActive: true,
         subscriptionTier: 'pro',
@@ -241,7 +241,7 @@ describe('admin commands', () => {
       sdkMock.admin.updateUser.mockResolvedValue({
         id: 'u1',
         email: 'alice@example.com',
-        name: 'Alice',
+        displayName: 'Alice',
         role: 'admin',
         isActive: true,
         subscriptionTier: 'pro',
@@ -257,7 +257,7 @@ describe('admin commands', () => {
       sdkMock.admin.updateUser.mockResolvedValue({
         id: 'u1',
         email: 'alice@example.com',
-        name: 'Alice',
+        displayName: 'Alice',
         role: 'user',
         isActive: true,
         subscriptionTier: 'free',
@@ -273,7 +273,7 @@ describe('admin commands', () => {
       sdkMock.admin.updateUser.mockResolvedValue({
         id: 'u1',
         email: 'alice@example.com',
-        name: 'Alice',
+        displayName: 'Alice',
         role: 'user',
         isActive: false,
         subscriptionTier: 'free',

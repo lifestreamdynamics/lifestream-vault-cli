@@ -219,7 +219,7 @@ describe('auth commands', () => {
       sdkMock.user.me.mockResolvedValue({
         id: 'u1',
         email: 'user@example.com',
-        name: 'Test User',
+        displayName: 'Test User',
         role: 'user',
         subscriptionTier: 'pro',
         subscriptionExpiresAt: '2025-12-31',
@@ -253,7 +253,7 @@ describe('auth commands', () => {
       sdkMock.user.me.mockResolvedValue({
         id: 'u1',
         email: 'user@example.com',
-        name: 'Test User',
+        displayName: 'Test User',
         role: 'user',
         subscriptionTier: 'pro',
         subscriptionExpiresAt: '2025-12-31',

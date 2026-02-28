@@ -70,13 +70,14 @@ describe('profiles', () => {
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
         ACTIVE_PROFILE_FILE,
         'staging\n',
+        { mode: 0o600 },
       );
     });
 
     it('should create the config directory if it does not exist', () => {
       mockedFs.existsSync.mockReturnValue(false);
       setActiveProfile('dev');
-      expect(mockedFs.mkdirSync).toHaveBeenCalledWith(CONFIG_DIR, { recursive: true });
+      expect(mockedFs.mkdirSync).toHaveBeenCalledWith(CONFIG_DIR, { recursive: true, mode: 0o700 });
     });
   });
 
@@ -108,7 +109,7 @@ describe('profiles', () => {
       mockedFs.existsSync.mockReturnValueOnce(false) // PROFILES_DIR check
         .mockReturnValueOnce(false); // profile file check in loadProfile
       setProfileValue('dev', 'apiUrl', 'https://vault.lifestreamdynamics.com');
-      expect(mockedFs.mkdirSync).toHaveBeenCalledWith(PROFILES_DIR, { recursive: true });
+      expect(mockedFs.mkdirSync).toHaveBeenCalledWith(PROFILES_DIR, { recursive: true, mode: 0o700 });
     });
 
     it('should merge with existing profile config', () => {
@@ -121,10 +122,12 @@ describe('profiles', () => {
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
         getProfilePath('prod'),
         expect.stringContaining('"apiKey": "lsv_k_new"'),
+        { mode: 0o600 },
       );
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
         getProfilePath('prod'),
         expect.stringContaining('"apiUrl": "https://existing.com"'),
+        { mode: 0o600 },
       );
     });
 
@@ -135,6 +138,7 @@ describe('profiles', () => {
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
         getProfilePath('new'),
         expect.stringContaining('"apiUrl": "https://new.com"'),
+        { mode: 0o600 },
       );
     });
   });

@@ -67,7 +67,7 @@ describe('sync config', () => {
       saveSyncConfigs([]);
       expect(mockedFs.mkdirSync).toHaveBeenCalledWith(
         expect.stringContaining('.lsvault'),
-        { recursive: true },
+        { recursive: true, mode: 0o700 },
       );
     });
 
@@ -78,6 +78,7 @@ describe('sync config', () => {
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
         expect.stringContaining('syncs.json'),
         expect.stringContaining('"vaultId": "vault-1"'),
+        { mode: 0o600 },
       );
     });
   });

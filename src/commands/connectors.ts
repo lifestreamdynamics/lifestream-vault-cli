@@ -4,6 +4,9 @@ import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 
+const VALID_PROVIDERS = ['google_drive', 'dropbox', 'onedrive'] as const;
+type ConnectorProvider = typeof VALID_PROVIDERS[number];
+
 export function registerConnectorCommands(program: Command): void {
   const connectors = program.command('connectors').description('Manage external service connectors (e.g., Google Drive)');
 
@@ -85,11 +88,16 @@ export function registerConnectorCommands(program: Command): void {
     .action(async (provider: string, name: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!VALID_PROVIDERS.includes(provider as ConnectorProvider)) {
+        out.error(`Invalid provider "${provider}". Must be one of: ${VALID_PROVIDERS.join(', ')}`);
+        process.exitCode = 1;
+        return;
+      }
       out.startSpinner('Creating connector...');
       try {
         const client = await getClientAsync();
         const connector = await client.connectors.create({
-          provider: provider as 'google_drive',
+          provider: provider as ConnectorProvider,
           name,
           vaultId: String(_opts.vault),
           syncDirection: String(_opts.direction) as 'pull' | 'push' | 'bidirectional',
@@ -131,10 +139,15 @@ export function registerConnectorCommands(program: Command): void {
 
   addGlobalFlags(connectors.command('delete')
     .description('Delete a connector')
-    .argument('<connectorId>', 'Connector ID'))
+    .argument('<connectorId>', 'Connector ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (connectorId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!_opts.yes) {
+        out.status(chalk.yellow(`Pass --yes to delete connector ${connectorId}.`));
+        return;
+      }
       out.startSpinner('Deleting connector...');
       try {
         const client = await getClientAsync();

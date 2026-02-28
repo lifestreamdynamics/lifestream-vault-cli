@@ -137,7 +137,29 @@ describe('links commands', () => {
   });
 
   describe('links graph', () => {
-    it('should output link graph as JSON', async () => {
+    it('should output link graph as JSON when --output json is specified', async () => {
+      sdkMock.vaults.getGraph.mockResolvedValue({
+        nodes: [
+          { id: 'd1', path: 'a.md', title: 'A' },
+          { id: 'd2', path: 'b.md', title: 'B' },
+        ],
+        edges: [
+          { source: 'd1', target: 'd2', linkText: 'B' },
+        ],
+      });
+
+      await program.parseAsync(['node', 'cli', 'links', 'graph', 'v1', '--output', 'json']);
+
+      expect(sdkMock.vaults.getGraph).toHaveBeenCalledWith('v1');
+      const stdout = outputSpy.stdout.join('');
+      const json = JSON.parse(stdout);
+      expect(json.nodes).toHaveLength(2);
+      expect(json.edges).toHaveLength(1);
+      expect(json.nodes[0].path).toBe('a.md');
+      expect(json.edges[0].source).toBe('d1');
+    });
+
+    it('should output link graph as text in text mode', async () => {
       sdkMock.vaults.getGraph.mockResolvedValue({
         nodes: [
           { id: 'd1', path: 'a.md', title: 'A' },
@@ -152,11 +174,8 @@ describe('links commands', () => {
 
       expect(sdkMock.vaults.getGraph).toHaveBeenCalledWith('v1');
       const stdout = outputSpy.stdout.join('');
-      const json = JSON.parse(stdout);
-      expect(json.nodes).toHaveLength(2);
-      expect(json.edges).toHaveLength(1);
-      expect(json.nodes[0].path).toBe('a.md');
-      expect(json.edges[0].source).toBe('d1');
+      expect(stdout).toContain('a.md');
+      expect(stdout).toContain('b.md');
     });
 
     it('should handle empty graph', async () => {
@@ -165,7 +184,7 @@ describe('links commands', () => {
         edges: [],
       });
 
-      await program.parseAsync(['node', 'cli', 'links', 'graph', 'v1']);
+      await program.parseAsync(['node', 'cli', 'links', 'graph', 'v1', '--output', 'json']);
 
       const stdout = outputSpy.stdout.join('');
       const json = JSON.parse(stdout);

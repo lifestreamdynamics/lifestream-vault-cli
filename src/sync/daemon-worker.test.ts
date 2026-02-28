@@ -9,7 +9,7 @@ const mockCreateWatcher = vi.fn(() => ({
 }));
 const mockCreateRemotePoller = vi.fn(() => ({ stop: vi.fn() }));
 const mockRemovePid = vi.fn();
-const mockLoadConfig = vi.fn(() => ({ apiUrl: 'http://localhost', apiKey: 'test-key' }));
+const mockLoadConfig = vi.fn(async () => ({ apiUrl: 'http://localhost', apiKey: 'test-key' }));
 const mockScanLocalFiles = vi.fn(() => ({}));
 const mockScanRemoteFiles = vi.fn(async () => ({}));
 const mockComputePushDiff = vi.fn((): Record<string, unknown> => ({ uploads: [], deletes: [], downloads: [], totalBytes: 0 }));
@@ -23,7 +23,7 @@ vi.mock('./ignore.js', () => ({ resolveIgnorePatterns: mockResolveIgnorePatterns
 vi.mock('./watcher.js', () => ({ createWatcher: mockCreateWatcher }));
 vi.mock('./remote-poller.js', () => ({ createRemotePoller: mockCreateRemotePoller }));
 vi.mock('./daemon.js', () => ({ removePid: mockRemovePid }));
-vi.mock('../config.js', () => ({ loadConfig: mockLoadConfig }));
+vi.mock('../config.js', () => ({ loadConfigAsync: mockLoadConfig }));
 vi.mock('./engine.js', () => ({
   scanLocalFiles: mockScanLocalFiles,
   scanRemoteFiles: mockScanRemoteFiles,

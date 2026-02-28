@@ -19,11 +19,14 @@ vi.mock('../client.js', () => ({
   getClientAsync: vi.fn(async () => sdkMock),
 }));
 
-vi.mock('../lib/credential-manager.js', () => ({
-  createCredentialManager: vi.fn(() => ({
+vi.mock('../config.js', () => ({
+  getClientAsync: vi.fn(async () => sdkMock),
+  getCredentialManager: vi.fn(() => ({
     saveVaultKey: vi.fn(async () => {}),
     getVaultKey: vi.fn(async () => null),
   })),
+  loadConfigAsync: vi.fn(async () => ({ apiUrl: 'https://test.example.com', apiKey: 'lsv_k_test' })),
+  DEFAULT_API_URL: 'https://vault.lifestreamdynamics.com',
 }));
 
 describe('docs commands', () => {
@@ -144,18 +147,29 @@ describe('docs commands', () => {
   });
 
   describe('docs delete', () => {
-    it('should delete a document successfully', async () => {
+    it('should delete a document successfully when --yes is provided', async () => {
       sdkMock.documents.delete.mockResolvedValue(undefined);
+
+      await program.parseAsync(['node', 'cli', 'docs', 'delete', 'v1', 'old.md', '--yes']);
+
+      expect(sdkMock.documents.delete).toHaveBeenCalledWith('v1', 'old.md');
+    });
+
+    it('should abort when non-interactive and --yes not provided', async () => {
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
 
       await program.parseAsync(['node', 'cli', 'docs', 'delete', 'v1', 'old.md']);
 
-      expect(sdkMock.documents.delete).toHaveBeenCalledWith('v1', 'old.md');
+      expect(sdkMock.documents.delete).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('non-interactive');
+      expect(process.exitCode).toBe(1);
     });
 
     it('should handle deletion errors', async () => {
       sdkMock.documents.delete.mockRejectedValue(new Error('Permission denied'));
 
-      await program.parseAsync(['node', 'cli', 'docs', 'delete', 'v1', 'protected.md']);
+      await program.parseAsync(['node', 'cli', 'docs', 'delete', 'v1', 'protected.md', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Permission denied');

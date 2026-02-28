@@ -162,6 +162,16 @@ describe('connectors commands', () => {
       });
     });
 
+    it('should reject invalid provider', async () => {
+      await program.parseAsync(['node', 'cli', 'connectors', 'create', 'ftp', 'Bad', '--vault', 'v1', '--direction', 'pull']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Invalid provider "ftp"');
+      expect(stderr).toContain('google_drive');
+      expect(sdkMock.connectors.create).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
     it('should handle creation errors', async () => {
       sdkMock.connectors.create.mockRejectedValue(new Error('Validation failed'));
 
@@ -209,7 +219,7 @@ describe('connectors commands', () => {
     it('should delete a connector', async () => {
       sdkMock.connectors.delete.mockResolvedValue(undefined);
 
-      await program.parseAsync(['node', 'cli', 'connectors', 'delete', 'c1']);
+      await program.parseAsync(['node', 'cli', 'connectors', 'delete', 'c1', '--yes']);
 
       expect(sdkMock.connectors.delete).toHaveBeenCalledWith('c1');
     });
@@ -217,7 +227,7 @@ describe('connectors commands', () => {
     it('should handle deletion errors', async () => {
       sdkMock.connectors.delete.mockRejectedValue(new Error('Not found'));
 
-      await program.parseAsync(['node', 'cli', 'connectors', 'delete', 'c1']);
+      await program.parseAsync(['node', 'cli', 'connectors', 'delete', 'c1', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Not found');

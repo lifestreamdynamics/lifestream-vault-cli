@@ -106,8 +106,8 @@ export async function checkAndPromptMigration(
 ): Promise<boolean> {
   if (!hasPlaintextCredentials()) return false;
 
-  console.log(chalk.yellow('\nWarning: API key found in plaintext config (~/.lsvault/config.json)'));
-  console.log(chalk.yellow('Run `lsvault auth migrate` to migrate to secure storage.\n'));
+  process.stderr.write(chalk.yellow('\nWarning: API key found in plaintext config (~/.lsvault/config.json)') + '\n');
+  process.stderr.write(chalk.yellow('Run `lsvault auth migrate` to migrate to secure storage.\n') + '\n');
 
   return false;
 }

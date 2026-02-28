@@ -108,10 +108,15 @@ export function registerHookCommands(program: Command): void {
   addGlobalFlags(hooks.command('delete')
     .description('Delete a hook')
     .argument('<vaultId>', 'Vault ID')
-    .argument('<hookId>', 'Hook ID'))
+    .argument('<hookId>', 'Hook ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, hookId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!_opts.yes) {
+        out.status(chalk.yellow(`Pass --yes to delete hook ${hookId}.`));
+        return;
+      }
       out.startSpinner('Deleting hook...');
       try {
         const client = await getClientAsync();

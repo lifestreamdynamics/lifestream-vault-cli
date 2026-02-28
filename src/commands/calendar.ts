@@ -11,8 +11,8 @@ export function registerCalendarCommands(program: Command): void {
   addGlobalFlags(calendar.command('view')
     .description('View calendar activity for a vault')
     .argument('<vaultId>', 'Vault ID')
-    .option('--start <date>', 'Start date (YYYY-MM-DD)', getDefaultStart())
-    .option('--end <date>', 'End date (YYYY-MM-DD)', getDefaultEnd()))
+    .option('--start <date>', 'Start date (YYYY-MM-DD)')
+    .option('--end <date>', 'End date (YYYY-MM-DD)'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -20,8 +20,8 @@ export function registerCalendarCommands(program: Command): void {
       try {
         const client = await getClientAsync();
         const response = await client.calendar.getActivity(vaultId, {
-          start: _opts.start as string,
-          end: _opts.end as string,
+          start: (_opts.start as string | undefined) ?? getDefaultStart(),
+          end: (_opts.end as string | undefined) ?? getDefaultEnd(),
         });
         out.stopSpinner();
         if (flags.output === 'text') {
@@ -56,6 +56,9 @@ export function registerCalendarCommands(program: Command): void {
     });
 
   // calendar due
+  const VALID_DUE_STATUSES = ['overdue', 'upcoming', 'all'] as const;
+  type DueStatus = typeof VALID_DUE_STATUSES[number];
+
   addGlobalFlags(calendar.command('due')
     .description('List documents with due dates')
     .argument('<vaultId>', 'Vault ID')
@@ -63,11 +66,17 @@ export function registerCalendarCommands(program: Command): void {
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      const statusVal = _opts.status as string | undefined;
+      if (statusVal && !VALID_DUE_STATUSES.includes(statusVal as DueStatus)) {
+        out.error(`Invalid --status "${statusVal}". Must be one of: ${VALID_DUE_STATUSES.join(', ')}`);
+        process.exitCode = 1;
+        return;
+      }
       out.startSpinner('Loading due dates...');
       try {
         const client = await getClientAsync();
         const docs = await client.calendar.getDueDates(vaultId, {
-          status: _opts.status as 'overdue' | 'upcoming' | 'all',
+          status: (statusVal ?? 'all') as DueStatus,
         });
         out.stopSpinner();
         out.list(
@@ -429,14 +438,17 @@ export function registerCalendarCommands(program: Command): void {
   addGlobalFlags(calendar.command('complete')
     .description('Toggle completed state for a document')
     .argument('<vaultId>', 'Vault ID')
-    .argument('<documentPath>', 'Document path'))
+    .argument('<documentPath>', 'Document path')
+    .option('--completed', 'Mark as complete (default)', true)
+    .option('--no-completed', 'Mark as incomplete'))
     .action(async (vaultId: string, documentPath: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Toggling completion...');
       try {
         const client = await getClientAsync();
-        const result = await client.calendar.toggleComplete(vaultId, documentPath);
+        const completed = _opts.completed !== false;
+        const result = await client.calendar.toggleComplete(vaultId, documentPath, completed);
         out.stopSpinner();
         if (flags.output === 'json') {
           out.raw(JSON.stringify(result, null, 2) + '\n');

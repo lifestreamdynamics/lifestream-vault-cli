@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
+import type { AiChatMessage } from '@lifestreamdynamics/vault-sdk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
@@ -52,9 +53,9 @@ export function registerAiCommands(program: Command): void {
         } else {
           process.stdout.write(`Session: ${chalk.cyan(result.session.id)}\n`);
           process.stdout.write(`Title: ${result.session.title ?? 'Untitled'}\n\n`);
-          for (const msg of result.messages ?? []) {
-            const role = (msg as { role?: string }).role === 'assistant' ? chalk.green('AI') : chalk.blue('You');
-            process.stdout.write(`${role}: ${String((msg as { content?: string }).content ?? '')}\n\n`);
+          for (const msg of result.messages ?? [] as AiChatMessage[]) {
+            const role = msg.role === 'assistant' ? chalk.green('AI') : chalk.blue('You');
+            process.stdout.write(`${role}: ${msg.content}\n\n`);
           }
         }
       } catch (err) {
@@ -64,10 +65,15 @@ export function registerAiCommands(program: Command): void {
 
   addGlobalFlags(sessions.command('delete')
     .description('Delete an AI chat session')
-    .argument('<sessionId>', 'Session ID'))
+    .argument('<sessionId>', 'Session ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (sessionId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!_opts.yes) {
+        out.status(chalk.yellow(`Pass --yes to delete AI session ${sessionId}.`));
+        return;
+      }
       out.startSpinner('Deleting AI session...');
       try {
         const client = await getClientAsync();
@@ -90,7 +96,11 @@ export function registerAiCommands(program: Command): void {
         const client = await getClientAsync();
         const response = await client.ai.chat({ message, sessionId });
         out.stopSpinner();
-        process.stdout.write(String((response as { content?: string }).content ?? JSON.stringify(response)) + '\n');
+        // response.message is typed as { role: string; content: string; sources: string[] }
+        process.stdout.write(response.message.content + '\n');
+        if (response.message.sources.length > 0) {
+          process.stdout.write(chalk.dim(`Sources: ${response.message.sources.join(', ')}`) + '\n');
+        }
       } catch (err) {
         handleError(out, err, 'Failed to send AI message');
       }
@@ -108,7 +118,11 @@ export function registerAiCommands(program: Command): void {
         const client = await getClientAsync();
         const summary = await client.ai.summarize(vaultId, docPath);
         out.stopSpinner();
-        process.stdout.write(String((summary as { summary?: string }).summary ?? JSON.stringify(summary)) + '\n');
+        // summary is typed as { summary: string; keyTopics: string[]; tokensUsed: number }
+        process.stdout.write(summary.summary + '\n');
+        if (summary.keyTopics.length > 0) {
+          process.stdout.write(chalk.dim(`Key topics: ${summary.keyTopics.join(', ')}`) + '\n');
+        }
       } catch (err) {
         handleError(out, err, 'Failed to summarize document');
       }

@@ -3,6 +3,20 @@ import { createCredentialManager, type CredentialManager } from './credential-ma
 import type { KeychainBackend } from './keychain.js';
 import type { EncryptedConfigBackend } from './encrypted-config.js';
 
+// Mock node:fs so getOrCreatePassphrase() never touches the real filesystem.
+// Tests that need the encrypted-config path always pass an explicit passphrase,
+// so the mock only needs to cover the auto-generation branch for other tests.
+vi.mock('node:fs', () => ({
+  default: {
+    readFileSync: vi.fn(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); }),
+    writeFileSync: vi.fn(),
+    mkdirSync: vi.fn(),
+  },
+  readFileSync: vi.fn(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); }),
+  writeFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
+}));
+
 function createMockKeychain(available = false): KeychainBackend {
   const store: Record<string, string> = {};
   return {
