@@ -127,4 +127,85 @@ export function registerAiCommands(program: Command): void {
         handleError(out, err, 'Failed to summarize document');
       }
     });
+
+  addGlobalFlags(ai.command('similar')
+    .description('Find documents similar to a given document')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<documentId>', 'Document ID')
+    .option('-l, --limit <limit>', 'Maximum results (1-50)', '10'))
+    .action(async (vaultId: string, documentId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Finding similar documents...');
+      try {
+        const client = await getClientAsync();
+        const { similar } = await client.ai.similar({ documentId, vaultId, limit: Number(_opts.limit) || undefined });
+        out.stopSpinner();
+        out.list(
+          similar.map(d => ({ id: d.id, path: d.path, title: d.title ?? '(untitled)', similarity: d.similarity.toFixed(4) })),
+          {
+            emptyMessage: 'No similar documents found.',
+            columns: [
+              { key: 'id', header: 'ID' },
+              { key: 'path', header: 'Path' },
+              { key: 'title', header: 'Title' },
+              { key: 'similarity', header: 'Similarity' },
+            ],
+            textFn: (d) => `${chalk.cyan(String(d.path))} (${String(d.similarity)})`,
+          },
+        );
+      } catch (err) {
+        handleError(out, err, 'Failed to find similar documents');
+      }
+    });
+
+  addGlobalFlags(ai.command('assist')
+    .description('Get AI text assistance')
+    .argument('<vaultId>', 'Vault ID')
+    .requiredOption('-t, --text <text>', 'Text to process')
+    .requiredOption('-i, --instruction <instruction>', 'Instruction for the AI')
+    .option('-c, --context <context>', 'Additional context'))
+    .action(async (vaultId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Processing with AI...');
+      try {
+        const client = await getClientAsync();
+        const response = await client.ai.assist({
+          vaultId,
+          text: String(_opts.text),
+          instruction: String(_opts.instruction),
+          context: _opts.context ? String(_opts.context) : undefined,
+        });
+        out.stopSpinner();
+        process.stdout.write(response.result + '\n');
+        process.stdout.write(chalk.dim(`Tokens used: ${response.tokensUsed}`) + '\n');
+      } catch (err) {
+        handleError(out, err, 'Failed to get AI assistance');
+      }
+    });
+
+  addGlobalFlags(ai.command('suggest')
+    .description('Get AI writing suggestions for a document')
+    .argument('<vaultId>', 'Vault ID')
+    .argument('<docPath>', 'Document path')
+    .requiredOption('--type <type>', 'Suggestion type: grammar, style, expand, shorten'))
+    .action(async (vaultId: string, docPath: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Getting suggestions...');
+      try {
+        const client = await getClientAsync();
+        const response = await client.ai.suggest({
+          vaultId,
+          documentPath: docPath,
+          type: String(_opts.type) as 'grammar' | 'style' | 'expand' | 'shorten',
+        });
+        out.stopSpinner();
+        process.stdout.write(response.suggestion + '\n');
+        process.stdout.write(chalk.dim(`Type: ${response.type} | Tokens used: ${response.tokensUsed}`) + '\n');
+      } catch (err) {
+        handleError(out, err, 'Failed to get AI suggestions');
+      }
+    });
 }

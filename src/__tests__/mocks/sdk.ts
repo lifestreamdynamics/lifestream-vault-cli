@@ -37,6 +37,9 @@ export const createSDKMock = () => ({
     getSession: vi.fn(),
     deleteSession: vi.fn(),
     summarize: vi.fn(),
+    similar: vi.fn(),
+    assist: vi.fn(),
+    suggest: vi.fn(),
   },
   apiKeys: {
     list: vi.fn(),

@@ -111,6 +111,71 @@ describe('ai commands', () => {
     });
   });
 
+  describe('ai similar', () => {
+    it('should find similar documents', async () => {
+      sdkMock.ai.similar.mockResolvedValue({
+        similar: [
+          { id: 'd1', path: 'notes/a.md', title: 'Note A', similarity: 0.92 },
+          { id: 'd2', path: 'notes/b.md', title: null, similarity: 0.85 },
+        ],
+      });
+
+      await program.parseAsync(['node', 'cli', 'ai', 'similar', 'v1', 'doc1']);
+
+      expect(sdkMock.ai.similar).toHaveBeenCalled();
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('notes/a.md');
+    });
+
+    it('should handle errors', async () => {
+      sdkMock.ai.similar.mockRejectedValue(new Error('Not found'));
+
+      await program.parseAsync(['node', 'cli', 'ai', 'similar', 'v1', 'doc1']);
+
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  describe('ai assist', () => {
+    it('should return AI assistance result', async () => {
+      sdkMock.ai.assist.mockResolvedValue({ result: 'Improved text.', tokensUsed: 100 });
+
+      await program.parseAsync(['node', 'cli', 'ai', 'assist', 'v1', '--text', 'some text', '--instruction', 'make it better']);
+
+      expect(sdkMock.ai.assist).toHaveBeenCalled();
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('Improved text.');
+    });
+
+    it('should handle errors', async () => {
+      sdkMock.ai.assist.mockRejectedValue(new Error('AI service error'));
+
+      await program.parseAsync(['node', 'cli', 'ai', 'assist', 'v1', '--text', 'text', '--instruction', 'do it']);
+
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  describe('ai suggest', () => {
+    it('should return AI writing suggestion', async () => {
+      sdkMock.ai.suggest.mockResolvedValue({ suggestion: 'Consider rephrasing.', type: 'style', tokensUsed: 60 });
+
+      await program.parseAsync(['node', 'cli', 'ai', 'suggest', 'v1', 'notes/draft.md', '--type', 'style']);
+
+      expect(sdkMock.ai.suggest).toHaveBeenCalled();
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('Consider rephrasing.');
+    });
+
+    it('should handle errors', async () => {
+      sdkMock.ai.suggest.mockRejectedValue(new Error('Suggestion failed'));
+
+      await program.parseAsync(['node', 'cli', 'ai', 'suggest', 'v1', 'doc.md', '--type', 'grammar']);
+
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
   describe('ai chat', () => {
     it('should send a message in an AI session and output the response', async () => {
       sdkMock.ai.chat.mockResolvedValue({
