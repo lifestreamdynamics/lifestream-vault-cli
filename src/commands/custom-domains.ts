@@ -18,16 +18,16 @@ export function registerCustomDomainCommands(program: Command): void {
         const list = await client.customDomains.list();
         out.stopSpinner();
         out.list(
-          list.map(d => ({ id: d.id, domain: d.domain, verified: d.verified ? 'yes' : 'no', createdAt: d.createdAt })),
+          list.map(d => ({ id: d.id, domain: d.domain, status: d.status, createdAt: d.createdAt })),
           {
             emptyMessage: 'No custom domains found.',
             columns: [
               { key: 'id', header: 'ID' },
               { key: 'domain', header: 'Domain' },
-              { key: 'verified', header: 'Verified' },
+              { key: 'status', header: 'Status' },
               { key: 'createdAt', header: 'Created' },
             ],
-            textFn: (d) => `${chalk.cyan(String(d.domain))} — ${d.verified === 'yes' ? chalk.green('verified') : chalk.yellow('unverified')}`,
+            textFn: (d) => `${chalk.cyan(String(d.domain))} — ${d.status === 'verified' ? chalk.green('verified') : chalk.yellow(String(d.status))}`,
           },
         );
       } catch (err) {
@@ -46,7 +46,7 @@ export function registerCustomDomainCommands(program: Command): void {
         const client = await getClientAsync();
         const d = await client.customDomains.get(domainId);
         out.stopSpinner();
-        out.record({ id: d.id, domain: d.domain, verified: d.verified, verificationToken: d.verificationToken, createdAt: d.createdAt });
+        out.record({ id: d.id, domain: d.domain, status: d.status, sslStatus: d.sslStatus, verificationToken: d.verificationToken, createdAt: d.createdAt });
       } catch (err) {
         handleError(out, err, 'Failed to fetch custom domain');
       }
@@ -65,7 +65,7 @@ export function registerCustomDomainCommands(program: Command): void {
         out.success(`Domain added: ${d.domain}`, { id: d.id, domain: d.domain, verificationToken: d.verificationToken });
         if (flags.output !== 'json') {
           process.stdout.write(`\nTo verify, add this DNS TXT record:\n`);
-          process.stdout.write(`  ${chalk.cyan('_lsvault-verification.' + d.domain)} TXT ${chalk.green(d.verificationToken)}\n`);
+          process.stdout.write(`  ${chalk.cyan('_lsv-verify.' + d.domain)} TXT ${chalk.green(d.verificationToken)}\n`);
           process.stdout.write(`\nThen run: lsvault custom-domains verify ${d.id}\n`);
         }
       } catch (err) {
@@ -121,7 +121,7 @@ export function registerCustomDomainCommands(program: Command): void {
       try {
         const client = await getClientAsync();
         const d = await client.customDomains.verify(domainId);
-        out.success(`Domain ${d.verified ? 'verified' : 'not yet verified'}: ${d.domain}`, { id: d.id, domain: d.domain, verified: d.verified });
+        out.success(`Domain ${d.status === 'verified' ? 'verified' : 'not yet verified'}: ${d.domain}`, { id: d.id, domain: d.domain, status: d.status });
       } catch (err) {
         handleError(out, err, 'Failed to verify custom domain');
       }
@@ -138,17 +138,22 @@ export function registerCustomDomainCommands(program: Command): void {
         const client = await getClientAsync();
         const result = await client.customDomains.checkDns(domainId);
         out.stopSpinner();
-        out.record({
-          domain: result.domain,
-          resolved: result.resolved,
-          expectedValue: result.expectedValue,
-          actualValue: result.actualValue ?? 'N/A',
-        });
-        if (flags.output !== 'json') {
-          if (result.resolved) {
-            process.stdout.write(chalk.green('\n✓ DNS configured correctly\n'));
+        if (flags.output === 'json') {
+          out.record(result as unknown as Record<string, unknown>);
+        } else {
+          process.stdout.write(`Domain: ${chalk.cyan(result.domain)}\n\n`);
+          for (const check of result.checks) {
+            const icon = check.status === 'pass' ? chalk.green('✓') : chalk.red('✗');
+            process.stdout.write(`${icon} ${chalk.bold(check.type)} — ${check.hostname}\n`);
+            process.stdout.write(`  Expected : ${check.expected}\n`);
+            process.stdout.write(`  Found    : ${check.found.length > 0 ? check.found.join(', ') : chalk.yellow('(none)')}\n`);
+            process.stdout.write(`  Status   : ${check.status === 'pass' ? chalk.green('pass') : chalk.red('fail')}\n\n`);
+          }
+          const allPassed = result.checks.length > 0 && result.checks.every(c => c.status === 'pass');
+          if (allPassed) {
+            process.stdout.write(chalk.green('All DNS checks passed.\n'));
           } else {
-            process.stdout.write(chalk.yellow(`\n⚠ DNS not yet propagated. Expected: ${result.expectedValue}\n`));
+            process.stdout.write(chalk.yellow('One or more DNS checks failed. Allow time for propagation and try again.\n'));
           }
         }
       } catch (err) {
