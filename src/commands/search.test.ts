@@ -42,7 +42,7 @@ describe('search command', () => {
     sdkMock.search.search.mockResolvedValue({
       results: [
         {
-          documentId: 'd1', vaultId: 'v1', vaultName: 'My Vault',
+          documentId: 'd1', vaultId: 'v1', vaultName: 'My Vault', vaultSlug: 'my-vault',
           path: 'notes/hello.md', title: 'Hello World',
           snippet: 'This is a <b>test</b> snippet',
           tags: ['test'], rank: 1.5, fileModifiedAt: '2024-01-01',
@@ -115,7 +115,7 @@ describe('search command', () => {
     sdkMock.search.search.mockResolvedValue({
       results: [
         {
-          documentId: 'd1', vaultId: 'v1', vaultName: 'Vault',
+          documentId: 'd1', vaultId: 'v1', vaultName: 'Vault', vaultSlug: 'vault',
           path: 'test.md', title: null,
           snippet: '',
           tags: [], rank: 1.0, fileModifiedAt: '2024-01-01',
