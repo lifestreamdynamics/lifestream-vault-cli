@@ -40,7 +40,17 @@ export function registerSyncCommands(program: Command): void {
     .option('--on-conflict <strategy>', 'Conflict strategy: newer, local, remote, ask (default: newer)')
     .option('--ignore <patterns...>', 'Glob patterns to ignore')
     .option('--interval <interval>', 'Auto-sync interval (e.g., 5m, 1h)')
-    .option('--auto-sync', 'Enable auto-sync'))
+    .option('--auto-sync', 'Enable auto-sync')
+    .addHelpText('after', `
+Examples:
+  lsvault sync init <vaultId> ~/my-vault
+  lsvault sync init <vaultId> ~/mirror --mode pull --on-conflict remote
+  lsvault sync init <vaultId> ~/docs --mode push --on-conflict local --auto-sync
+
+Sync modes:
+  pull   Download remote changes only (ideal for cron/automation)
+  push   Upload local changes only (ideal for CI pipelines)
+  sync   Bidirectional with conflict detection (default)`))
     .action(async (vaultId: string, localPath: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -185,11 +195,19 @@ export function registerSyncCommands(program: Command): void {
         out.startSpinner('Computing diff...');
         const diff = computePullDiff(localFiles, remoteFiles, lastState);
 
+        const unchanged = Object.keys(remoteFiles).length - diff.downloads.length;
         const totalOps = diff.downloads.length + diff.deletes.length;
         if (totalOps === 0) {
           out.succeedSpinner('Everything is up to date');
           if (flags.output === 'json') {
-            out.record({ status: 'up-to-date', changes: 0 });
+            out.record({
+              status: 'up-to-date',
+              downloaded: 0,
+              deleted: 0,
+              unchanged: Object.keys(remoteFiles).length,
+              bytesTransferred: 0,
+              errors: 0,
+            });
           }
           return;
         }
@@ -204,6 +222,7 @@ export function registerSyncCommands(program: Command): void {
               dryRun: true,
               downloads: diff.downloads.length,
               deletes: diff.deletes.length,
+              unchanged,
               totalBytes: diff.totalBytes,
             });
           }
@@ -233,6 +252,7 @@ export function registerSyncCommands(program: Command): void {
         out.success('', {
           downloaded: result.filesDownloaded,
           deleted: result.filesDeleted,
+          unchanged,
           bytesTransferred: result.bytesTransferred,
           errors: result.errors.length,
         });
@@ -271,11 +291,19 @@ export function registerSyncCommands(program: Command): void {
         out.startSpinner('Computing diff...');
         const diff = computePushDiff(localFiles, remoteFiles, lastState);
 
+        const unchanged = Object.keys(localFiles).length - diff.uploads.length;
         const totalOps = diff.uploads.length + diff.deletes.length;
         if (totalOps === 0) {
           out.succeedSpinner('Everything is up to date');
           if (flags.output === 'json') {
-            out.record({ status: 'up-to-date', changes: 0 });
+            out.record({
+              status: 'up-to-date',
+              uploaded: 0,
+              deleted: 0,
+              unchanged: Object.keys(localFiles).length,
+              bytesTransferred: 0,
+              errors: 0,
+            });
           }
           return;
         }
@@ -290,6 +318,7 @@ export function registerSyncCommands(program: Command): void {
               dryRun: true,
               uploads: diff.uploads.length,
               deletes: diff.deletes.length,
+              unchanged,
               totalBytes: diff.totalBytes,
             });
           }
@@ -319,6 +348,7 @@ export function registerSyncCommands(program: Command): void {
         out.success('', {
           uploaded: result.filesUploaded,
           deleted: result.filesDeleted,
+          unchanged,
           bytesTransferred: result.bytesTransferred,
           errors: result.errors.length,
         });

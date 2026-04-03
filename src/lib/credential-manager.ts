@@ -127,8 +127,13 @@ export function createCredentialManager(options: CredentialManagerOptions = {}):
     async saveCredentials(config: Partial<CliConfig>): Promise<void> {
       // Prefer keychain if available
       if (await keychain.isAvailable()) {
-        await keychain.saveCredentials(config);
-        return;
+        try {
+          await keychain.saveCredentials(config);
+          return;
+        } catch {
+          // Keychain reported available but failed to save — fall through
+          // to encrypted config silently.
+        }
       }
 
       // Fall back to encrypted config

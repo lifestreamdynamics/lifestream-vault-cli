@@ -135,6 +135,23 @@ describe('credential-manager', () => {
 
       expect(encConfig.saveCredentials).toHaveBeenCalled();
     });
+
+    it('should fall back to encrypted config when keychain save throws', async () => {
+      const keychain = createMockKeychain(true);
+      // Override saveCredentials to simulate the real-world CJS interop failure
+      (keychain.saveCredentials as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error('kt.setPassword is not a function'),
+      );
+      const encConfig = createMockEncryptedConfig();
+
+      const cm = createCredentialManager({ keychain, encryptedConfig: encConfig, passphrase: 'pass' });
+      await cm.saveCredentials({ apiKey: 'lsv_k_fallback' });
+
+      // Keychain was attempted
+      expect(keychain.saveCredentials).toHaveBeenCalled();
+      // Fallback to encrypted config succeeded
+      expect(encConfig.saveCredentials).toHaveBeenCalled();
+    });
   });
 
   describe('clearCredentials', () => {

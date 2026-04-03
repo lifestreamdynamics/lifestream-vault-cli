@@ -19,7 +19,21 @@ export interface KeychainBackend {
  */
 async function loadKeytar(): Promise<typeof import('keytar') | null> {
   try {
-    return await import('keytar');
+    const mod = await import('keytar');
+    // CJS-in-ESM interop: keytar is a native CJS addon, so dynamic import
+    // wraps it as { default: { getPassword, setPassword, ... } }.
+    const resolved = (mod.default && typeof mod.default.getPassword === 'function')
+      ? mod.default
+      : mod;
+
+    // Validate that the resolved module has the methods we need
+    if (typeof resolved.getPassword !== 'function' ||
+        typeof resolved.setPassword !== 'function' ||
+        typeof resolved.deletePassword !== 'function') {
+      return null;
+    }
+
+    return resolved as typeof import('keytar');
   } catch {
     return null;
   }

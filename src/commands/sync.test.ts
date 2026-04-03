@@ -37,11 +37,39 @@ vi.mock('../sync/config.js', () => ({
     mockConfigs.splice(idx, 1);
     return true;
   }),
+  getSyncConfig: vi.fn((id: string) => {
+    return mockConfigs.find(c => c.id === id) ?? null;
+  }),
 }));
 
 // Mock sync state module
 vi.mock('../sync/state.js', () => ({
   deleteSyncState: vi.fn(() => true),
+  loadSyncState: vi.fn(() => null),
+  saveSyncState: vi.fn(),
+  hashFileContent: vi.fn(() => 'hash'),
+  buildRemoteFileState: vi.fn(),
+}));
+
+// Mock sync engine module
+vi.mock('../sync/engine.js', () => ({
+  scanLocalFiles: vi.fn(() => ({})),
+  scanRemoteFiles: vi.fn(async () => ({})),
+  executePull: vi.fn(async (_client: unknown, _config: unknown, _diff: unknown, onProgress?: (p: unknown) => void) => {
+    if (onProgress) onProgress({ phase: 'complete', current: 0, total: 0 });
+    return { filesDownloaded: 0, filesDeleted: 0, filesUploaded: 0, bytesTransferred: 0, errors: [] };
+  }),
+  executePush: vi.fn(async (_client: unknown, _config: unknown, _diff: unknown, onProgress?: (p: unknown) => void) => {
+    if (onProgress) onProgress({ phase: 'complete', current: 0, total: 0 });
+    return { filesDownloaded: 0, filesDeleted: 0, filesUploaded: 0, bytesTransferred: 0, errors: [] };
+  }),
+  computePullDiff: vi.fn(() => ({ downloads: [], deletes: [], uploads: [], totalBytes: 0 })),
+  computePushDiff: vi.fn(() => ({ downloads: [], deletes: [], uploads: [], totalBytes: 0 })),
+}));
+
+// Mock sync ignore module
+vi.mock('../sync/ignore.js', () => ({
+  resolveIgnorePatterns: vi.fn(() => []),
 }));
 
 let sdkMock: SDKMock;
@@ -51,6 +79,7 @@ vi.mock('../client.js', () => ({
 
 import { createSyncConfig, deleteSyncConfig, loadSyncConfigs } from '../sync/config.js';
 import { deleteSyncState } from '../sync/state.js';
+import { scanLocalFiles, scanRemoteFiles, computePullDiff, computePushDiff, executePull, executePush } from '../sync/engine.js';
 
 describe('sync commands', () => {
   let program: Command;
@@ -191,6 +220,90 @@ describe('sync commands', () => {
       await program.parseAsync(['node', 'cli', 'sync', 'delete', 'nonexistent']);
 
       expect(process.exitCode).toBe(1);
+    });
+  });
+
+  describe('sync pull', () => {
+    beforeEach(() => {
+      mockConfigs.push({
+        id: 'pull-1', vaultId: 'vault-1', localPath: '/tmp/test',
+        mode: 'pull', onConflict: 'newer', ignore: [],
+        lastSyncAt: '1970-01-01T00:00:00.000Z', autoSync: false,
+      });
+    });
+
+    it('should include unchanged count in JSON when up to date', async () => {
+      // 5 remote files, no changes
+      vi.mocked(scanRemoteFiles).mockResolvedValue({
+        'a.md': { path: 'a.md', hash: '', mtime: '', size: 0 },
+        'b.md': { path: 'b.md', hash: '', mtime: '', size: 0 },
+        'c.md': { path: 'c.md', hash: '', mtime: '', size: 0 },
+        'd.md': { path: 'd.md', hash: '', mtime: '', size: 0 },
+        'e.md': { path: 'e.md', hash: '', mtime: '', size: 0 },
+      });
+      vi.mocked(computePullDiff).mockReturnValue({ downloads: [], deletes: [], uploads: [], totalBytes: 0 });
+
+      await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-1', '--output', 'json']);
+
+      const jsonOutput = outputSpy.stdout.find(l => l.includes('"unchanged"'));
+      expect(jsonOutput).toBeDefined();
+      const parsed = JSON.parse(jsonOutput!);
+      expect(parsed.unchanged).toBe(5);
+      expect(parsed.downloaded).toBe(0);
+    });
+
+    it('should include unchanged count after pull with changes', async () => {
+      vi.mocked(scanRemoteFiles).mockResolvedValue({
+        'a.md': { path: 'a.md', hash: '', mtime: '', size: 100 },
+        'b.md': { path: 'b.md', hash: '', mtime: '', size: 200 },
+        'c.md': { path: 'c.md', hash: '', mtime: '', size: 300 },
+      });
+      vi.mocked(computePullDiff).mockReturnValue({
+        downloads: [
+          { path: 'a.md', action: 'create' as const, direction: 'pull' as const, sizeBytes: 100, reason: 'new' },
+        ],
+        deletes: [],
+        uploads: [],
+        totalBytes: 100,
+      });
+      vi.mocked(executePull).mockResolvedValue({
+        filesDownloaded: 1, filesDeleted: 0, filesUploaded: 0,
+        bytesTransferred: 100, errors: [],
+      });
+
+      await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-1', '--output', 'json']);
+
+      const jsonOutput = outputSpy.stdout.find(l => l.includes('"unchanged"'));
+      expect(jsonOutput).toBeDefined();
+      const parsed = JSON.parse(jsonOutput!);
+      expect(parsed.unchanged).toBe(2);
+      expect(parsed.downloaded).toBe(1);
+    });
+  });
+
+  describe('sync push', () => {
+    beforeEach(() => {
+      mockConfigs.push({
+        id: 'push-1', vaultId: 'vault-1', localPath: '/tmp/test',
+        mode: 'push', onConflict: 'newer', ignore: [],
+        lastSyncAt: '1970-01-01T00:00:00.000Z', autoSync: false,
+      });
+    });
+
+    it('should include unchanged count in JSON when up to date', async () => {
+      vi.mocked(scanLocalFiles).mockReturnValue({
+        'a.md': { path: 'a.md', hash: 'h1', mtime: '', size: 0 },
+        'b.md': { path: 'b.md', hash: 'h2', mtime: '', size: 0 },
+        'c.md': { path: 'c.md', hash: 'h3', mtime: '', size: 0 },
+      });
+      vi.mocked(computePushDiff).mockReturnValue({ downloads: [], deletes: [], uploads: [], totalBytes: 0 });
+
+      await program.parseAsync(['node', 'cli', 'sync', 'push', 'push-1', '--output', 'json']);
+
+      const jsonOutput = outputSpy.stdout.find(l => l.includes('"unchanged"'));
+      expect(jsonOutput).toBeDefined();
+      const parsed = JSON.parse(jsonOutput!);
+      expect(parsed.unchanged).toBe(3);
     });
   });
 });
