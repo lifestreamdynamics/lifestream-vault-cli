@@ -25,6 +25,10 @@ vi.mock('../client.js', () => ({
   getClientAsync: vi.fn(async () => sdkMock),
 }));
 
+vi.mock('../utils/resolve-vault.js', () => ({
+  resolveVaultId: vi.fn(async (id: string) => id),
+}));
+
 import { readPasswordFromStdin } from '../utils/prompt.js';
 const mockedReadPasswordFromStdin = vi.mocked(readPasswordFromStdin);
 

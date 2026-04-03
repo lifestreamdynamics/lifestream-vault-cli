@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 export function registerSearchCommands(program: Command): void {
   addGlobalFlags(program.command('search')
@@ -23,6 +24,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Searching...');
       try {
+        if (_opts.vault) _opts.vault = await resolveVaultId(String(_opts.vault));
         const client = await getClientAsync();
         const mode = _opts.mode as string | undefined;
         const response = await client.search.search({
@@ -47,6 +49,7 @@ EXAMPLES
             title: r.title || r.path,
             path: r.path,
             vaultName: r.vaultName,
+            rank: r.rank,
             tags: r.tags.join(', '),
             snippet: r.snippet ? r.snippet.replace(/<[^>]+>/g, '') : '',
           })),

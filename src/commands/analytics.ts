@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 export function registerAnalyticsCommands(program: Command): void {
   const analytics = program.command('analytics').description('Analytics for published documents and share links');
@@ -42,13 +43,14 @@ export function registerAnalyticsCommands(program: Command): void {
 
   addGlobalFlags(analytics.command('share')
     .description('Analytics for a share link')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<shareId>', 'Share ID'))
     .action(async (vaultId: string, shareId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching share analytics...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const data = await client.analytics.getShareAnalytics(vaultId, shareId);
         out.stopSpinner();
@@ -65,13 +67,18 @@ export function registerAnalyticsCommands(program: Command): void {
 
   addGlobalFlags(analytics.command('doc')
     .description('Analytics for a published document')
-    .argument('<vaultId>', 'Vault ID')
-    .argument('<publishedDocId>', 'Published document ID'))
+    .argument('<vaultId>', 'Vault ID or slug')
+    .argument('<publishedDocId>', 'Published document ID (UUID from "publish list")')
+    .addHelpText('after', `
+NOTE
+  The publishedDocId is a UUID, NOT a document path. Get it from:
+    lsvault publish list <vaultId>`))
     .action(async (vaultId: string, publishedDocId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching document analytics...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const data = await client.analytics.getPublishedDocAnalytics(vaultId, publishedDocId);
         out.stopSpinner();

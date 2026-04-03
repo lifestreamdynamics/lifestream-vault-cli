@@ -4,6 +4,7 @@ import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { Booking, WaitlistStatus } from '@lifestreamdynamics/vault-sdk';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 export function registerBookingCommands(program: Command): void {
   const booking = program.command('booking').description('Booking slot and guest booking management');
@@ -16,12 +17,13 @@ export function registerBookingCommands(program: Command): void {
   // booking slots list
   addGlobalFlags(slots.command('list')
     .description('List all event slots for a vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Loading slots...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const slotList = await client.booking.listSlots(vaultId);
         out.stopSpinner();
@@ -64,7 +66,7 @@ export function registerBookingCommands(program: Command): void {
   // booking slots create
   addGlobalFlags(slots.command('create')
     .description('Create a new bookable event slot')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .requiredOption('--title <title>', 'Slot title')
     .requiredOption('--duration <minutes>', 'Slot duration in minutes')
     .requiredOption('--start-time <HH:mm>', 'Availability window start time (HH:mm)')
@@ -79,6 +81,7 @@ export function registerBookingCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Creating slot...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const created = await client.booking.createSlot(vaultId, {
           title: _opts.title as string,
@@ -105,7 +108,7 @@ export function registerBookingCommands(program: Command): void {
   // booking slots update
   addGlobalFlags(slots.command('update')
     .description('Update an existing event slot')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<slotId>', 'Slot ID')
     .option('--title <title>', 'Slot title')
     .option('--duration <minutes>', 'Slot duration in minutes')
@@ -121,6 +124,7 @@ export function registerBookingCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Updating slot...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const data: Record<string, unknown> = {};
         if (_opts.title) data.title = _opts.title;
@@ -147,7 +151,7 @@ export function registerBookingCommands(program: Command): void {
   // booking slots delete
   addGlobalFlags(slots.command('delete')
     .description('Delete an event slot')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<slotId>', 'Slot ID')
     .option('-y, --yes', 'Skip confirmation prompt')
     .option('--confirm', 'Alias for --yes (deprecated)'))
@@ -160,6 +164,7 @@ export function registerBookingCommands(program: Command): void {
       }
       out.startSpinner('Deleting slot...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.booking.deleteSlot(vaultId, slotId);
         out.stopSpinner();
@@ -176,7 +181,7 @@ export function registerBookingCommands(program: Command): void {
 
   addGlobalFlags(booking.command('list')
     .description('List bookings for a vault')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .option('--status <status>', 'Filter by status (pending/confirmed/cancelled/no_show/completed)')
     .option('--slot-id <slotId>', 'Filter by slot ID')
     .option('--from <date>', 'Filter bookings from this date (YYYY-MM-DD)')
@@ -192,6 +197,7 @@ export function registerBookingCommands(program: Command): void {
       }
       out.startSpinner('Loading bookings...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const result = await client.booking.listBookings(vaultId, {
           status: bookingStatus as Booking['status'] | undefined,
@@ -245,13 +251,14 @@ export function registerBookingCommands(program: Command): void {
   // ---------------------------------------------------------------------------
   addGlobalFlags(booking.command('confirm')
     .description('Confirm a pending booking')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<bookingId>', 'Booking ID'))
     .action(async (vaultId: string, bookingId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Confirming booking...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const updated = await client.booking.updateBookingStatus(vaultId, bookingId, 'confirmed');
         out.stopSpinner();
@@ -270,13 +277,14 @@ export function registerBookingCommands(program: Command): void {
   // ---------------------------------------------------------------------------
   addGlobalFlags(booking.command('cancel')
     .description('Cancel a booking')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<bookingId>', 'Booking ID'))
     .action(async (vaultId: string, bookingId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Cancelling booking...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const updated = await client.booking.updateBookingStatus(vaultId, bookingId, 'cancelled');
         out.stopSpinner();
@@ -298,12 +306,13 @@ export function registerBookingCommands(program: Command): void {
   // booking templates list
   addGlobalFlags(templates.command('list')
     .description('List event templates for a vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Loading templates...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const list = await client.booking.listTemplates(vaultId);
         out.stopSpinner();
@@ -333,7 +342,7 @@ export function registerBookingCommands(program: Command): void {
   // booking templates create
   addGlobalFlags(templates.command('create')
     .description('Create an event template')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .requiredOption('--name <name>', 'Template name')
     .option('--description <desc>', 'Template description')
     .option('--defaults <json>', 'Default values (JSON string)', '{}'))
@@ -352,6 +361,7 @@ export function registerBookingCommands(program: Command): void {
 
       out.startSpinner('Creating template...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const created = await client.booking.createTemplate(vaultId, {
           name: _opts.name as string,
@@ -372,7 +382,7 @@ export function registerBookingCommands(program: Command): void {
   // booking templates delete
   addGlobalFlags(templates.command('delete')
     .description('Delete an event template')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<templateId>', 'Template ID')
     .option('-y, --yes', 'Skip confirmation prompt')
     .option('--confirm', 'Alias for --yes (deprecated)'))
@@ -385,6 +395,7 @@ export function registerBookingCommands(program: Command): void {
       }
       out.startSpinner('Deleting template...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.booking.deleteTemplate(vaultId, templateId);
         out.stopSpinner();
@@ -431,7 +442,7 @@ export function registerBookingCommands(program: Command): void {
 
   addGlobalFlags(booking.command('analytics')
     .description('View booking analytics (Business tier)')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .option('--view <view>', 'Analytics view: volume, funnel, peak-times', 'volume')
     .option('--from <date>', 'Start date (YYYY-MM-DD)')
     .option('--to <date>', 'End date (YYYY-MM-DD)')
@@ -447,6 +458,7 @@ export function registerBookingCommands(program: Command): void {
       }
       out.startSpinner('Loading analytics...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const result = await client.booking.getBookingAnalytics(vaultId, {
           view: analyticsView as AnalyticsView | undefined,
@@ -704,7 +716,7 @@ export function registerBookingCommands(program: Command): void {
   // booking waitlist list <vaultId> <slotId>
   addGlobalFlags(waitlist.command('list')
     .description('List waitlist entries for a booking slot')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<slotId>', 'Slot ID')
     .option('--status <status>', 'Filter by status (waiting/notified/expired/left)')
     .option('--start-at <iso>', 'Filter by specific start time (ISO 8601)'))
@@ -713,6 +725,7 @@ export function registerBookingCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Loading waitlist...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const result = await client.booking.getWaitlist(vaultId, slotId, {
           status: _opts.status as WaitlistStatus | undefined,

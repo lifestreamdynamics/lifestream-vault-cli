@@ -4,18 +4,20 @@ import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { CreateHookParams } from '@lifestreamdynamics/vault-sdk';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 export function registerHookCommands(program: Command): void {
   const hooks = program.command('hooks').description('Manage vault event hooks');
 
   addGlobalFlags(hooks.command('list')
     .description('List all hooks for a vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching hooks...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const hookList = await client.hooks.list(vaultId);
         out.stopSpinner();
@@ -52,7 +54,7 @@ export function registerHookCommands(program: Command): void {
 
   addGlobalFlags(hooks.command('create')
     .description('Create a new hook')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<name>', 'Hook name')
     .requiredOption('--trigger <event>', 'Trigger event (document.created, document.updated, document.deleted, document.moved, document.copied)')
     .requiredOption('--action <type>', 'Action type (webhook, ai_prompt, document_operation, auto_calendar_event, auto_booking_process)')
@@ -101,8 +103,27 @@ EXAMPLES
         }
       }
 
+      const VALID_TRIGGERS = ['document.created', 'document.updated', 'document.deleted', 'document.moved', 'document.copied'];
+      const VALID_ACTIONS = ['webhook', 'ai_prompt', 'document_operation', 'auto_calendar_event', 'auto_booking_process'];
+
+      const trigger = String(_opts.trigger);
+      const action = String(_opts.action);
+
+      if (!VALID_TRIGGERS.includes(trigger)) {
+        out.error(`Invalid trigger "${trigger}". Valid values: document.created, document.updated, document.deleted, document.moved, document.copied`);
+        process.exitCode = 1;
+        return;
+      }
+
+      if (!VALID_ACTIONS.includes(action)) {
+        out.error(`Invalid action "${action}". Valid values: webhook, ai_prompt, document_operation, auto_calendar_event, auto_booking_process`);
+        process.exitCode = 1;
+        return;
+      }
+
       out.startSpinner('Creating hook...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const params: CreateHookParams = {
           name,
@@ -126,7 +147,7 @@ EXAMPLES
 
   addGlobalFlags(hooks.command('delete')
     .description('Delete a hook')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<hookId>', 'Hook ID')
     .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, hookId: string, _opts: Record<string, unknown>) => {
@@ -138,6 +159,7 @@ EXAMPLES
       }
       out.startSpinner('Deleting hook...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.hooks.delete(vaultId, hookId);
         out.success('Hook deleted successfully', { id: hookId, deleted: true });
@@ -148,13 +170,14 @@ EXAMPLES
 
   addGlobalFlags(hooks.command('executions')
     .description('List recent executions for a hook')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<hookId>', 'Hook ID'))
     .action(async (vaultId: string, hookId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching executions...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const executions = await client.hooks.listExecutions(vaultId, hookId);
         out.stopSpinner();

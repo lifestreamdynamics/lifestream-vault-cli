@@ -252,6 +252,42 @@ describe('sync commands', () => {
       expect(parsed.downloaded).toBe(0);
     });
 
+    it('should output only JSON (no text status) when --dry-run and --output json', async () => {
+      vi.mocked(scanRemoteFiles).mockResolvedValue({
+        'a.md': { path: 'a.md', hash: '', mtime: '', size: 100 },
+        'b.md': { path: 'b.md', hash: '', mtime: '', size: 200 },
+      });
+      vi.mocked(computePullDiff).mockReturnValue({
+        downloads: [
+          { path: 'a.md', action: 'create' as const, direction: 'pull' as const, sizeBytes: 100, reason: 'new' },
+        ],
+        deletes: [
+          { path: 'old.md', action: 'delete' as const, direction: 'pull' as const, sizeBytes: 0, reason: 'removed' },
+        ],
+        uploads: [],
+        totalBytes: 100,
+      });
+
+      await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-1', '--dry-run', '--output', 'json']);
+
+      const stdout = outputSpy.stdout.join('');
+      const stderr = outputSpy.stderr.join('');
+
+      // JSON output must be present
+      const jsonLine = outputSpy.stdout.find(l => l.startsWith('{'));
+      expect(jsonLine).toBeDefined();
+      const parsed = JSON.parse(jsonLine!);
+      expect(parsed.dryRun).toBe(true);
+      expect(parsed.downloads).toBe(1);
+      expect(parsed.deletes).toBe(1);
+      expect(parsed.unchanged).toBe(1);
+      expect(parsed.totalBytes).toBe(100);
+
+      // Text status lines must NOT be present when output is json
+      expect(stderr).not.toContain('Dry run');
+      expect(stdout).not.toContain('Dry run');
+    });
+
     it('should include unchanged count after pull with changes', async () => {
       vi.mocked(scanRemoteFiles).mockResolvedValue({
         'a.md': { path: 'a.md', hash: '', mtime: '', size: 100 },

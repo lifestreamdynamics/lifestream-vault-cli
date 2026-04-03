@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 const VALID_PROVIDERS = ['google_drive', 'dropbox', 'onedrive'] as const;
 type ConnectorProvider = typeof VALID_PROVIDERS[number];
@@ -18,6 +19,7 @@ export function registerConnectorCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching connectors...');
       try {
+        if (_opts.vault) _opts.vault = await resolveVaultId(String(_opts.vault));
         const client = await getClientAsync();
         const connectorList = await client.connectors.list(_opts.vault as string | undefined);
         out.stopSpinner();
@@ -84,7 +86,12 @@ export function registerConnectorCommands(program: Command): void {
     .argument('<name>', 'Connector name')
     .requiredOption('--vault <vaultId>', 'Vault ID')
     .requiredOption('-d, --direction <direction>', 'Sync direction (pull, push, bidirectional)')
-    .option('-p, --sync-path <path>', 'Sync path prefix'))
+    .option('-p, --sync-path <path>', 'Sync path prefix')
+    .addHelpText('after', `
+VALID PROVIDERS
+  google_drive    Google Drive
+  dropbox         Dropbox
+  onedrive        Microsoft OneDrive`))
     .action(async (provider: string, name: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -105,6 +112,7 @@ export function registerConnectorCommands(program: Command): void {
       }
       out.startSpinner('Creating connector...');
       try {
+        if (_opts.vault) _opts.vault = await resolveVaultId(String(_opts.vault));
         const client = await getClientAsync();
         const connector = await client.connectors.create({
           provider: provider as ConnectorProvider,

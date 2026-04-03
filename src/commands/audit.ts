@@ -44,13 +44,28 @@ EXAMPLES
             return;
           }
         }
-        const logger = new AuditLogger({ logPath: String(_opts.logPath || DEFAULT_LOG_PATH) });
+        const logPath = String(_opts.logPath || DEFAULT_LOG_PATH);
+        if (!fs.existsSync(logPath)) {
+          out.warn(`Audit log file not found at ${logPath}`);
+          if (flags.output === 'json') {
+            process.stdout.write('[]\n');
+          }
+          return;
+        }
+        if (flags.verbose) {
+          out.debug(`Reading audit log from: ${logPath}`);
+        }
+        const logger = new AuditLogger({ logPath });
         const entries = logger.readEntries({
           tail: _opts.tail as number | undefined,
           status: _opts.status as number | undefined,
           since: _opts.since as string | undefined,
           until: _opts.until as string | undefined,
         });
+
+        if (flags.verbose) {
+          out.debug(`Found ${entries.length} entries`);
+        }
 
         out.list(
           entries.map(e => ({
@@ -119,7 +134,16 @@ EXAMPLES
           }
         }
 
-        const logger = new AuditLogger({ logPath: String(_opts.logPath || DEFAULT_LOG_PATH) });
+        const logPath = String(_opts.logPath || DEFAULT_LOG_PATH);
+        if (!fs.existsSync(logPath)) {
+          out.warn(`Audit log file not found at ${logPath}`);
+          if (flags.output === 'json') {
+            process.stdout.write('[]\n');
+          }
+          return;
+        }
+
+        const logger = new AuditLogger({ logPath });
         const entries = logger.readEntries({
           status: _opts.status as number | undefined,
           since: _opts.since as string | undefined,

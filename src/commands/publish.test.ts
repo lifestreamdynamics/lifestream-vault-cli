@@ -19,6 +19,10 @@ vi.mock('../client.js', () => ({
   getClientAsync: vi.fn(async () => sdkMock),
 }));
 
+vi.mock('../utils/resolve-vault.js', () => ({
+  resolveVaultId: vi.fn(async (id: string) => id),
+}));
+
 describe('publish commands', () => {
   let program: Command;
   let outputSpy: ReturnType<typeof spyOutput>;

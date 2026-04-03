@@ -225,10 +225,18 @@ describe('keys commands', () => {
   });
 
   describe('keys revoke', () => {
-    it('should revoke an API key', async () => {
+    it('should require --yes flag before revoking', async () => {
+      await program.parseAsync(['node', 'cli', 'keys', 'revoke', 'k1']);
+
+      expect(sdkMock.apiKeys.delete).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('--yes');
+    });
+
+    it('should revoke an API key with --yes', async () => {
       sdkMock.apiKeys.delete.mockResolvedValue(undefined);
 
-      await program.parseAsync(['node', 'cli', 'keys', 'revoke', 'k1']);
+      await program.parseAsync(['node', 'cli', 'keys', 'revoke', 'k1', '--yes']);
 
       expect(sdkMock.apiKeys.delete).toHaveBeenCalledWith('k1');
     });
@@ -236,7 +244,7 @@ describe('keys commands', () => {
     it('should handle revoke errors', async () => {
       sdkMock.apiKeys.delete.mockRejectedValue(new Error('Key not found'));
 
-      await program.parseAsync(['node', 'cli', 'keys', 'revoke', 'k1']);
+      await program.parseAsync(['node', 'cli', 'keys', 'revoke', 'k1', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Key not found');

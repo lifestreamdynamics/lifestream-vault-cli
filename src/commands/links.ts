@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 export function registerLinkCommands(program: Command): void {
   const links = program.command('links').description('Manage document links and backlinks');
@@ -10,13 +11,14 @@ export function registerLinkCommands(program: Command): void {
   // lsvault links list <vaultId> <path> — forward links
   addGlobalFlags(links.command('list')
     .description('List forward links from a document')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path'))
     .action(async (vaultId: string, docPath: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching links...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const linkList = await client.documents.getLinks(vaultId, docPath);
         out.stopSpinner();
@@ -47,13 +49,14 @@ export function registerLinkCommands(program: Command): void {
   // lsvault links backlinks <vaultId> <path>
   addGlobalFlags(links.command('backlinks')
     .description('List backlinks pointing to a document')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path'))
     .action(async (vaultId: string, docPath: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching backlinks...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const backlinks = await client.documents.getBacklinks(vaultId, docPath);
         out.stopSpinner();
@@ -86,12 +89,13 @@ export function registerLinkCommands(program: Command): void {
   // lsvault links graph <vaultId>
   addGlobalFlags(links.command('graph')
     .description('Get the link graph for a vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching link graph...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const graph = await client.vaults.getGraph(vaultId);
         out.stopSpinner();
@@ -111,12 +115,13 @@ export function registerLinkCommands(program: Command): void {
   // lsvault links broken <vaultId>
   addGlobalFlags(links.command('broken')
     .description('List unresolved (broken) links in a vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching unresolved links...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const unresolved = await client.vaults.getUnresolvedLinks(vaultId);
         out.stopSpinner();

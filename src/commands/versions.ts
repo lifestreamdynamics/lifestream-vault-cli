@@ -3,13 +3,14 @@ import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 export function registerVersionCommands(program: Command): void {
   const versions = program.command('versions').description('View and manage document version history');
 
   addGlobalFlags(versions.command('list')
     .description('List version history for a document')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path (e.g., notes/todo.md)')
     .addHelpText('after', `
 EXAMPLES
@@ -19,6 +20,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Fetching versions...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const versionList = await client.documents.listVersions(vaultId, docPath);
         out.stopSpinner();
@@ -55,7 +57,7 @@ EXAMPLES
 
   addGlobalFlags(versions.command('view')
     .description('View content of a specific version')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path')
     .argument('<version>', 'Version number')
     .addHelpText('after', `
@@ -71,6 +73,7 @@ EXAMPLES
         return;
       }
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const version = await client.documents.getVersion(vaultId, docPath, versionNum);
         if (version.content === null) {
@@ -90,7 +93,7 @@ EXAMPLES
 
   addGlobalFlags(versions.command('diff')
     .description('Show diff between two versions')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path')
     .argument('<from>', 'Source version number')
     .argument('<to>', 'Target version number')
@@ -109,6 +112,7 @@ EXAMPLES
       }
       out.startSpinner('Computing diff...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const diff = await client.documents.diffVersions(vaultId, docPath, from, to);
         out.stopSpinner();
@@ -139,7 +143,7 @@ EXAMPLES
 
   addGlobalFlags(versions.command('restore')
     .description('Restore a document to a previous version')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path')
     .argument('<version>', 'Version number to restore')
     .addHelpText('after', `
@@ -156,6 +160,7 @@ EXAMPLES
       }
       out.startSpinner(`Restoring to version ${versionNum}...`);
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const doc = await client.documents.restoreVersion(vaultId, docPath, versionNum);
         out.success(`Restored ${chalk.cyan(docPath)} to version ${versionNum}`, {
@@ -169,7 +174,7 @@ EXAMPLES
 
   addGlobalFlags(versions.command('pin')
     .description('Pin a version to prevent pruning')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path')
     .argument('<version>', 'Version number to pin')
     .addHelpText('after', `
@@ -186,6 +191,7 @@ EXAMPLES
       }
       out.startSpinner(`Pinning version ${versionNum}...`);
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.documents.pinVersion(vaultId, docPath, versionNum);
         out.success(`Pinned version ${versionNum} of ${chalk.cyan(docPath)}`, {
@@ -200,7 +206,7 @@ EXAMPLES
 
   addGlobalFlags(versions.command('unpin')
     .description('Unpin a version, allowing it to be pruned')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path')
     .argument('<version>', 'Version number to unpin')
     .addHelpText('after', `
@@ -217,6 +223,7 @@ EXAMPLES
       }
       out.startSpinner(`Unpinning version ${versionNum}...`);
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.documents.unpinVersion(vaultId, docPath, versionNum);
         out.success(`Unpinned version ${versionNum} of ${chalk.cyan(docPath)}`, {

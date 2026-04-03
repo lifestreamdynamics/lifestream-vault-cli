@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 const NAMED_COLORS: Record<string, string> = {
   red: '#ff0000', green: '#00ff00', blue: '#0000ff', yellow: '#ffff00',
@@ -24,7 +25,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar view
   addGlobalFlags(calendar.command('view')
     .description('View calendar activity for a vault')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .option('--start <date>', 'Start date (YYYY-MM-DD)')
     .option('--end <date>', 'End date (YYYY-MM-DD)'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
@@ -32,6 +33,7 @@ export function registerCalendarCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Loading calendar...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const response = await client.calendar.getActivity(vaultId, {
           start: (_opts.start as string | undefined) ?? getDefaultStart(),
@@ -75,7 +77,7 @@ export function registerCalendarCommands(program: Command): void {
 
   addGlobalFlags(calendar.command('due')
     .description('List documents with due dates')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .option('--status <status>', 'Filter: overdue, upcoming, all', 'all'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
@@ -88,6 +90,7 @@ export function registerCalendarCommands(program: Command): void {
       }
       out.startSpinner('Loading due dates...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const docs = await client.calendar.getDueDates(vaultId, {
           status: (statusVal ?? 'all') as DueStatus,
@@ -123,7 +126,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar set-due
   addGlobalFlags(calendar.command('set-due')
     .description('Set due date on a document')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path')
     .requiredOption('--date <date>', 'Due date (YYYY-MM-DD or "clear")')
     .option('--priority <priority>', 'Priority (low/medium/high)')
@@ -133,6 +136,7 @@ export function registerCalendarCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Setting due date...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const dateStr = _opts.date as string;
         await client.calendar.setDocumentDue(vaultId, path, {
@@ -153,7 +157,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar events (list)
   addGlobalFlags(calendar.command('events')
     .description('Full CRUD management for calendar events (list, create, update, delete)')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .option('--start <date>', 'Start date')
     .option('--end <date>', 'End date'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
@@ -161,6 +165,7 @@ export function registerCalendarCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Loading events...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const events = await client.calendar.listEvents(vaultId, {
           start: _opts.start as string | undefined,
@@ -198,7 +203,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar event create
   addGlobalFlags(event.command('create')
     .description('Create a new calendar event')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .requiredOption('--title <title>', 'Event title')
     .requiredOption('--start <date>', 'Start date/time (YYYY-MM-DD or ISO 8601)')
     .option('--end <date>', 'End date/time (YYYY-MM-DD or ISO 8601)')
@@ -211,6 +216,7 @@ export function registerCalendarCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Creating event...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const created = await client.calendar.createEvent(vaultId, {
           title: _opts.title as string,
@@ -235,7 +241,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar event update
   addGlobalFlags(event.command('update')
     .description('Update an existing calendar event')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<eventId>', 'Event ID')
     .option('--title <title>', 'Event title')
     .option('--start <date>', 'Start date/time (YYYY-MM-DD or ISO 8601)')
@@ -249,6 +255,7 @@ export function registerCalendarCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Updating event...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const data: Record<string, unknown> = {};
         if (_opts.title) data.title = _opts.title;
@@ -273,7 +280,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar event delete
   addGlobalFlags(event.command('delete')
     .description('Delete a calendar event')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<eventId>', 'Event ID')
     .option('-y, --yes', 'Skip confirmation prompt')
     .option('--confirm', 'Alias for --yes (deprecated)'))
@@ -286,6 +293,7 @@ export function registerCalendarCommands(program: Command): void {
       }
       out.startSpinner('Deleting event...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.calendar.deleteEvent(vaultId, eventId);
         out.stopSpinner();
@@ -298,13 +306,14 @@ export function registerCalendarCommands(program: Command): void {
   // calendar event get
   addGlobalFlags(event.command('get')
     .description('Get a single calendar event by ID')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<eventId>', 'Event ID'))
     .action(async (vaultId: string, eventId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Loading event...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const ev = await client.calendar.getEvent(vaultId, eventId);
         out.stopSpinner();
@@ -323,14 +332,19 @@ export function registerCalendarCommands(program: Command): void {
   // ---------------------------------------------------------------------------
   addGlobalFlags(calendar.command('timeline')
     .description('Cursor-paginated event feed with before/after navigation')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .option('--limit <n>', 'Number of items to return')
-    .option('--cursor <cursor>', 'Pagination cursor'))
+    .option('--cursor <cursor>', 'Pagination cursor')
+    .addHelpText('after', `
+NOTE
+  Use "events" for CRUD operations on calendar events.
+  Use "timeline" for a cursor-paginated event feed across all event types.`))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Loading timeline...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const timeline = await client.calendar.getTimeline(vaultId, {
           limit: _opts.limit ? Number(_opts.limit) : undefined,
@@ -361,12 +375,13 @@ export function registerCalendarCommands(program: Command): void {
   // ---------------------------------------------------------------------------
   addGlobalFlags(calendar.command('upcoming')
     .description('Show upcoming events and due items for a vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Loading upcoming items...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const upcoming = await client.calendar.getUpcoming(vaultId);
         out.stopSpinner();
@@ -404,12 +419,13 @@ export function registerCalendarCommands(program: Command): void {
   // calendar ical-token generate
   addGlobalFlags(icalToken.command('generate')
     .description('Generate a new iCal subscription token for a vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Generating iCal token...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const result = await client.calendar.generateICalToken(vaultId);
         out.stopSpinner();
@@ -427,7 +443,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar ical-token revoke
   addGlobalFlags(icalToken.command('revoke')
     .description('Revoke the iCal subscription token for a vault')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .option('-y, --yes', 'Skip confirmation prompt')
     .option('--confirm', 'Alias for --yes (deprecated)'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
@@ -439,6 +455,7 @@ export function registerCalendarCommands(program: Command): void {
       }
       out.startSpinner('Revoking iCal token...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.calendar.revokeICalToken(vaultId);
         out.stopSpinner();
@@ -453,7 +470,7 @@ export function registerCalendarCommands(program: Command): void {
   // ---------------------------------------------------------------------------
   addGlobalFlags(calendar.command('complete')
     .description('Toggle completed state for a document')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<documentPath>', 'Document path')
     .option('--completed', 'Mark as complete (default)', true)
     .option('--no-completed', 'Mark as incomplete'))
@@ -462,6 +479,7 @@ export function registerCalendarCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Toggling completion...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const completed = _opts.completed !== false;
         const result = await client.calendar.toggleComplete(vaultId, documentPath, completed);
@@ -481,7 +499,7 @@ export function registerCalendarCommands(program: Command): void {
   // ---------------------------------------------------------------------------
   addGlobalFlags(calendar.command('agenda')
     .description('View due-date agenda grouped by time period')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .option('--status <status>', 'Filter by status')
     .option('--range <range>', 'Time range: number of days, or week (7), month (30), quarter (90), year (365)')
     .option('--group-by <groupBy>', 'Group by field'))
@@ -490,6 +508,7 @@ export function registerCalendarCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching agenda...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const rangeMap: Record<string, string> = { week: '7', month: '30', quarter: '90', year: '365' };
         const rawRange = _opts.range as string | undefined;
@@ -521,13 +540,14 @@ export function registerCalendarCommands(program: Command): void {
   // ---------------------------------------------------------------------------
   addGlobalFlags(calendar.command('ical')
     .description('Output iCal feed for a vault to stdout')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .option('--include <types>', 'Types to include'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching iCal feed...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const ical = await client.calendar.getIcalFeed(vaultId, {
           include: _opts.include as string | undefined,
@@ -547,12 +567,13 @@ export function registerCalendarCommands(program: Command): void {
   // calendar connector list
   addGlobalFlags(connector.command('list')
     .description('List calendar connectors for a vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Loading connectors...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const connectors = await client.calendar.listConnectors(vaultId);
         out.stopSpinner();
@@ -582,13 +603,14 @@ export function registerCalendarCommands(program: Command): void {
   // calendar connector sync
   addGlobalFlags(connector.command('sync')
     .description('Trigger a manual sync for a calendar connector')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<connectorId>', 'Connector ID'))
     .action(async (vaultId: string, connectorId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Syncing connector...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const result = await client.calendar.syncConnector(vaultId, connectorId);
         out.stopSpinner();
@@ -605,7 +627,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar connector disconnect
   addGlobalFlags(connector.command('disconnect')
     .description('Disconnect a calendar connector from a vault')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<connectorId>', 'Connector ID')
     .option('-y, --yes', 'Skip confirmation prompt')
     .option('--confirm', 'Alias for --yes (deprecated)'))
@@ -618,6 +640,7 @@ export function registerCalendarCommands(program: Command): void {
       }
       out.startSpinner('Disconnecting connector...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.calendar.disconnectConnector(vaultId, connectorId);
         out.stopSpinner();
@@ -630,7 +653,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar connector connect
   addGlobalFlags(connector.command('connect')
     .description('Connect a Google or Outlook calendar to a vault via OAuth')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .requiredOption('--provider <provider>', 'Calendar provider: google or outlook'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
@@ -643,6 +666,7 @@ export function registerCalendarCommands(program: Command): void {
       }
       out.startSpinner(`Connecting ${provider} calendar...`);
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const result = provider === 'google'
           ? await client.calendar.connectGoogleCalendar(vaultId)
@@ -666,13 +690,14 @@ export function registerCalendarCommands(program: Command): void {
   // calendar participants list <vaultId> <eventId>
   addGlobalFlags(participants.command('list')
     .description('List participants for a calendar event')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<eventId>', 'Calendar event ID'))
     .action(async (vaultId: string, eventId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Loading participants...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const items = await client.calendar.listParticipants(vaultId, eventId);
         out.stopSpinner();
@@ -712,7 +737,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar participants add <vaultId> <eventId> --email <email> [--name <name>] [--role <role>]
   addGlobalFlags(participants.command('add')
     .description('Add a participant to a calendar event')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<eventId>', 'Calendar event ID')
     .requiredOption('--email <email>', 'Participant email address')
     .option('--name <name>', 'Participant display name')
@@ -722,6 +747,7 @@ export function registerCalendarCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Adding participant...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const participant = await client.calendar.addParticipant(vaultId, eventId, {
           email: _opts.email as string,
@@ -742,7 +768,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar participants update <vaultId> <eventId> <participantId> --status <status>
   addGlobalFlags(participants.command('update')
     .description('Update a participant status')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<eventId>', 'Calendar event ID')
     .argument('<participantId>', 'Participant ID')
     .requiredOption('--status <status>', 'New status: accepted, declined, tentative'))
@@ -751,6 +777,7 @@ export function registerCalendarCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Updating participant...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const participant = await client.calendar.updateParticipant(vaultId, eventId, participantId, {
           status: _opts.status as string,
@@ -769,7 +796,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar participants remove <vaultId> <eventId> <participantId>
   addGlobalFlags(participants.command('remove')
     .description('Remove a participant from a calendar event')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<eventId>', 'Calendar event ID')
     .argument('<participantId>', 'Participant ID')
     .option('-y, --yes', 'Skip confirmation prompt')
@@ -783,6 +810,7 @@ export function registerCalendarCommands(program: Command): void {
       }
       out.startSpinner('Removing participant...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.calendar.removeParticipant(vaultId, eventId, participantId);
         out.stopSpinner();
@@ -800,12 +828,13 @@ export function registerCalendarCommands(program: Command): void {
   // calendar templates list
   addGlobalFlags(templates.command('list')
     .description('List event templates for a vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Loading templates...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const items = await client.calendar.listTemplates(vaultId);
         out.stopSpinner();
@@ -835,7 +864,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar templates create
   addGlobalFlags(templates.command('create')
     .description('Create a new event template for a vault')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .requiredOption('--name <name>', 'Template name')
     .requiredOption('--duration <minutes>', 'Duration in minutes')
     .option('--description <description>', 'Template description')
@@ -846,6 +875,7 @@ export function registerCalendarCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Creating template...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const created = await client.calendar.createTemplate(vaultId, {
           name: _opts.name as string,
@@ -868,13 +898,14 @@ export function registerCalendarCommands(program: Command): void {
   // calendar templates get
   addGlobalFlags(templates.command('get')
     .description('Get a single event template by ID')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<templateId>', 'Template ID'))
     .action(async (vaultId: string, templateId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Loading template...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const t = await client.calendar.getTemplate(vaultId, templateId);
         out.stopSpinner();
@@ -894,7 +925,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar templates update
   addGlobalFlags(templates.command('update')
     .description('Update an event template')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<templateId>', 'Template ID')
     .option('--name <name>', 'New template name')
     .option('--duration <minutes>', 'New duration in minutes')
@@ -906,6 +937,7 @@ export function registerCalendarCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Updating template...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const data: Record<string, unknown> = {};
         if (_opts.name) data.name = _opts.name;
@@ -928,7 +960,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar templates delete
   addGlobalFlags(templates.command('delete')
     .description('Delete an event template')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<templateId>', 'Template ID')
     .option('-y, --yes', 'Skip confirmation prompt')
     .option('--confirm', 'Alias for --yes (deprecated)'))
@@ -941,6 +973,7 @@ export function registerCalendarCommands(program: Command): void {
       }
       out.startSpinner('Deleting template...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.calendar.deleteTemplate(vaultId, templateId);
         out.stopSpinner();

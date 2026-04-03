@@ -215,8 +215,6 @@ Sync modes:
         out.stopSpinner();
 
         if (flags.dryRun) {
-          out.status(chalk.yellow('Dry run — no changes will be made:'));
-          out.status(formatDiff(diff));
           if (flags.output === 'json') {
             out.record({
               dryRun: true,
@@ -225,6 +223,9 @@ Sync modes:
               unchanged,
               totalBytes: diff.totalBytes,
             });
+          } else {
+            out.status(chalk.yellow('Dry run — no changes will be made:'));
+            out.status(formatDiff(diff));
           }
           return;
         }

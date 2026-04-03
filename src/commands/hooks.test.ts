@@ -19,6 +19,10 @@ vi.mock('../client.js', () => ({
   getClientAsync: vi.fn(async () => sdkMock),
 }));
 
+vi.mock('../utils/resolve-vault.js', () => ({
+  resolveVaultId: vi.fn(async (id: string) => id),
+}));
+
 describe('hooks commands', () => {
   let program: Command;
   let outputSpy: ReturnType<typeof spyOutput>;
@@ -86,23 +90,23 @@ describe('hooks commands', () => {
   describe('hooks create', () => {
     it('should create a hook with all params', async () => {
       sdkMock.hooks.create.mockResolvedValue({
-        id: 'h1', vaultId: 'v1', name: 'My Hook', triggerEvent: 'document.create',
-        triggerFilter: null, actionType: 'auto-tag', actionConfig: { tags: ['new'] },
+        id: 'h1', vaultId: 'v1', name: 'My Hook', triggerEvent: 'document.created',
+        triggerFilter: null, actionType: 'webhook', actionConfig: { url: 'https://example.com' },
         isActive: true, createdAt: '2024-01-01', updatedAt: '2024-01-01',
       });
 
       await program.parseAsync([
         'node', 'cli', 'hooks', 'create', 'v1', 'My Hook',
-        '--trigger', 'document.create',
-        '--action', 'auto-tag',
-        '--config', '{"tags":["new"]}',
+        '--trigger', 'document.created',
+        '--action', 'webhook',
+        '--config', '{"url":"https://example.com"}',
       ]);
 
       expect(sdkMock.hooks.create).toHaveBeenCalledWith('v1', {
         name: 'My Hook',
-        triggerEvent: 'document.create',
-        actionType: 'auto-tag',
-        actionConfig: { tags: ['new'] },
+        triggerEvent: 'document.created',
+        actionType: 'webhook',
+        actionConfig: { url: 'https://example.com' },
       });
       // success() outputs to stderr (succeedSpinner) in text mode
       const output = outputSpy.stdout.join('') + outputSpy.stderr.join('');
@@ -111,24 +115,24 @@ describe('hooks commands', () => {
 
     it('should create a hook with a trigger filter', async () => {
       sdkMock.hooks.create.mockResolvedValue({
-        id: 'h2', vaultId: 'v1', name: 'Filtered', triggerEvent: 'document.create',
-        triggerFilter: { path: '*.md' }, actionType: 'template', actionConfig: { template: 'daily' },
+        id: 'h2', vaultId: 'v1', name: 'Filtered', triggerEvent: 'document.updated',
+        triggerFilter: { path: '*.md' }, actionType: 'ai_prompt', actionConfig: { prompt: 'Suggest tags' },
         isActive: true, createdAt: '2024-01-01', updatedAt: '2024-01-01',
       });
 
       await program.parseAsync([
         'node', 'cli', 'hooks', 'create', 'v1', 'Filtered',
-        '--trigger', 'document.create',
-        '--action', 'template',
-        '--config', '{"template":"daily"}',
+        '--trigger', 'document.updated',
+        '--action', 'ai_prompt',
+        '--config', '{"prompt":"Suggest tags"}',
         '--filter', '{"path":"*.md"}',
       ]);
 
       expect(sdkMock.hooks.create).toHaveBeenCalledWith('v1', {
         name: 'Filtered',
-        triggerEvent: 'document.create',
-        actionType: 'template',
-        actionConfig: { template: 'daily' },
+        triggerEvent: 'document.updated',
+        actionType: 'ai_prompt',
+        actionConfig: { prompt: 'Suggest tags' },
         triggerFilter: { path: '*.md' },
       });
     });
@@ -160,13 +164,43 @@ describe('hooks commands', () => {
       expect(sdkMock.hooks.create).not.toHaveBeenCalled();
     });
 
+    it('should show error for invalid trigger', async () => {
+      await program.parseAsync([
+        'node', 'cli', 'hooks', 'create', 'v1', 'Bad',
+        '--trigger', 'document.frobulate',
+        '--action', 'webhook',
+        '--config', '{}',
+      ]);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Invalid trigger "document.frobulate"');
+      expect(stderr).toContain('document.created');
+      expect(sdkMock.hooks.create).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should show error for invalid action', async () => {
+      await program.parseAsync([
+        'node', 'cli', 'hooks', 'create', 'v1', 'Bad',
+        '--trigger', 'document.created',
+        '--action', 'auto-tag',
+        '--config', '{}',
+      ]);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Invalid action "auto-tag"');
+      expect(stderr).toContain('webhook');
+      expect(sdkMock.hooks.create).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
     it('should handle creation errors', async () => {
       sdkMock.hooks.create.mockRejectedValue(new Error('Validation failed'));
 
       await program.parseAsync([
         'node', 'cli', 'hooks', 'create', 'v1', 'Hook',
-        '--trigger', 'document.create',
-        '--action', 'auto-tag',
+        '--trigger', 'document.created',
+        '--action', 'webhook',
         '--config', '{}',
       ]);
 

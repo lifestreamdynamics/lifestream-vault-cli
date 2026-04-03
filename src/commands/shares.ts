@@ -6,19 +6,21 @@ import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { promptPassword, readPasswordFromStdin } from '../utils/prompt.js';
 import type { CreateShareLinkParams } from '@lifestreamdynamics/vault-sdk';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 export function registerShareCommands(program: Command): void {
   const shares = program.command('shares').description('Create, list, and revoke document share links');
 
   addGlobalFlags(shares.command('list')
     .description('List share links for a document')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<docPath>', 'Document path (e.g., notes/meeting.md)'))
     .action(async (vaultId: string, docPath: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching share links...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const links = await client.shares.list(vaultId, docPath);
         out.stopSpinner();
@@ -60,7 +62,7 @@ export function registerShareCommands(program: Command): void {
 
   addGlobalFlags(shares.command('create')
     .description('Create a share link for a document')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<docPath>', 'Document path (e.g., notes/meeting.md)')
     .option('--permission <perm>', 'Permission level: view or edit', 'view')
     .option('--protect-with-password', 'Prompt for a password to protect the link (interactive TTY only)')
@@ -93,6 +95,7 @@ export function registerShareCommands(program: Command): void {
 
       out.startSpinner('Creating share link...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const params: CreateShareLinkParams = {};
         if (_opts.permission) params.permission = String(_opts.permission) as 'view' | 'edit';
@@ -135,13 +138,14 @@ export function registerShareCommands(program: Command): void {
 
   addGlobalFlags(shares.command('revoke')
     .description('Revoke a share link')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<shareId>', 'Share link ID'))
     .action(async (vaultId: string, shareId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Revoking share link...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.shares.revoke(vaultId, shareId);
         out.success('Share link revoked successfully', { id: shareId, revoked: true });

@@ -19,6 +19,10 @@ vi.mock('../client.js', () => ({
   getClientAsync: vi.fn(async () => sdkMock),
 }));
 
+vi.mock('../utils/resolve-vault.js', () => ({
+  resolveVaultId: vi.fn(async (id: string) => id),
+}));
+
 describe('webhooks commands', () => {
   let program: Command;
   let outputSpy: ReturnType<typeof spyOutput>;
@@ -106,20 +110,75 @@ describe('webhooks commands', () => {
     it('should create a webhook with custom events', async () => {
       sdkMock.webhooks.create.mockResolvedValue({
         id: 'wh2', vaultId: 'v1', url: 'https://example.com/hook',
-        events: ['create'], isActive: true,
+        events: ['document.created'], isActive: true,
         createdAt: '2024-01-01', updatedAt: '2024-01-01',
         secret: 'whsec_def456',
       });
 
       await program.parseAsync([
         'node', 'cli', 'webhooks', 'create', 'v1', 'https://example.com/hook',
-        '--events', 'create',
+        '--events', 'document.created',
       ]);
 
       expect(sdkMock.webhooks.create).toHaveBeenCalledWith('v1', {
         url: 'https://example.com/hook',
-        events: ['create'],
+        events: ['document.created'],
       });
+    });
+
+    it('should create a webhook with wildcard event', async () => {
+      sdkMock.webhooks.create.mockResolvedValue({
+        id: 'wh3', vaultId: 'v1', url: 'https://example.com/hook',
+        events: ['*'], isActive: true,
+        createdAt: '2024-01-01', updatedAt: '2024-01-01',
+        secret: 'whsec_ghi789',
+      });
+
+      await program.parseAsync([
+        'node', 'cli', 'webhooks', 'create', 'v1', 'https://example.com/hook',
+        '--events', '*',
+      ]);
+
+      expect(sdkMock.webhooks.create).toHaveBeenCalledWith('v1', {
+        url: 'https://example.com/hook',
+        events: ['*'],
+      });
+    });
+
+    it('should show error for invalid URL scheme', async () => {
+      await program.parseAsync([
+        'node', 'cli', 'webhooks', 'create', 'v1', 'ftp://example.com/hook',
+      ]);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Invalid webhook URL "ftp://example.com/hook"');
+      expect(stderr).toContain('http://');
+      expect(sdkMock.webhooks.create).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should show error for URL missing scheme', async () => {
+      await program.parseAsync([
+        'node', 'cli', 'webhooks', 'create', 'v1', 'example.com/hook',
+      ]);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Invalid webhook URL "example.com/hook"');
+      expect(sdkMock.webhooks.create).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should show error for invalid event names', async () => {
+      await program.parseAsync([
+        'node', 'cli', 'webhooks', 'create', 'v1', 'https://example.com/hook',
+        '--events', 'document.created,create,update',
+      ]);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Invalid event name(s): create, update');
+      expect(stderr).toContain('document.created');
+      expect(sdkMock.webhooks.create).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
     });
 
     it('should handle creation errors', async () => {

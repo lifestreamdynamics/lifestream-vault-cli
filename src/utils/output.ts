@@ -144,13 +144,14 @@ export class Output {
     },
   ): void {
     if (data.length === 0) {
+      if (this.flags.quiet) return;
       if (this.flags.output === 'json') {
         process.stdout.write('[]\n');
         return;
       }
-      if (options?.emptyMessage && !this.flags.quiet) {
+      if (options?.emptyMessage) {
         this.status(options.emptyMessage);
-      } else if (!this.flags.quiet && !options?.emptyMessage) {
+      } else {
         process.stdout.write('No results found.\n');
       }
       return;

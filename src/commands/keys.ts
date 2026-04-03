@@ -154,10 +154,15 @@ EXAMPLES
 
   addGlobalFlags(keys.command('revoke')
     .description('Permanently revoke and delete an API key')
-    .argument('<keyId>', 'API key ID'))
+    .argument('<keyId>', 'API key ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (keyId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!_opts.yes) {
+        out.status(chalk.yellow(`Pass -y/--yes to permanently revoke key ${keyId}.`));
+        return;
+      }
       out.startSpinner('Revoking API key...');
       try {
         const client = await getClientAsync();

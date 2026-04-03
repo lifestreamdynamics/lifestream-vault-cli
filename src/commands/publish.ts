@@ -4,18 +4,20 @@ import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { PublishDocumentParams, UpdatePublishParams } from '@lifestreamdynamics/vault-sdk';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 export function registerPublishCommands(program: Command): void {
   const publish = program.command('publish').description('Publish documents to public profile pages');
 
   addGlobalFlags(publish.command('list')
     .description('List your published documents')
-    .argument('<vaultId>', 'Vault ID (required by route)'))
+    .argument('<vaultId>', 'Vault ID or slug (required by route)'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching published documents...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const docs = await client.publish.listMine(vaultId);
         out.stopSpinner();
@@ -54,7 +56,7 @@ export function registerPublishCommands(program: Command): void {
 
   addGlobalFlags(publish.command('create')
     .description('Publish a document')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<docPath>', 'Document path (e.g., blog/post.md)')
     .requiredOption('--slug <slug>', 'URL-friendly slug for the published page')
     .option('--title <title>', 'SEO title')
@@ -65,6 +67,7 @@ export function registerPublishCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Publishing document...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const params: PublishDocumentParams = {
           slug: String(_opts.slug),
@@ -89,7 +92,7 @@ export function registerPublishCommands(program: Command): void {
 
   addGlobalFlags(publish.command('update')
     .description('Update a published document')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<docPath>', 'Document path (e.g., blog/post.md)')
     .requiredOption('--slug <slug>', 'URL-friendly slug (required for updates)')
     .option('--title <title>', 'SEO title')
@@ -100,6 +103,7 @@ export function registerPublishCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Updating published document...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const params: UpdatePublishParams = {
           slug: String(_opts.slug),
@@ -122,7 +126,7 @@ export function registerPublishCommands(program: Command): void {
 
   addGlobalFlags(publish.command('delete')
     .description('Unpublish a document')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<docPath>', 'Document path (e.g., blog/post.md)')
     .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, docPath: string, _opts: Record<string, unknown>) => {
@@ -134,6 +138,7 @@ export function registerPublishCommands(program: Command): void {
       }
       out.startSpinner('Unpublishing document...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.publish.delete(vaultId, docPath);
         out.success('Document unpublished successfully', { path: docPath, unpublished: true });
@@ -146,16 +151,23 @@ export function registerPublishCommands(program: Command): void {
 
   addGlobalFlags(subdomain.command('get')
     .description('Get the subdomain for a published vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching subdomain...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const result = await client.publish.getSubdomain(vaultId);
         out.stopSpinner();
-        out.record({ subdomain: result.subdomain });
+        if (flags.output === 'json') {
+          out.record({ subdomain: result.subdomain });
+        } else if (result.subdomain == null) {
+          out.status('No subdomain configured.');
+        } else {
+          out.record({ subdomain: result.subdomain });
+        }
       } catch (err) {
         handleError(out, err, 'Failed to fetch subdomain');
       }
@@ -163,13 +175,14 @@ export function registerPublishCommands(program: Command): void {
 
   addGlobalFlags(subdomain.command('set')
     .description('Set a subdomain for a published vault')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<subdomain>', 'Subdomain to assign'))
     .action(async (vaultId: string, subdomainArg: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Setting subdomain...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const result = await client.publish.setSubdomain(vaultId, subdomainArg);
         out.success(`Subdomain set: ${result.subdomain}`, { subdomain: result.subdomain });
@@ -180,7 +193,7 @@ export function registerPublishCommands(program: Command): void {
 
   addGlobalFlags(subdomain.command('delete')
     .description('Remove the subdomain for a published vault')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
@@ -191,6 +204,7 @@ export function registerPublishCommands(program: Command): void {
       }
       out.startSpinner('Removing subdomain...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const result = await client.publish.deleteSubdomain(vaultId);
         out.success(result.message, { message: result.message });

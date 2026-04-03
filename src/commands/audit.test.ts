@@ -58,13 +58,25 @@ describe('audit commands', () => {
       expect(stderr).toContain('2 entries shown');
     });
 
-    it('should show message when no entries found', async () => {
+    it('should warn and return early when log file does not exist', async () => {
       const logPath = path.join(tmpDir, 'nonexistent.log');
 
       await program.parseAsync(['node', 'cli', 'audit', 'log', '--log-path', logPath]);
 
       const stderr = outputSpy.stderr.join('');
-      expect(stderr).toContain('No audit log entries found');
+      expect(stderr).toContain('Audit log file not found at');
+      expect(stderr).toContain(logPath);
+    });
+
+    it('should output empty JSON array when log file does not exist with --output json', async () => {
+      const logPath = path.join(tmpDir, 'nonexistent.log');
+
+      await program.parseAsync(['node', 'cli', 'audit', 'log', '--log-path', logPath, '--output', 'json']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout.trim()).toBe('[]');
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Audit log file not found at');
     });
 
     it('should filter by --tail', async () => {
@@ -98,6 +110,19 @@ describe('audit commands', () => {
       expect(stderr).toContain('1 entries shown');
       const stdout = outputSpy.stdout.join('');
       expect(stdout).toContain('401');
+    });
+
+    it('should output verbose debug lines when --verbose is set', async () => {
+      const logPath = path.join(tmpDir, 'audit.log');
+      writeAuditLog(logPath, [
+        { timestamp: '2026-02-13T12:00:00.000Z', method: 'GET', path: '/api/v1/vaults', status: 200, durationMs: 45 },
+      ]);
+
+      await program.parseAsync(['node', 'cli', 'audit', 'log', '--log-path', logPath, '--verbose']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain(`Reading audit log from: ${logPath}`);
+      expect(stderr).toContain('Found 1 entries');
     });
 
     it('should filter by --since and --until', async () => {
@@ -147,10 +172,23 @@ describe('audit commands', () => {
       expect(stderr).toContain('Exported 2 entries');
     });
 
-    it('should show message when no entries to export', async () => {
+    it('should warn and return early when log file does not exist', async () => {
       const logPath = path.join(tmpDir, 'nonexistent.log');
 
       await program.parseAsync(['node', 'cli', 'audit', 'export', '--log-path', logPath]);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Audit log file not found at');
+      expect(stderr).toContain(logPath);
+    });
+
+    it('should show message when log exists but has no matching entries', async () => {
+      const logPath = path.join(tmpDir, 'audit.log');
+      writeAuditLog(logPath, [
+        { timestamp: '2026-02-13T12:00:00Z', method: 'GET', path: '/api/v1/vaults', status: 200, durationMs: 45 },
+      ]);
+
+      await program.parseAsync(['node', 'cli', 'audit', 'export', '--log-path', logPath, '--status', '999']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('No audit log entries to export');

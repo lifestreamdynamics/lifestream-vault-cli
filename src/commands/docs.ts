@@ -38,6 +38,7 @@ EXAMPLES
         out.stopSpinner();
         out.list(
           documents.map(doc => ({
+            id: doc.id,
             path: doc.path,
             title: doc.title ?? null,
             tags: Array.isArray(doc.tags) ? doc.tags.join(', ') : '',
@@ -46,6 +47,7 @@ EXAMPLES
           {
             emptyMessage: 'No documents found.',
             columns: [
+              { key: 'id', header: 'ID' },
               { key: 'path', header: 'Path' },
               { key: 'title', header: 'Title' },
               { key: 'tags', header: 'Tags' },
@@ -54,7 +56,7 @@ EXAMPLES
             textFn: (doc) => {
               const title = doc.title ? chalk.dim(` -- ${String(doc.title)}`) : '';
               const tags = doc.tags ? chalk.blue(` [${String(doc.tags)}]`) : '';
-              return `${chalk.cyan(String(doc.path))}${title}${tags}`;
+              return `${chalk.cyan(String(doc.path))}${title}${tags} ${chalk.dim(String(doc.id))}`;
             },
           },
         );
@@ -102,6 +104,7 @@ EXAMPLES
         if (_opts.meta) {
           const doc = result.document;
           out.record({
+            id: doc.id,
             path: doc.path,
             title: doc.title,
             sizeBytes: doc.sizeBytes,
@@ -124,7 +127,7 @@ EXAMPLES
 
   addGlobalFlags(docs.command('put')
     .description('Create or update a document by reading content from stdin')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path (must end with .md)')
     .addHelpText('after', `
 EXAMPLES
@@ -135,6 +138,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Reading stdin...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const content = await new Promise<string>((resolve) => {
           let data = '';
           process.stdin.on('data', (chunk) => data += chunk);
@@ -181,13 +185,14 @@ EXAMPLES
 
   addGlobalFlags(docs.command('delete')
     .description('Permanently delete a document from a vault')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path to delete')
     .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, docPath: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       try {
+        vaultId = await resolveVaultId(vaultId);
         const confirmed = await confirmAction(
           `Permanently delete "${docPath}" from vault ${vaultId}?`,
           { yes: _opts.yes as boolean | undefined },
@@ -207,7 +212,7 @@ EXAMPLES
 
   addGlobalFlags(docs.command('move')
     .description('Move or rename a document within a vault')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<source>', 'Current document path')
     .argument('<dest>', 'New document path')
     .option('--overwrite', 'Overwrite if destination already exists')
@@ -228,6 +233,7 @@ EXAMPLES
       }
       out.startSpinner('Moving document...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const result = await client.documents.move(vaultId, source, dest, _opts.overwrite as boolean | undefined);
         out.success(`Moved: ${chalk.cyan(result.source)} -> ${chalk.cyan(result.destination)}`, {
@@ -241,7 +247,7 @@ EXAMPLES
 
   addGlobalFlags(docs.command('bulk-move')
     .description('Move multiple documents to a target directory')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .requiredOption('--paths <csv>', 'Comma-separated list of document paths')
     .requiredOption('--target <dir>', 'Target directory'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
@@ -249,6 +255,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Moving documents...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
         const result = await client.documents.bulkMove(vaultId, { items: paths, destination: _opts.target as string });
@@ -268,7 +275,7 @@ EXAMPLES
 
   addGlobalFlags(docs.command('bulk-copy')
     .description('Copy multiple documents to a target directory')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .requiredOption('--paths <csv>', 'Comma-separated list of document paths')
     .requiredOption('--target <dir>', 'Target directory'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
@@ -276,6 +283,7 @@ EXAMPLES
       const out = createOutput(flags);
       out.startSpinner('Copying documents...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
         const result = await client.documents.bulkCopy(vaultId, { items: paths, destination: _opts.target as string });
@@ -295,13 +303,14 @@ EXAMPLES
 
   addGlobalFlags(docs.command('bulk-delete')
     .description('Delete multiple documents')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .requiredOption('--paths <csv>', 'Comma-separated list of document paths'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Deleting documents...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
         const result = await client.documents.bulkDelete(vaultId, { items: paths });
@@ -321,7 +330,7 @@ EXAMPLES
 
   addGlobalFlags(docs.command('bulk-tag')
     .description('Add or remove tags from multiple documents')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .requiredOption('--paths <csv>', 'Comma-separated list of document paths')
     .option('--add <csv>', 'Tags to add (comma-separated)')
     .option('--remove <csv>', 'Tags to remove (comma-separated)'))
@@ -335,6 +344,7 @@ EXAMPLES
       }
       out.startSpinner('Tagging documents...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
         const addTags = _opts.add ? (String(_opts.add)).split(',').map(t => t.trim()).filter(Boolean) : undefined;
@@ -356,13 +366,14 @@ EXAMPLES
 
   addGlobalFlags(docs.command('mkdir')
     .description('Create a directory in a vault')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Directory path to create'))
     .action(async (vaultId: string, path: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Creating directory...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const normalizedPath = path.replace(/\/+$/, '');
         const result = await client.documents.createDirectory(vaultId, normalizedPath);

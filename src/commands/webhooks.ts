@@ -4,18 +4,20 @@ import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { CreateWebhookParams, UpdateWebhookParams } from '@lifestreamdynamics/vault-sdk';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 export function registerWebhookCommands(program: Command): void {
   const webhooks = program.command('webhooks').description('Manage vault webhooks');
 
   addGlobalFlags(webhooks.command('list')
     .description('List all webhooks for a vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching webhooks...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const webhookList = await client.webhooks.list(vaultId);
         out.stopSpinner();
@@ -49,7 +51,7 @@ export function registerWebhookCommands(program: Command): void {
 
   addGlobalFlags(webhooks.command('create')
     .description('Create a new webhook')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<url>', 'Webhook endpoint URL')
     .option('--events <events>', 'Comma-separated events (document.created, document.updated, document.deleted, document.moved, document.copied, or * for all)', 'document.created,document.updated,document.deleted')
     .addHelpText('after', `
@@ -68,12 +70,29 @@ EXAMPLES
     .action(async (vaultId: string, url: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+
+      if (!/^https?:\/\//i.test(url)) {
+        out.error(`Invalid webhook URL "${url}". URL must start with http:// or https://`);
+        process.exitCode = 1;
+        return;
+      }
+
+      const VALID_EVENTS = ['document.created', 'document.updated', 'document.deleted', 'document.moved', 'document.copied', '*'];
+      const events = String(_opts.events || 'document.created,document.updated,document.deleted').split(',').map((e: string) => e.trim());
+      const invalid = events.filter(e => !VALID_EVENTS.includes(e));
+      if (invalid.length > 0) {
+        out.error(`Invalid event name(s): ${invalid.join(', ')}. Valid values: ${VALID_EVENTS.join(', ')}`);
+        process.exitCode = 1;
+        return;
+      }
+
       out.startSpinner('Creating webhook...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const params: CreateWebhookParams = {
           url,
-          events: String(_opts.events || 'create,update,delete').split(',').map((e: string) => e.trim()),
+          events,
         };
 
         const webhook = await client.webhooks.create(vaultId, params);
@@ -100,7 +119,7 @@ EXAMPLES
 
   addGlobalFlags(webhooks.command('update')
     .description('Update a webhook')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<webhookId>', 'Webhook ID')
     .option('--url <url>', 'New webhook URL')
     .option('--events <events>', 'Comma-separated events')
@@ -118,6 +137,7 @@ EXAMPLES
 
       out.startSpinner('Updating webhook...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const params: UpdateWebhookParams = {};
         if (_opts.url) params.url = String(_opts.url);
@@ -138,7 +158,7 @@ EXAMPLES
 
   addGlobalFlags(webhooks.command('delete')
     .description('Delete a webhook')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<webhookId>', 'Webhook ID')
     .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, webhookId: string, _opts: Record<string, unknown>) => {
@@ -150,6 +170,7 @@ EXAMPLES
       }
       out.startSpinner('Deleting webhook...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.webhooks.delete(vaultId, webhookId);
         out.success('Webhook deleted successfully', { id: webhookId, deleted: true });
@@ -160,13 +181,14 @@ EXAMPLES
 
   addGlobalFlags(webhooks.command('deliveries')
     .description('List recent deliveries for a webhook')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<webhookId>', 'Webhook ID'))
     .action(async (vaultId: string, webhookId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching deliveries...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const deliveries = await client.webhooks.listDeliveries(vaultId, webhookId);
         out.stopSpinner();
