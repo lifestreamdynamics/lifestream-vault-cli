@@ -27,7 +27,7 @@ EXAMPLES
             version: v.versionNum,
             source: v.changeSource,
             sizeBytes: v.sizeBytes,
-            pinned: v.isPinned ? 'yes' : 'no',
+            pinned: flags.output === 'json' ? v.isPinned : (v.isPinned ? 'yes' : 'no'),
             createdAt: v.createdAt,
           })),
           {
@@ -78,7 +78,11 @@ EXAMPLES
           process.exitCode = 1;
           return;
         }
-        out.raw(version.content);
+        if (flags.output === 'json') {
+          out.raw(JSON.stringify({ version: version.versionNum, createdAt: version.createdAt, content: version.content }) + '\n');
+        } else {
+          out.raw(version.content);
+        }
       } catch (err) {
         handleError(out, err, 'Failed to get version');
       }
@@ -124,7 +128,12 @@ EXAMPLES
           }
         }
       } catch (err) {
-        handleError(out, err, 'Failed to compute diff');
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes('not found') || message.includes('Not found')) {
+          handleError(out, new Error(`Version ${from} or ${to} not found for document "${docPath}". Use 'versions list' to see available versions.`), 'Failed to compute diff');
+        } else {
+          handleError(out, err, 'Failed to compute diff');
+        }
       }
     });
 

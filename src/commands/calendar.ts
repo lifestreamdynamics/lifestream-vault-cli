@@ -4,6 +4,20 @@ import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 
+const NAMED_COLORS: Record<string, string> = {
+  red: '#ff0000', green: '#00ff00', blue: '#0000ff', yellow: '#ffff00',
+  orange: '#ff8c00', purple: '#800080', pink: '#ff69b4', cyan: '#00ffff',
+  white: '#ffffff', black: '#000000', gray: '#808080', grey: '#808080',
+};
+
+/** Resolve a color value to #RRGGBB hex format. Pass through if already hex. */
+function resolveColor(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const hex = NAMED_COLORS[value.toLowerCase()];
+  if (hex) return hex;
+  return value; // pass through (API validates the format)
+}
+
 export function registerCalendarCommands(program: Command): void {
   const calendar = program.command('calendar').description('Document calendar and due date management');
 
@@ -138,7 +152,7 @@ export function registerCalendarCommands(program: Command): void {
 
   // calendar events (list)
   addGlobalFlags(calendar.command('events')
-    .description('List calendar events')
+    .description('Full CRUD management for calendar events (list, create, update, delete)')
     .argument('<vaultId>', 'Vault ID')
     .option('--start <date>', 'Start date')
     .option('--end <date>', 'End date'))
@@ -204,7 +218,7 @@ export function registerCalendarCommands(program: Command): void {
           endDate: _opts.end as string | undefined,
           allDay: Boolean(_opts.allDay),
           priority: _opts.priority as string | undefined,
-          color: _opts.color as string | undefined,
+          color: resolveColor(_opts.color as string | undefined),
           description: _opts.description as string | undefined,
         });
         out.stopSpinner();
@@ -242,7 +256,7 @@ export function registerCalendarCommands(program: Command): void {
         if (_opts.end) data.endDate = _opts.end;
         if (_opts.allDay !== undefined) data.allDay = Boolean(_opts.allDay);
         if (_opts.priority) data.priority = _opts.priority;
-        if (_opts.color) data.color = _opts.color;
+        if (_opts.color) data.color = resolveColor(_opts.color as string | undefined);
         if (_opts.description) data.description = _opts.description;
         const updated = await client.calendar.updateEvent(vaultId, eventId, data);
         out.stopSpinner();
@@ -261,12 +275,13 @@ export function registerCalendarCommands(program: Command): void {
     .description('Delete a calendar event')
     .argument('<vaultId>', 'Vault ID')
     .argument('<eventId>', 'Event ID')
-    .option('--confirm', 'Skip confirmation prompt'))
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('--confirm', 'Alias for --yes (deprecated)'))
     .action(async (vaultId: string, eventId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      if (!_opts.confirm) {
-        out.status(chalk.yellow(`Pass --confirm to delete event ${eventId}`));
+      if (!_opts.yes && !_opts.confirm) {
+        out.status(chalk.yellow(`Pass -y/--yes to delete event ${eventId}`));
         return;
       }
       out.startSpinner('Deleting event...');
@@ -307,7 +322,7 @@ export function registerCalendarCommands(program: Command): void {
   // calendar timeline
   // ---------------------------------------------------------------------------
   addGlobalFlags(calendar.command('timeline')
-    .description('View chronological event timeline for a vault')
+    .description('Cursor-paginated event feed with before/after navigation')
     .argument('<vaultId>', 'Vault ID')
     .option('--limit <n>', 'Number of items to return')
     .option('--cursor <cursor>', 'Pagination cursor'))
@@ -413,12 +428,13 @@ export function registerCalendarCommands(program: Command): void {
   addGlobalFlags(icalToken.command('revoke')
     .description('Revoke the iCal subscription token for a vault')
     .argument('<vaultId>', 'Vault ID')
-    .option('--confirm', 'Skip confirmation prompt'))
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('--confirm', 'Alias for --yes (deprecated)'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      if (!_opts.confirm) {
-        out.status(chalk.yellow('Pass --confirm to revoke the iCal token. All subscribers will lose access.'));
+      if (!_opts.yes && !_opts.confirm) {
+        out.status(chalk.yellow('Pass -y/--yes to revoke the iCal token. All subscribers will lose access.'));
         return;
       }
       out.startSpinner('Revoking iCal token...');
@@ -467,7 +483,7 @@ export function registerCalendarCommands(program: Command): void {
     .description('View due-date agenda grouped by time period')
     .argument('<vaultId>', 'Vault ID')
     .option('--status <status>', 'Filter by status')
-    .option('--range <range>', 'Time range (e.g., week, month)')
+    .option('--range <range>', 'Time range: number of days, or week (7), month (30), quarter (90), year (365)')
     .option('--group-by <groupBy>', 'Group by field'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
@@ -475,9 +491,12 @@ export function registerCalendarCommands(program: Command): void {
       out.startSpinner('Fetching agenda...');
       try {
         const client = await getClientAsync();
+        const rangeMap: Record<string, string> = { week: '7', month: '30', quarter: '90', year: '365' };
+        const rawRange = _opts.range as string | undefined;
+        const resolvedRange = rawRange ? (rangeMap[rawRange.toLowerCase()] ?? rawRange) : undefined;
         const agenda = await client.calendar.getAgenda(vaultId, {
           status: _opts.status as string | undefined,
-          range: _opts.range as string | undefined,
+          range: resolvedRange,
           groupBy: _opts.groupBy as string | undefined,
         });
         out.stopSpinner();
@@ -588,12 +607,13 @@ export function registerCalendarCommands(program: Command): void {
     .description('Disconnect a calendar connector from a vault')
     .argument('<vaultId>', 'Vault ID')
     .argument('<connectorId>', 'Connector ID')
-    .option('--confirm', 'Skip confirmation prompt'))
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('--confirm', 'Alias for --yes (deprecated)'))
     .action(async (vaultId: string, connectorId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      if (!_opts.confirm) {
-        out.status(chalk.yellow(`Pass --confirm to disconnect connector ${connectorId}.`));
+      if (!_opts.yes && !_opts.confirm) {
+        out.status(chalk.yellow(`Pass -y/--yes to disconnect connector ${connectorId}.`));
         return;
       }
       out.startSpinner('Disconnecting connector...');
@@ -752,12 +772,13 @@ export function registerCalendarCommands(program: Command): void {
     .argument('<vaultId>', 'Vault ID')
     .argument('<eventId>', 'Calendar event ID')
     .argument('<participantId>', 'Participant ID')
-    .option('--confirm', 'Skip confirmation prompt'))
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('--confirm', 'Alias for --yes (deprecated)'))
     .action(async (vaultId: string, eventId: string, participantId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      if (!_opts.confirm) {
-        out.status(chalk.yellow(`Pass --confirm to remove participant ${participantId}.`));
+      if (!_opts.yes && !_opts.confirm) {
+        out.status(chalk.yellow(`Pass -y/--yes to remove participant ${participantId}.`));
         return;
       }
       out.startSpinner('Removing participant...');
@@ -831,7 +852,7 @@ export function registerCalendarCommands(program: Command): void {
           duration: Number(_opts.duration),
           description: _opts.description as string | undefined,
           location: _opts.location as string | undefined,
-          color: _opts.color as string | undefined,
+          color: resolveColor(_opts.color as string | undefined),
         });
         out.stopSpinner();
         if (flags.output === 'json') {
@@ -891,7 +912,7 @@ export function registerCalendarCommands(program: Command): void {
         if (_opts.duration) data.duration = Number(_opts.duration);
         if (_opts.description) data.description = _opts.description;
         if (_opts.location) data.location = _opts.location;
-        if (_opts.color) data.color = _opts.color;
+        if (_opts.color) data.color = resolveColor(_opts.color as string | undefined);
         const updated = await client.calendar.updateTemplate(vaultId, templateId, data);
         out.stopSpinner();
         if (flags.output === 'json') {
@@ -909,12 +930,13 @@ export function registerCalendarCommands(program: Command): void {
     .description('Delete an event template')
     .argument('<vaultId>', 'Vault ID')
     .argument('<templateId>', 'Template ID')
-    .option('--confirm', 'Skip confirmation prompt'))
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('--confirm', 'Alias for --yes (deprecated)'))
     .action(async (vaultId: string, templateId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      if (!_opts.confirm) {
-        out.status(chalk.yellow(`Pass --confirm to delete template ${templateId}`));
+      if (!_opts.yes && !_opts.confirm) {
+        out.status(chalk.yellow(`Pass -y/--yes or --confirm to delete template ${templateId}`));
         return;
       }
       out.startSpinner('Deleting template...');

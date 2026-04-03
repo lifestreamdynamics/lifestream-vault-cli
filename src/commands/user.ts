@@ -431,9 +431,19 @@ export function registerUserCommands(program: Command): void {
   addGlobalFlags(consents.command('set')
     .description('Record a consent decision')
     .requiredOption('--type <t>', 'Consent type')
-    .requiredOption('--version <v>', 'Policy version')
+    .requiredOption('--policy-version <v>', 'Policy version')
     .option('--granted', 'Grant consent')
-    .option('--no-granted', 'Deny consent'))
+    .option('--no-granted', 'Deny consent')
+    .addHelpText('after', `
+CONSENT TYPES
+  terms_of_service    Terms of Service acceptance
+  privacy_policy      Privacy Policy acceptance
+  ai_processing       AI feature data processing consent
+  marketing           Marketing communications consent
+
+EXAMPLES
+  lsvault user consents set --type terms_of_service --policy-version 1.0 --granted
+  lsvault user consents set --type ai_processing --policy-version 1.0 --no-granted`))
     .action(async (_opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -442,7 +452,7 @@ export function registerUserCommands(program: Command): void {
         const client = await getClientAsync();
         const result = await client.user.recordConsent({
           consentType: _opts.type as string,
-          version: _opts.version as string,
+          version: _opts.policyVersion as string,
           granted: _opts.granted !== false,
         });
         out.success(result.message, { message: result.message });

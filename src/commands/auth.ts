@@ -235,7 +235,14 @@ EXAMPLES
           console.log(`User:    ${chalk.cyan(user.email)}`);
           console.log(`Name:    ${user.displayName || chalk.dim('not set')}`);
           console.log(`Role:    ${user.role}`);
-          console.log(`Plan:    ${chalk.green(user.subscriptionTier)}`);
+          let plan = user.subscriptionTier;
+          if (!plan) {
+            try {
+              const sub = await client.subscription.get();
+              plan = sub.subscription.tier;
+            } catch { /* API key may not have scope */ }
+          }
+          console.log(`Plan:    ${plan ? chalk.green(plan) : chalk.dim('unknown')}`);
         } catch (err) {
           spinner.fail('Could not fetch user info');
           console.error(err instanceof Error ? err.message : String(err));

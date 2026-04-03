@@ -84,9 +84,19 @@ export class Output {
 
   /**
    * Print an error message to stderr.
+   * When output format is json, writes a JSON error envelope instead of colored text.
    */
   error(message: string): void {
-    process.stderr.write(chalk.red(message) + '\n');
+    if (this.flags.output === 'json') {
+      process.stderr.write(JSON.stringify({ error: true, message }) + '\n');
+    } else {
+      process.stderr.write(chalk.red(message) + '\n');
+    }
+  }
+
+  /** Expose the current output format (for error handlers that need it). */
+  get format(): OutputFormat {
+    return this.flags.output;
   }
 
   /**

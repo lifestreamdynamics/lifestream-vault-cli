@@ -17,7 +17,7 @@ export interface GlobalFlags {
  */
 export function addGlobalFlags(cmd: Command): Command {
   return cmd
-    .option('-o, --output <format>', 'Output format: text, json, table (default: auto)')
+    .option('-o, --output <format>', 'Output format: text, json, table (default: auto — text for TTY, json for pipes)')
     .option('-v, --verbose', 'Verbose output (debug info)')
     .option('-q, --quiet', 'Minimal output (errors only)')
     .option('--no-color', 'Disable colored output')

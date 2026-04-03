@@ -36,6 +36,11 @@ vi.mock('@lifestreamdynamics/vault-sdk', () => ({
   generateVaultKey: vi.fn(() => 'a'.repeat(64)),
 }));
 
+// Resolve vault IDs as-is in tests (no network slug lookup)
+vi.mock('../utils/resolve-vault.js', () => ({
+  resolveVaultId: vi.fn(async (id: string) => id),
+}));
+
 describe('vaults commands', () => {
   let program: Command;
   let outputSpy: ReturnType<typeof spyOutput>;
@@ -69,7 +74,9 @@ describe('vaults commands', () => {
       expect(stdout).toContain('My Notes');
       expect(stdout).toContain('my-notes');
       expect(stdout).toContain('Personal notes');
-      expect(stdout).toContain('No description');
+      // Vaults with null description render without a description suffix
+      expect(stdout).toContain('Work');
+      expect(stdout).not.toContain('No description');
     });
 
     it('should show message when no vaults exist', async () => {

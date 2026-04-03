@@ -28,6 +28,22 @@ EXAMPLES
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       try {
+        if (_opts.since) {
+          const d = new Date(String(_opts.since));
+          if (isNaN(d.getTime())) {
+            out.error('Invalid --since date. Use ISO 8601 format (e.g., 2024-01-01).');
+            process.exitCode = 1;
+            return;
+          }
+        }
+        if (_opts.until) {
+          const d = new Date(String(_opts.until));
+          if (isNaN(d.getTime())) {
+            out.error('Invalid --until date. Use ISO 8601 format (e.g., 2024-01-31).');
+            process.exitCode = 1;
+            return;
+          }
+        }
         const logger = new AuditLogger({ logPath: String(_opts.logPath || DEFAULT_LOG_PATH) });
         const entries = logger.readEntries({
           tail: _opts.tail as number | undefined,
@@ -84,6 +100,23 @@ EXAMPLES
           out.error(`Unsupported format: ${String(_opts.format)}. Only 'csv' is supported.`);
           process.exitCode = 2;
           return;
+        }
+
+        if (_opts.since) {
+          const d = new Date(String(_opts.since));
+          if (isNaN(d.getTime())) {
+            out.error('Invalid --since date. Use ISO 8601 format (e.g., 2024-01-01).');
+            process.exitCode = 1;
+            return;
+          }
+        }
+        if (_opts.until) {
+          const d = new Date(String(_opts.until));
+          if (isNaN(d.getTime())) {
+            out.error('Invalid --until date. Use ISO 8601 format (e.g., 2024-01-31).');
+            process.exitCode = 1;
+            return;
+          }
         }
 
         const logger = new AuditLogger({ logPath: String(_opts.logPath || DEFAULT_LOG_PATH) });

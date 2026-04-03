@@ -6,7 +6,9 @@ import { createOutput, handleError } from '../utils/output.js';
 import type { CreateApiKeyParams, UpdateApiKeyParams } from '@lifestreamdynamics/vault-sdk';
 
 export function registerKeyCommands(program: Command): void {
-  const keys = program.command('keys').description('Create, list, update, and revoke API keys');
+  const keys = program.command('keys')
+    .description('Create, list, update, and revoke API keys (requires JWT auth — use "lsvault auth login" first)')
+    .addHelpText('after', '\nNOTE: API key management requires JWT authentication. API key auth is not sufficient.\nRun "lsvault auth login" to authenticate with email/password first.');
 
   addGlobalFlags(keys.command('list')
     .description('List all API keys for the current user'))

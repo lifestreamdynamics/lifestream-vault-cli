@@ -120,6 +120,10 @@ export function registerLinkCommands(program: Command): void {
         const client = await getClientAsync();
         const unresolved = await client.vaults.getUnresolvedLinks(vaultId);
         out.stopSpinner();
+        if (flags.output === 'json') {
+          process.stdout.write(JSON.stringify(unresolved) + '\n');
+          return;
+        }
         if (unresolved.length === 0) {
           out.success('No broken links found!');
           return;

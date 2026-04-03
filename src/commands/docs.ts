@@ -5,30 +5,41 @@ import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { getCredentialManager } from '../config.js';
 import { confirmAction } from '../utils/confirm.js';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 export function registerDocCommands(program: Command): void {
   const docs = program.command('docs').description('Read, write, move, and delete documents in a vault');
 
   addGlobalFlags(docs.command('list')
     .description('List documents in a vault, optionally filtered by directory')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .option('--dir <path>', 'Filter by directory path')
+    .option('--limit <n>', 'Maximum number of documents to return')
+    .option('--offset <n>', 'Number of documents to skip')
+    .option('--tag <tags>', 'Filter by tags (comma-separated)')
     .addHelpText('after', `
 EXAMPLES
   lsvault docs list abc123
-  lsvault docs list abc123 --dir notes/meetings`))
+  lsvault docs list abc123 --dir notes/meetings
+  lsvault docs list abc123 --tag work,project --limit 20
+  lsvault docs list abc123 --limit 50 --offset 100`))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching documents...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
-        const documents = await client.documents.list(vaultId, _opts.dir as string | undefined);
+        const dirPath = _opts.dir ? String(_opts.dir).replace(/\/+$/, '') : undefined;
+        const limit = _opts.limit !== undefined ? Number(_opts.limit) : undefined;
+        const offset = _opts.offset !== undefined ? Number(_opts.offset) : undefined;
+        const tags = _opts.tag ? String(_opts.tag).split(',').map((t: string) => t.trim()).filter(Boolean) : undefined;
+        const documents = await client.documents.list(vaultId, dirPath, { limit, offset, tags });
         out.stopSpinner();
         out.list(
           documents.map(doc => ({
             path: doc.path,
-            title: doc.title || '',
+            title: doc.title ?? null,
             tags: Array.isArray(doc.tags) ? doc.tags.join(', ') : '',
             sizeBytes: doc.sizeBytes,
           })),
@@ -57,7 +68,7 @@ EXAMPLES
 
   addGlobalFlags(docs.command('get')
     .description('Print document content to stdout, or show metadata with --meta')
-    .argument('<vaultId>', 'Vault ID')
+    .argument('<vaultId>', 'Vault ID or slug')
     .argument('<path>', 'Document path (e.g., notes/todo.md)')
     .option('--meta', 'Show metadata instead of content')
     .addHelpText('after', `
@@ -69,6 +80,7 @@ EXAMPLES
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const result = await client.documents.get(vaultId, docPath);
 
@@ -100,6 +112,8 @@ EXAMPLES
             createdAt: doc.createdAt,
             updatedAt: doc.updatedAt,
           });
+        } else if (flags.output === 'json') {
+          out.raw(JSON.stringify({ path: result.document.path, content: result.content }) + '\n');
         } else {
           out.raw(result.content);
         }
@@ -127,6 +141,14 @@ EXAMPLES
           process.stdin.on('end', () => resolve(data));
         });
 
+        if (!content.trim()) {
+          out.failSpinner('No content received');
+          out.error('No content received on stdin. Pipe content to this command:');
+          out.status(chalk.dim(`  echo "# Hello" | lsvault docs put ${vaultId} ${docPath}`));
+          process.exitCode = 1;
+          return;
+        }
+
         out.startSpinner('Uploading document...');
         const client = await getClientAsync();
 
@@ -147,10 +169,10 @@ EXAMPLES
         } else {
           doc = await client.documents.put(vaultId, docPath, content);
         }
-        out.success(`Document saved: ${chalk.cyan(doc.path)} (${doc.sizeBytes} bytes)`, {
+        out.success(`Document saved: ${chalk.cyan(doc.path)} (${doc.sizeBytes ?? 0} bytes)`, {
           path: doc.path,
-          sizeBytes: doc.sizeBytes,
-          encrypted: doc.encrypted,
+          sizeBytes: doc.sizeBytes ?? 0,
+          encrypted: doc.encrypted ?? false,
         });
       } catch (err) {
         handleError(out, err, 'Failed to save document');
@@ -196,6 +218,14 @@ EXAMPLES
     .action(async (vaultId: string, source: string, dest: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (flags.dryRun) {
+        out.success(`[dry-run] Would move: ${source} → ${dest}`, {
+          dryRun: true,
+          source,
+          destination: dest,
+        });
+        return;
+      }
       out.startSpinner('Moving document...');
       try {
         const client = await getClientAsync();
@@ -221,7 +251,7 @@ EXAMPLES
       try {
         const client = await getClientAsync();
         const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
-        const result = await client.documents.bulkMove(vaultId, { paths, targetDirectory: _opts.target as string });
+        const result = await client.documents.bulkMove(vaultId, { items: paths, destination: _opts.target as string });
         out.stopSpinner();
         if (flags.output === 'json') {
           out.raw(JSON.stringify(result, null, 2) + '\n');
@@ -248,7 +278,7 @@ EXAMPLES
       try {
         const client = await getClientAsync();
         const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
-        const result = await client.documents.bulkCopy(vaultId, { paths, targetDirectory: _opts.target as string });
+        const result = await client.documents.bulkCopy(vaultId, { items: paths, destination: _opts.target as string });
         out.stopSpinner();
         if (flags.output === 'json') {
           out.raw(JSON.stringify(result, null, 2) + '\n');
@@ -274,7 +304,7 @@ EXAMPLES
       try {
         const client = await getClientAsync();
         const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
-        const result = await client.documents.bulkDelete(vaultId, { paths });
+        const result = await client.documents.bulkDelete(vaultId, { items: paths });
         out.stopSpinner();
         if (flags.output === 'json') {
           out.raw(JSON.stringify(result, null, 2) + '\n');
@@ -309,7 +339,7 @@ EXAMPLES
         const paths = (String(_opts.paths)).split(',').map(p => p.trim()).filter(Boolean);
         const addTags = _opts.add ? (String(_opts.add)).split(',').map(t => t.trim()).filter(Boolean) : undefined;
         const removeTags = _opts.remove ? (String(_opts.remove)).split(',').map(t => t.trim()).filter(Boolean) : undefined;
-        const result = await client.documents.bulkTag(vaultId, { paths, addTags, removeTags });
+        const result = await client.documents.bulkTag(vaultId, { items: paths, addTags, removeTags });
         out.stopSpinner();
         if (flags.output === 'json') {
           out.raw(JSON.stringify(result, null, 2) + '\n');
@@ -334,8 +364,9 @@ EXAMPLES
       out.startSpinner('Creating directory...');
       try {
         const client = await getClientAsync();
-        const result = await client.documents.createDirectory(vaultId, path);
-        out.success(`Directory ${result.created ? 'created' : 'already exists'}: ${result.path}`, { path: result.path, created: result.created });
+        const normalizedPath = path.replace(/\/+$/, '');
+        const result = await client.documents.createDirectory(vaultId, normalizedPath);
+        out.success(`Directory ${result.created !== false ? 'created' : 'already exists'}: ${result.path}`, { path: result.path, created: result.created ?? true });
       } catch (err) {
         handleError(out, err, 'Failed to create directory');
       }

@@ -33,6 +33,9 @@ EXAMPLES
           mode: mode as 'text' | 'semantic' | 'hybrid' | undefined,
         });
         out.stopSpinner();
+        if (response.results.length === 0 && mode === 'semantic') {
+          out.warn('Semantic search returned no results. Ensure document embeddings have been generated (the embedding worker must be running).');
+        }
 
         if (flags.output === 'text') {
           const modeInfo = mode && mode !== 'text' ? `[${mode}] ` : '';

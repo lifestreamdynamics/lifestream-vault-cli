@@ -243,4 +243,12 @@ describe('keys commands', () => {
       expect(process.exitCode).toBe(1);
     });
   });
+
+  describe('command group metadata', () => {
+    it('should have JWT auth note in description (B16)', () => {
+      const keysCmd = program.commands.find(c => c.name() === 'keys');
+      expect(keysCmd).toBeDefined();
+      expect(keysCmd!.description()).toContain('JWT auth');
+    });
+  });
 });

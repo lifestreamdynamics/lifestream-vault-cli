@@ -93,6 +93,16 @@ export function registerConnectorCommands(program: Command): void {
         process.exitCode = 1;
         return;
       }
+      if (flags.dryRun) {
+        out.success(`[dry-run] Would create ${provider} connector "${name}" in vault ${String(_opts.vault)}`, {
+          dryRun: true,
+          provider,
+          name,
+          vaultId: String(_opts.vault),
+          syncDirection: String(_opts.direction),
+        });
+        return;
+      }
       out.startSpinner('Creating connector...');
       try {
         const client = await getClientAsync();

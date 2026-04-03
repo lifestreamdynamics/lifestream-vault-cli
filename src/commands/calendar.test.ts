@@ -324,7 +324,7 @@ describe('calendar commands', () => {
         duration: 120,
         description: 'Sprint planning session',
         location: 'Conference Room A',
-        color: 'blue',
+        color: '#0000ff',
       });
     });
   });
@@ -412,12 +412,12 @@ describe('calendar commands', () => {
   });
 
   describe('calendar templates delete', () => {
-    it('should require --confirm flag before deleting', async () => {
+    it('should require --yes flag before deleting', async () => {
       await program.parseAsync(['node', 'cli', 'calendar', 'templates', 'delete', 'vault-1', 'tmpl-1']);
 
       expect(sdkMock.calendar.deleteTemplate).not.toHaveBeenCalled();
       const stderr = outputSpy.stderr.join('');
-      expect(stderr).toContain('--confirm');
+      expect(stderr).toContain('--yes');
     });
 
     it('should delete a template when --confirm is provided', async () => {

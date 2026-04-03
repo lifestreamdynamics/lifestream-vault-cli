@@ -32,10 +32,12 @@ describe('mfa commands', () => {
     sdkMock = createSDKMock();
     consoleSpy = spyConsole();
     vi.clearAllMocks();
+    process.exitCode = undefined;
   });
 
   afterEach(() => {
     consoleSpy.restore();
+    process.exitCode = undefined;
   });
 
   describe('status', () => {
@@ -141,12 +143,21 @@ describe('mfa commands', () => {
       expect(consoleSpy.logs.some(l => l.includes('--regenerate'))).toBe(true);
     });
 
-    it('should handle errors in status fetch', async () => {
+    it('should set exitCode 1 on status fetch failure (B33)', async () => {
       sdkMock.mfa.getStatus.mockRejectedValue(new Error('Unauthorized'));
 
       await program.parseAsync(['node', 'cli', 'mfa', 'backup-codes']);
 
       expect(consoleSpy.errors.some(l => l.includes('Unauthorized'))).toBe(true);
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
+  describe('command group metadata', () => {
+    it('should have JWT auth note in description (B17)', () => {
+      const mfaCmd = program.commands.find(c => c.name() === 'mfa');
+      expect(mfaCmd).toBeDefined();
+      expect(mfaCmd!.description()).toContain('JWT auth');
     });
   });
 });

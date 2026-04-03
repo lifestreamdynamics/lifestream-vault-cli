@@ -51,7 +51,20 @@ export function registerWebhookCommands(program: Command): void {
     .description('Create a new webhook')
     .argument('<vaultId>', 'Vault ID')
     .argument('<url>', 'Webhook endpoint URL')
-    .option('--events <events>', 'Comma-separated events (e.g., create,update,delete)', 'create,update,delete'))
+    .option('--events <events>', 'Comma-separated events (document.created, document.updated, document.deleted, document.moved, document.copied, or * for all)', 'document.created,document.updated,document.deleted')
+    .addHelpText('after', `
+VALID EVENT NAMES
+  document.created   Document was created
+  document.updated   Document content was updated
+  document.deleted   Document was deleted
+  document.moved     Document was moved or renamed
+  document.copied    Document was copied
+  *                  All events
+
+EXAMPLES
+  lsvault webhooks create <vaultId> https://example.com/hook
+  lsvault webhooks create <vaultId> https://example.com/hook --events "document.created,document.deleted"
+  lsvault webhooks create <vaultId> https://example.com/hook --events "*"`))
     .action(async (vaultId: string, url: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);

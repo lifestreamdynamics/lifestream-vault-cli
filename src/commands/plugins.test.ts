@@ -115,12 +115,12 @@ describe('plugins commands', () => {
   // ── uninstall ─────────────────────────────────────────────────────────────
 
   describe('plugins uninstall', () => {
-    it('should require --confirm flag', async () => {
+    it('should require --yes flag', async () => {
       await program.parseAsync(['node', 'cli', 'plugins', 'uninstall', 'org/my-plugin']);
 
       expect(sdkMock.plugins.uninstall).not.toHaveBeenCalled();
       const stdout = outputSpy.stdout.join('');
-      expect(stdout).toContain('--confirm');
+      expect(stdout).toContain('--yes');
     });
 
     it('should uninstall with --confirm', async () => {

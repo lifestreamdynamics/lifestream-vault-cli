@@ -269,6 +269,53 @@ describe('auth commands', () => {
       expect(consoleSpy.logs.some(l => l.includes('pro'))).toBe(true);
     });
 
+    it('should fall back to subscription.get() when subscriptionTier is missing', async () => {
+      mockedLoadConfigAsync.mockResolvedValue({
+        apiUrl: 'https://vault.lifestreamdynamics.com',
+        apiKey: 'lsv_k_testkey123',
+      });
+      sdkMock.user.me.mockResolvedValue({
+        id: 'u1',
+        email: 'user@example.com',
+        displayName: 'Test User',
+        role: 'user',
+        subscriptionTier: undefined,
+        createdAt: '2024-01-01',
+        updatedAt: '2024-01-01',
+      });
+      sdkMock.subscription.get.mockResolvedValue({
+        subscription: { tier: 'business', expiresAt: null, isActive: true },
+        usage: { vaultCount: 1, totalStorageBytes: 0, apiCallsThisMonth: 0, aiTokens: 0, hookExecutions: 0, webhookDeliveries: 0 },
+      });
+
+      await program.parseAsync(['node', 'cli', 'auth', 'whoami']);
+
+      expect(sdkMock.subscription.get).toHaveBeenCalled();
+      expect(consoleSpy.logs.some(l => l.includes('business'))).toBe(true);
+    });
+
+    it('should show "unknown" plan when subscriptionTier missing and subscription call fails', async () => {
+      mockedLoadConfigAsync.mockResolvedValue({
+        apiUrl: 'https://vault.lifestreamdynamics.com',
+        apiKey: 'lsv_k_testkey123',
+      });
+      sdkMock.user.me.mockResolvedValue({
+        id: 'u1',
+        email: 'user@example.com',
+        displayName: 'Test User',
+        role: 'user',
+        subscriptionTier: undefined,
+        createdAt: '2024-01-01',
+        updatedAt: '2024-01-01',
+      });
+      sdkMock.subscription.get.mockRejectedValue(new Error('Forbidden'));
+
+      await program.parseAsync(['node', 'cli', 'auth', 'whoami']);
+
+      expect(sdkMock.subscription.get).toHaveBeenCalled();
+      expect(consoleSpy.logs.some(l => l.includes('unknown'))).toBe(true);
+    });
+
     it('should handle API errors gracefully in whoami', async () => {
       mockedLoadConfigAsync.mockResolvedValue({
         apiUrl: 'https://vault.lifestreamdynamics.com',

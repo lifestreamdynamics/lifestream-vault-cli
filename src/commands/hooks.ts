@@ -6,7 +6,7 @@ import { createOutput, handleError } from '../utils/output.js';
 import type { CreateHookParams } from '@lifestreamdynamics/vault-sdk';
 
 export function registerHookCommands(program: Command): void {
-  const hooks = program.command('hooks').description('Manage vault event hooks (auto-tag, template, etc.)');
+  const hooks = program.command('hooks').description('Manage vault event hooks');
 
   addGlobalFlags(hooks.command('list')
     .description('List all hooks for a vault')
@@ -54,10 +54,29 @@ export function registerHookCommands(program: Command): void {
     .description('Create a new hook')
     .argument('<vaultId>', 'Vault ID')
     .argument('<name>', 'Hook name')
-    .requiredOption('--trigger <event>', 'Trigger event (e.g., document.create)')
-    .requiredOption('--action <type>', 'Action type (e.g., auto-tag, template)')
+    .requiredOption('--trigger <event>', 'Trigger event (document.created, document.updated, document.deleted, document.moved, document.copied)')
+    .requiredOption('--action <type>', 'Action type (webhook, ai_prompt, document_operation, auto_calendar_event, auto_booking_process)')
     .requiredOption('--config <json>', 'Action configuration as JSON')
-    .option('--filter <json>', 'Trigger filter as JSON'))
+    .option('--filter <json>', 'Trigger filter as JSON')
+    .addHelpText('after', `
+VALID TRIGGER EVENTS
+  document.created        Document was created
+  document.updated        Document content was updated
+  document.deleted        Document was deleted
+  document.moved          Document was moved or renamed
+  document.copied         Document was copied
+
+VALID ACTION TYPES
+  webhook                 Send an HTTP notification to a URL
+  ai_prompt               Run an AI prompt on the document
+  document_operation      Perform a document operation (move, copy, tag)
+  auto_calendar_event     Automatically create a calendar event
+  auto_booking_process    Automatically process a booking
+
+EXAMPLES
+  lsvault hooks create <vaultId> my-hook --trigger document.created --action webhook --config '{"url":"https://example.com/hook"}'
+  lsvault hooks create <vaultId> ai-tag --trigger document.created --action ai_prompt --config '{"prompt":"Suggest tags"}'
+  lsvault hooks create <vaultId> move-docs --trigger document.created --action document_operation --config '{"operation":"move","targetPath":"inbox/"}'`))
     .action(async (vaultId: string, name: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);

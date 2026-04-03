@@ -169,4 +169,34 @@ describe('search command', () => {
     const stderr = outputSpy.stderr.join('');
     expect(stderr).not.toContain('[text]');
   });
+
+  it('should show embedding worker hint when semantic search returns no results (B14)', async () => {
+    sdkMock.search.search.mockResolvedValue({ results: [], total: 0, query: 'ml', mode: 'semantic' });
+
+    await program.parseAsync(['node', 'cli', 'search', 'ml', '--mode', 'semantic']);
+
+    const stderr = outputSpy.stderr.join('');
+    expect(stderr).toContain('embedding worker');
+  });
+
+  it('should not show embedding worker hint when semantic search returns results', async () => {
+    sdkMock.search.search.mockResolvedValue({
+      results: [
+        {
+          documentId: 'd1', vaultId: 'v1', vaultName: 'My Vault', vaultSlug: 'my-vault',
+          path: 'notes/ai.md', title: 'AI Notes',
+          snippet: 'Machine learning content',
+          tags: [], rank: 1.0, fileModifiedAt: '2024-01-01',
+        },
+      ],
+      total: 1,
+      query: 'ml',
+      mode: 'semantic',
+    });
+
+    await program.parseAsync(['node', 'cli', 'search', 'ml', '--mode', 'semantic']);
+
+    const stderr = outputSpy.stderr.join('');
+    expect(stderr).not.toContain('embedding worker');
+  });
 });

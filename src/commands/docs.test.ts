@@ -29,6 +29,11 @@ vi.mock('../config.js', () => ({
   DEFAULT_API_URL: 'https://vault.lifestreamdynamics.com',
 }));
 
+// Resolve vault IDs as-is in tests (no network slug lookup)
+vi.mock('../utils/resolve-vault.js', () => ({
+  resolveVaultId: vi.fn(async (id: string) => id),
+}));
+
 describe('docs commands', () => {
   let program: Command;
   let outputSpy: ReturnType<typeof spyOutput>;
@@ -57,7 +62,7 @@ describe('docs commands', () => {
 
       await program.parseAsync(['node', 'cli', 'docs', 'list', 'v1']);
 
-      expect(sdkMock.documents.list).toHaveBeenCalledWith('v1', undefined);
+      expect(sdkMock.documents.list).toHaveBeenCalledWith('v1', undefined, { limit: undefined, offset: undefined, tags: undefined });
       const stdout = outputSpy.stdout.join('');
       expect(stdout).toContain('notes/hello.md');
       expect(stdout).toContain('Hello World');
@@ -68,12 +73,12 @@ describe('docs commands', () => {
       expect(stderr).toContain('2 document(s)');
     });
 
-    it('should pass directory filter when --dir is used', async () => {
+    it('should pass directory filter when --dir is used (trailing slash stripped)', async () => {
       sdkMock.documents.list.mockResolvedValue([]);
 
       await program.parseAsync(['node', 'cli', 'docs', 'list', 'v1', '--dir', 'notes/']);
 
-      expect(sdkMock.documents.list).toHaveBeenCalledWith('v1', 'notes/');
+      expect(sdkMock.documents.list).toHaveBeenCalledWith('v1', 'notes', { limit: undefined, offset: undefined, tags: undefined });
     });
 
     it('should show message when no documents found', async () => {
@@ -210,6 +215,129 @@ describe('docs commands', () => {
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Destination exists');
       expect(process.exitCode).toBe(1);
+    });
+
+    it('should skip the API call and print a preview when --dry-run is set', async () => {
+      await program.parseAsync(['node', 'cli', 'docs', 'move', 'v1', 'old.md', 'new.md', '--dry-run']);
+
+      expect(sdkMock.documents.move).not.toHaveBeenCalled();
+      const stdout = outputSpy.stdout.join('');
+      // In non-TTY environments the default output is json; confirm the dryRun flag and paths are present
+      expect(stdout).toContain('old.md');
+      expect(stdout).toContain('new.md');
+      expect(stdout).toContain('true');
+    });
+
+    it('should emit dry-run JSON payload when --dry-run and --output json are combined', async () => {
+      await program.parseAsync(['node', 'cli', 'docs', 'move', 'v1', 'old.md', 'new.md', '--dry-run', '--output', 'json']);
+
+      expect(sdkMock.documents.move).not.toHaveBeenCalled();
+      const stdout = outputSpy.stdout.join('');
+      const parsed = JSON.parse(stdout);
+      expect(parsed.dryRun).toBe(true);
+      expect(parsed.source).toBe('old.md');
+      expect(parsed.destination).toBe('new.md');
+    });
+  });
+
+  describe('docs put', () => {
+    /**
+     * Helper: replace process.stdin with a mock Readable that emits the given
+     * content string then ends, and restore the original after the action runs.
+     */
+    function mockStdin(content: string): () => void {
+      const { Readable } = require('stream');
+      const mock = new Readable({ read() {} });
+      const original = process.stdin;
+      Object.defineProperty(process, 'stdin', { value: mock, configurable: true });
+      // Schedule data + end so the Promise inside the action can settle
+      process.nextTick(() => {
+        if (content.length > 0) mock.push(content);
+        mock.push(null); // EOF
+      });
+      return () => {
+        Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+      };
+    }
+
+    it('should upload document content when stdin has non-empty content', async () => {
+      const restore = mockStdin('# Hello World\n\nSome content here.');
+      try {
+        sdkMock.vaults.get.mockResolvedValue({ id: 'v1', encryptionEnabled: false });
+        sdkMock.documents.put.mockResolvedValue({
+          path: 'notes/hello.md',
+          sizeBytes: 34,
+          encrypted: false,
+        });
+
+        await program.parseAsync(['node', 'cli', 'docs', 'put', 'v1', 'notes/hello.md']);
+
+        expect(sdkMock.documents.put).toHaveBeenCalledWith('v1', 'notes/hello.md', '# Hello World\n\nSome content here.');
+        const stdout = outputSpy.stdout.join('');
+        expect(stdout).toContain('notes/hello.md');
+        expect(stdout).toContain('34');
+        expect(process.exitCode).not.toBe(1);
+      } finally {
+        restore();
+      }
+    });
+
+    it('should reject empty stdin and set exitCode 1', async () => {
+      const restore = mockStdin('');
+      try {
+        await program.parseAsync(['node', 'cli', 'docs', 'put', 'v1', 'notes/hello.md']);
+
+        expect(sdkMock.documents.put).not.toHaveBeenCalled();
+        expect(sdkMock.vaults.get).not.toHaveBeenCalled();
+        const stderr = outputSpy.stderr.join('');
+        expect(stderr).toContain('No content received');
+        expect(process.exitCode).toBe(1);
+      } finally {
+        restore();
+      }
+    });
+
+    it('should reject whitespace-only stdin and set exitCode 1', async () => {
+      const restore = mockStdin('   \n\t\n   ');
+      try {
+        await program.parseAsync(['node', 'cli', 'docs', 'put', 'v1', 'notes/hello.md']);
+
+        expect(sdkMock.documents.put).not.toHaveBeenCalled();
+        const stderr = outputSpy.stderr.join('');
+        expect(stderr).toContain('No content received');
+        expect(process.exitCode).toBe(1);
+      } finally {
+        restore();
+      }
+    });
+
+    it('should include the vault id and doc path in the hint message', async () => {
+      const restore = mockStdin('');
+      try {
+        await program.parseAsync(['node', 'cli', 'docs', 'put', 'abc123', 'notes/hello.md']);
+
+        const stderr = outputSpy.stderr.join('');
+        expect(stderr).toContain('abc123');
+        expect(stderr).toContain('notes/hello.md');
+      } finally {
+        restore();
+      }
+    });
+
+    it('should handle API errors gracefully', async () => {
+      const restore = mockStdin('# content');
+      try {
+        sdkMock.vaults.get.mockResolvedValue({ id: 'v1', encryptionEnabled: false });
+        sdkMock.documents.put.mockRejectedValue(new Error('Storage quota exceeded'));
+
+        await program.parseAsync(['node', 'cli', 'docs', 'put', 'v1', 'notes/hello.md']);
+
+        const stderr = outputSpy.stderr.join('');
+        expect(stderr).toContain('Storage quota exceeded');
+        expect(process.exitCode).toBe(1);
+      } finally {
+        restore();
+      }
     });
   });
 });

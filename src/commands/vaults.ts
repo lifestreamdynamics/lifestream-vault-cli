@@ -5,6 +5,7 @@ import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { generateVaultKey } from '@lifestreamdynamics/vault-sdk';
 import { getCredentialManager } from '../config.js';
+import { resolveVaultId } from '../utils/resolve-vault.js';
 
 export function registerVaultCommands(program: Command): void {
   const vaults = program.command('vaults').description('Create, list, and inspect document vaults');
@@ -20,7 +21,7 @@ export function registerVaultCommands(program: Command): void {
         const vaultList = await client.vaults.list();
         out.stopSpinner();
         out.list(
-          vaultList.map(v => ({ name: v.name, slug: v.slug, encrypted: v.encryptionEnabled ? 'yes' : 'no', description: v.description || 'No description', id: v.id })),
+          vaultList.map(v => ({ name: v.name, slug: v.slug, encrypted: v.encryptionEnabled ? 'yes' : 'no', description: v.description ?? null, id: v.id })),
           {
             emptyMessage: 'No vaults found.',
             columns: [
@@ -32,7 +33,8 @@ export function registerVaultCommands(program: Command): void {
             ],
             textFn: (v) => {
               const encIcon = v.encrypted === 'yes' ? chalk.green(' [encrypted]') : '';
-              return `${chalk.cyan(String(v.name))} ${chalk.dim(`(${String(v.slug)})`)}${encIcon} -- ${String(v.description)}`;
+              const desc = v.description != null ? ` -- ${String(v.description)}` : '';
+              return `${chalk.cyan(String(v.name))} ${chalk.dim(`(${String(v.slug)})`)}${encIcon}${desc}`;
             },
           },
         );
@@ -167,12 +169,13 @@ EXAMPLES
   // vault tree
   addGlobalFlags(vaults.command('tree')
     .description('Show vault file tree')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID or slug'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching vault tree...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const tree = await client.vaults.getTree(vaultId);
         out.stopSpinner();

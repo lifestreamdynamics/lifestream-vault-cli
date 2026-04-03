@@ -76,6 +76,7 @@ export function registerPublishCommands(program: Command): void {
         const pub = await client.publish.create(vaultId, docPath, params);
         out.success('Document published successfully!', {
           slug: pub.slug,
+          url: `/${pub.publishedBy}/${pub.slug}`,
           isPublished: pub.isPublished,
           seoTitle: pub.seoTitle || null,
           seoDescription: pub.seoDescription || null,

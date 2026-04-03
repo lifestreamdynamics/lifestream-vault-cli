@@ -79,12 +79,13 @@ export function registerPluginCommands(program: Command): void {
   addGlobalFlags(plugins.command('uninstall')
     .description('Uninstall a plugin')
     .argument('<pluginId>', 'Plugin marketplace identifier')
-    .option('--confirm', 'Skip confirmation prompt'))
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('--confirm', 'Alias for --yes (deprecated)'))
     .action(async (pluginId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      if (!_opts.confirm) {
-        out.raw(chalk.yellow(`Pass --confirm to uninstall plugin ${pluginId}.`) + '\n');
+      if (!_opts.yes && !_opts.confirm) {
+        out.raw(chalk.yellow(`Pass -y/--yes or --confirm to uninstall plugin ${pluginId}.`) + '\n');
         return;
       }
       out.startSpinner('Uninstalling plugin...');

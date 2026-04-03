@@ -85,7 +85,7 @@ export function registerBookingCommands(program: Command): void {
           durationMin: Number(_opts.duration),
           startTime: _opts.startTime as string,
           endTime: _opts.endTime as string,
-          daysOfWeek: (_opts.days as string).split(',').map((d: string) => d.trim()),
+          daysOfWeek: (_opts.days as string).split(',').map((d: string) => d.trim().toLowerCase()),
           timezone: _opts.timezone as string,
           bufferMin: Number(_opts.buffer),
           maxConcurrent: Number(_opts.maxConcurrent),
@@ -127,7 +127,7 @@ export function registerBookingCommands(program: Command): void {
         if (_opts.duration) data.durationMin = Number(_opts.duration);
         if (_opts.startTime) data.startTime = _opts.startTime;
         if (_opts.endTime) data.endTime = _opts.endTime;
-        if (_opts.days) data.daysOfWeek = (_opts.days as string).split(',').map((d: string) => d.trim());
+        if (_opts.days) data.daysOfWeek = (_opts.days as string).split(',').map((d: string) => d.trim().toLowerCase());
         if (_opts.timezone) data.timezone = _opts.timezone;
         if (_opts.buffer) data.bufferMin = Number(_opts.buffer);
         if (_opts.maxConcurrent) data.maxConcurrent = Number(_opts.maxConcurrent);
@@ -149,12 +149,13 @@ export function registerBookingCommands(program: Command): void {
     .description('Delete an event slot')
     .argument('<vaultId>', 'Vault ID')
     .argument('<slotId>', 'Slot ID')
-    .option('--confirm', 'Skip confirmation prompt'))
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('--confirm', 'Alias for --yes (deprecated)'))
     .action(async (vaultId: string, slotId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      if (!_opts.confirm) {
-        out.status(chalk.yellow(`Pass --confirm to delete slot ${slotId}.`));
+      if (!_opts.yes && !_opts.confirm) {
+        out.status(chalk.yellow(`Pass -y/--yes to delete slot ${slotId}.`));
         return;
       }
       out.startSpinner('Deleting slot...');
@@ -373,12 +374,13 @@ export function registerBookingCommands(program: Command): void {
     .description('Delete an event template')
     .argument('<vaultId>', 'Vault ID')
     .argument('<templateId>', 'Template ID')
-    .option('--confirm', 'Skip confirmation prompt'))
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('--confirm', 'Alias for --yes (deprecated)'))
     .action(async (vaultId: string, templateId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      if (!_opts.confirm) {
-        out.status(chalk.yellow(`Pass --confirm to delete template ${templateId}.`));
+      if (!_opts.yes && !_opts.confirm) {
+        out.status(chalk.yellow(`Pass -y/--yes to delete template ${templateId}.`));
         return;
       }
       out.startSpinner('Deleting template...');
@@ -581,12 +583,13 @@ export function registerBookingCommands(program: Command): void {
     .description('Delete a booking group')
     .argument('<teamId>', 'Team ID')
     .argument('<groupId>', 'Group ID')
-    .option('--confirm', 'Skip confirmation prompt'))
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('--confirm', 'Alias for --yes (deprecated)'))
     .action(async (teamId: string, groupId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      if (!_opts.confirm) {
-        out.status(chalk.yellow(`Pass --confirm to delete booking group ${groupId}.`));
+      if (!_opts.yes && !_opts.confirm) {
+        out.status(chalk.yellow(`Pass -y/--yes to delete booking group ${groupId}.`));
         return;
       }
       out.startSpinner('Deleting booking group...');

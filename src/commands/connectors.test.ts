@@ -181,6 +181,40 @@ describe('connectors commands', () => {
       expect(stderr).toContain('Validation failed');
       expect(process.exitCode).toBe(1);
     });
+
+    it('should skip the API call and print a preview when --dry-run is set', async () => {
+      await program.parseAsync(['node', 'cli', 'connectors', 'create', 'google_drive', 'My Drive', '--vault', 'v1', '--direction', 'bidirectional', '--dry-run']);
+
+      expect(sdkMock.connectors.create).not.toHaveBeenCalled();
+      const stdout = outputSpy.stdout.join('');
+      // In non-TTY environments the default output is json; confirm the dryRun flag and key fields are present
+      expect(stdout).toContain('google_drive');
+      expect(stdout).toContain('My Drive');
+      expect(stdout).toContain('v1');
+      expect(stdout).toContain('true');
+    });
+
+    it('should emit dry-run JSON payload when --dry-run and --output json are combined', async () => {
+      await program.parseAsync(['node', 'cli', 'connectors', 'create', 'dropbox', 'My Box', '--vault', 'v2', '--direction', 'push', '--dry-run', '--output', 'json']);
+
+      expect(sdkMock.connectors.create).not.toHaveBeenCalled();
+      const stdout = outputSpy.stdout.join('');
+      const parsed = JSON.parse(stdout);
+      expect(parsed.dryRun).toBe(true);
+      expect(parsed.provider).toBe('dropbox');
+      expect(parsed.name).toBe('My Box');
+      expect(parsed.vaultId).toBe('v2');
+      expect(parsed.syncDirection).toBe('push');
+    });
+
+    it('should still reject an invalid provider even when --dry-run is set', async () => {
+      await program.parseAsync(['node', 'cli', 'connectors', 'create', 'ftp', 'Bad', '--vault', 'v1', '--direction', 'pull', '--dry-run']);
+
+      expect(sdkMock.connectors.create).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Invalid provider "ftp"');
+      expect(process.exitCode).toBe(1);
+    });
   });
 
   // ── Update ────────────────────────────────────────────────────────

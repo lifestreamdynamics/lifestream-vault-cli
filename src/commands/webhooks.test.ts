@@ -86,7 +86,7 @@ describe('webhooks commands', () => {
     it('should create a webhook with default events', async () => {
       sdkMock.webhooks.create.mockResolvedValue({
         id: 'wh1', vaultId: 'v1', url: 'https://example.com/hook',
-        events: ['create', 'update', 'delete'], isActive: true,
+        events: ['document.created', 'document.updated', 'document.deleted'], isActive: true,
         createdAt: '2024-01-01', updatedAt: '2024-01-01',
         secret: 'whsec_abc123',
       });
@@ -95,7 +95,7 @@ describe('webhooks commands', () => {
 
       expect(sdkMock.webhooks.create).toHaveBeenCalledWith('v1', {
         url: 'https://example.com/hook',
-        events: ['create', 'update', 'delete'],
+        events: ['document.created', 'document.updated', 'document.deleted'],
       });
       const stdout = outputSpy.stdout.join('');
       expect(stdout).toContain('whsec_abc123');

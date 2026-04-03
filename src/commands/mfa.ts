@@ -5,7 +5,9 @@ import { getClientAsync } from '../client.js';
 import { promptPassword, promptMfaCode } from '../utils/prompt.js';
 
 export function registerMfaCommands(program: Command): void {
-  const mfa = program.command('mfa').description('Multi-factor authentication management');
+  const mfa = program.command('mfa')
+    .description('Multi-factor authentication management (requires JWT auth — use "lsvault auth login" first)')
+    .addHelpText('after', '\nNOTE: MFA management requires JWT authentication. API key auth is not sufficient.\nRun "lsvault auth login" to authenticate with email/password first.');
 
   mfa.command('status')
     .description('Show MFA status and configured methods')
@@ -144,6 +146,7 @@ export function registerMfaCommands(program: Command): void {
         } catch (err) {
           spinner.fail('Failed to regenerate backup codes');
           console.error(err instanceof Error ? err.message : String(err));
+          process.exitCode = 1;
         }
       } else {
         // Show backup code count
@@ -164,6 +167,7 @@ export function registerMfaCommands(program: Command): void {
         } catch (err) {
           spinner.fail('Failed to fetch backup code count');
           console.error(err instanceof Error ? err.message : String(err));
+          process.exitCode = 1;
         }
       }
     });

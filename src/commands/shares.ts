@@ -1,6 +1,7 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
+import { loadConfigAsync } from '../config.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { promptPassword, readPasswordFromStdin } from '../utils/prompt.js';
@@ -102,9 +103,13 @@ export function registerShareCommands(program: Command): void {
         const result = await client.shares.create(vaultId, docPath, params);
         out.stopSpinner();
 
+        const config = await loadConfigAsync();
+        const shareUrl = `${config.apiUrl}/share/${result.fullToken}`;
+
         if (flags.output === 'json') {
           out.record({
             token: result.fullToken,
+            url: shareUrl,
             id: result.shareLink.id,
             permission: result.shareLink.permission,
             expiresAt: result.shareLink.expiresAt || null,
@@ -113,6 +118,7 @@ export function registerShareCommands(program: Command): void {
         } else {
           out.warn('\nIMPORTANT: Save this token. It cannot be retrieved later.\n');
           process.stdout.write(chalk.green.bold(`Token: ${result.fullToken}\n`));
+          process.stdout.write(chalk.green(`URL:   ${shareUrl}\n`));
           process.stdout.write(`\nID:         ${result.shareLink.id}\n`);
           process.stdout.write(`Permission: ${result.shareLink.permission}\n`);
           if (result.shareLink.expiresAt) {

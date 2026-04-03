@@ -137,13 +137,24 @@ describe('versions commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
-    it('should handle errors gracefully', async () => {
+    it('should handle version-not-found errors with specific message (B15)', async () => {
       sdkMock.documents.diffVersions.mockRejectedValue(new Error('Version not found'));
 
       await program.parseAsync(['node', 'cli', 'versions', 'diff', 'vault-1', 'notes/todo.md', '1', '2']);
 
       const stderr = outputSpy.stderr.join('');
-      expect(stderr).toContain('Version not found');
+      expect(stderr).toContain("Version 1 or 2 not found for document \"notes/todo.md\"");
+      expect(stderr).toContain("versions list");
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should handle generic errors with original message', async () => {
+      sdkMock.documents.diffVersions.mockRejectedValue(new Error('Internal server error'));
+
+      await program.parseAsync(['node', 'cli', 'versions', 'diff', 'vault-1', 'notes/todo.md', '1', '2']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Internal server error');
       expect(process.exitCode).toBe(1);
     });
   });
