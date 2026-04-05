@@ -128,13 +128,15 @@ describe('Output', () => {
       { name: 'Beta', id: '2' },
     ];
 
-    it('should output one JSON line per item in json mode', () => {
+    it('should output a JSON array in json mode', () => {
       const out = createOutput(makeFlags({ output: 'json' }));
       out.list(data);
-      const lines = stdoutChunks.join('').trim().split('\n');
-      expect(lines).toHaveLength(2);
-      expect(JSON.parse(lines[0])).toEqual({ name: 'Alpha', id: '1' });
-      expect(JSON.parse(lines[1])).toEqual({ name: 'Beta', id: '2' });
+      const output = stdoutChunks.join('').trim();
+      const parsed = JSON.parse(output);
+      expect(Array.isArray(parsed)).toBe(true);
+      expect(parsed).toHaveLength(2);
+      expect(parsed[0]).toEqual({ name: 'Alpha', id: '1' });
+      expect(parsed[1]).toEqual({ name: 'Beta', id: '2' });
     });
 
     it('should use textFn in text mode', () => {

@@ -59,6 +59,7 @@ EXAMPLES
         process.stdout.write(value + '\n');
       } else {
         process.stdout.write(chalk.yellow(`Key "${key}" not set in profile "${profile}"`) + '\n');
+        process.exitCode = 1;
       }
     });
 

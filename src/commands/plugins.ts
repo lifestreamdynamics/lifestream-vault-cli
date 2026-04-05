@@ -52,7 +52,7 @@ export function registerPluginCommands(program: Command): void {
   addGlobalFlags(plugins.command('install')
     .description('Install a plugin from the marketplace')
     .requiredOption('--plugin-id <pluginId>', 'Plugin marketplace identifier (e.g. org/plugin-name)')
-    .requiredOption('--version <version>', 'Version to install'))
+    .requiredOption('--plugin-version <version>', 'Version to install'))
     .action(async (_opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -61,7 +61,7 @@ export function registerPluginCommands(program: Command): void {
         const client = await getClientAsync();
         const installed = await client.plugins.install({
           pluginId: _opts.pluginId as string,
-          version: _opts.version as string,
+          version: _opts.pluginVersion as string,
         });
         out.stopSpinner();
         if (flags.output === 'json') {

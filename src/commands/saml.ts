@@ -5,7 +5,9 @@ import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 
 export function registerSamlCommands(program: Command): void {
-  const saml = program.command('saml').description('SAML SSO configuration management (requires admin role)');
+  const saml = program.command('saml')
+    .description('SAML SSO configuration management (requires admin role)')
+    .addHelpText('after', '\nNOTE: SAML commands require JWT authentication with admin role.\nRun "lsvault auth login" to authenticate first.');
 
   // ── list-configs ─────────────────────────────────────────────────────────
 

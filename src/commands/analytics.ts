@@ -72,7 +72,7 @@ export function registerAnalyticsCommands(program: Command): void {
     .addHelpText('after', `
 NOTE
   The publishedDocId is a UUID, NOT a document path. Get it from:
-    lsvault publish list <vaultId>`))
+    lsvault analytics published`))
     .action(async (vaultId: string, publishedDocId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);

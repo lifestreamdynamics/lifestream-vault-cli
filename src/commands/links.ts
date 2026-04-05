@@ -26,17 +26,17 @@ export function registerLinkCommands(program: Command): void {
           linkList.map(link => ({
             targetPath: link.targetPath,
             linkText: link.linkText,
-            resolved: link.isResolved ? 'Yes' : 'No',
+            isResolved: link.isResolved,
           })),
           {
             emptyMessage: 'No forward links found.',
             columns: [
               { key: 'targetPath', header: 'Target' },
               { key: 'linkText', header: 'Link Text' },
-              { key: 'resolved', header: 'Resolved' },
+              { key: 'isResolved', header: 'Resolved' },
             ],
             textFn: (link) => {
-              const resolved = link.resolved === 'Yes' ? chalk.green('✓') : chalk.red('✗');
+              const resolved = link.isResolved ? chalk.green('✓') : chalk.red('✗');
               return `  ${resolved} [[${String(link.linkText)}]] → ${String(link.targetPath)}`;
             },
           },
@@ -62,19 +62,23 @@ export function registerLinkCommands(program: Command): void {
         out.stopSpinner();
         out.list(
           backlinks.map(bl => ({
-            source: bl.sourceDocument.title || bl.sourceDocument.path,
+            sourcePath: bl.sourceDocument.path,
+            sourceTitle: bl.sourceDocument.title || null,
             linkText: bl.linkText,
             context: bl.contextSnippet || '',
           })),
           {
             emptyMessage: 'No backlinks found.',
             columns: [
-              { key: 'source', header: 'Source' },
+              { key: 'sourcePath', header: 'Source Path' },
+              { key: 'sourceTitle', header: 'Source Title' },
               { key: 'linkText', header: 'Link Text' },
               { key: 'context', header: 'Context' },
             ],
             textFn: (bl) => {
-              const lines = [chalk.cyan(`  ${String(bl.source)}`)];
+              const displayName = bl.sourceTitle ? String(bl.sourceTitle) : String(bl.sourcePath);
+              const lines = [chalk.cyan(`  ${displayName}`)];
+              if (bl.sourceTitle) lines.push(`  Path: ${String(bl.sourcePath)}`);
               lines.push(`  Link: [[${String(bl.linkText)}]]`);
               if (bl.context) lines.push(`  Context: ...${String(bl.context)}...`);
               return lines.join('\n');

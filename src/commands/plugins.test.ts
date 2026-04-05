@@ -88,7 +88,7 @@ describe('plugins commands', () => {
       await program.parseAsync([
         'node', 'cli', 'plugins', 'install',
         '--plugin-id', 'org/my-plugin',
-        '--version', '1.0.0',
+        '--plugin-version', '1.0.0',
       ]);
 
       expect(sdkMock.plugins.install).toHaveBeenCalledWith({
@@ -105,7 +105,7 @@ describe('plugins commands', () => {
       await program.parseAsync([
         'node', 'cli', 'plugins', 'install',
         '--plugin-id', 'org/my-plugin',
-        '--version', '1.0.0',
+        '--plugin-version', '1.0.0',
       ]);
 
       expect(process.exitCode).toBe(1);

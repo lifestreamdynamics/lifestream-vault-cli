@@ -7,6 +7,7 @@ import { createOutput, handleError } from '../utils/output.js';
 import { promptPassword, readPasswordFromStdin } from '../utils/prompt.js';
 import type { CreateShareLinkParams } from '@lifestreamdynamics/vault-sdk';
 import { resolveVaultId } from '../utils/resolve-vault.js';
+import { confirmAction } from '../utils/confirm.js';
 
 export function registerShareCommands(program: Command): void {
   const shares = program.command('shares').description('Create, list, and revoke document share links');
@@ -139,12 +140,18 @@ export function registerShareCommands(program: Command): void {
   addGlobalFlags(shares.command('revoke')
     .description('Revoke a share link')
     .argument('<vaultId>', 'Vault ID or slug')
-    .argument('<shareId>', 'Share link ID'))
+    .argument('<shareId>', 'Share link ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, shareId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      out.startSpinner('Revoking share link...');
       try {
+        const confirmed = await confirmAction(`Revoke share link ${shareId}?`, { yes: _opts.yes as boolean | undefined });
+        if (!confirmed) {
+          out.status('Revoke cancelled.');
+          return;
+        }
+        out.startSpinner('Revoking share link...');
         vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         await client.shares.revoke(vaultId, shareId);

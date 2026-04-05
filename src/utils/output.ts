@@ -115,6 +115,7 @@ export class Output {
    * - table: prints a single-row table
    */
   record(data: Record<string, unknown>, columns?: TableColumn[]): void {
+    if (this.flags.quiet) return;
     switch (this.flags.output) {
       case 'json':
         process.stdout.write(JSON.stringify(data) + '\n');
@@ -157,11 +158,11 @@ export class Output {
       return;
     }
 
+    if (this.flags.quiet) return;
+
     switch (this.flags.output) {
       case 'json':
-        for (const item of data) {
-          process.stdout.write(JSON.stringify(item) + '\n');
-        }
+        process.stdout.write(JSON.stringify(data) + '\n');
         break;
       case 'table':
         this.table(data, options?.columns);
@@ -193,8 +194,8 @@ export class Output {
    * Print a success result (used for create/update/delete confirmations).
    */
   success(message: string, data?: Record<string, unknown>): void {
-    if (this.flags.output === 'json' && data) {
-      process.stdout.write(JSON.stringify(data) + '\n');
+    if (this.flags.output === 'json') {
+      process.stdout.write(JSON.stringify(data ?? { success: true, message }) + '\n');
     } else if (!this.flags.quiet) {
       this.succeedSpinner(message);
       if (data && this.flags.output === 'text') {

@@ -6,7 +6,9 @@ import { createOutput, handleError } from '../utils/output.js';
 import { formatBytes, formatUptime } from '../utils/format.js';
 
 export function registerAdminCommands(program: Command): void {
-  const admin = program.command('admin').description('System administration (requires admin role)');
+  const admin = program.command('admin')
+    .description('System administration (requires admin role)')
+    .addHelpText('after', '\nNOTE: Admin commands require JWT authentication with admin role.\nRun "lsvault auth login" to authenticate first.');
 
   // ── System Stats ────────────────────────────────────────────────────
 

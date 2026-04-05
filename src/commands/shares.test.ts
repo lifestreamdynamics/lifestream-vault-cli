@@ -179,7 +179,7 @@ describe('shares commands', () => {
     it('should revoke a share link', async () => {
       sdkMock.shares.revoke.mockResolvedValue(undefined);
 
-      await program.parseAsync(['node', 'cli', 'shares', 'revoke', 'v1', 'sl1']);
+      await program.parseAsync(['node', 'cli', 'shares', 'revoke', 'v1', 'sl1', '--yes']);
 
       expect(sdkMock.shares.revoke).toHaveBeenCalledWith('v1', 'sl1');
     });
@@ -187,7 +187,7 @@ describe('shares commands', () => {
     it('should handle revoke errors', async () => {
       sdkMock.shares.revoke.mockRejectedValue(new Error('Share link not found'));
 
-      await program.parseAsync(['node', 'cli', 'shares', 'revoke', 'v1', 'sl1']);
+      await program.parseAsync(['node', 'cli', 'shares', 'revoke', 'v1', 'sl1', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Share link not found');

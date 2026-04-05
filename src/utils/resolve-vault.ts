@@ -12,7 +12,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export async function resolveVaultId(idOrSlug: string): Promise<string> {
   if (UUID_RE.test(idOrSlug)) return idOrSlug;
   const client = await getClientAsync();
-  const vaults = await client.vaults.list();
+  const vaults = await client.vaults.list({ includeArchived: true });
   const match = vaults.find(v => v.slug === idOrSlug);
   if (!match) throw new Error(`Vault not found: "${idOrSlug}"`);
   return match.id;

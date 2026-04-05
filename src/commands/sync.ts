@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
+import { confirmAction } from '../utils/confirm.js';
 import { formatUptime } from '../utils/format.js';
 import {
   loadSyncConfigs,
@@ -146,12 +147,18 @@ Sync modes:
   // sync delete <syncId>
   addGlobalFlags(sync.command('delete')
     .description('Delete a sync configuration')
-    .argument('<syncId>', 'Sync configuration ID'))
+    .argument('<syncId>', 'Sync configuration ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (syncId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      out.startSpinner('Deleting sync configuration...');
       try {
+        const confirmed = await confirmAction(`Delete sync configuration ${syncId}?`, { yes: _opts.yes as boolean | undefined });
+        if (!confirmed) {
+          out.status('Delete cancelled.');
+          return;
+        }
+        out.startSpinner('Deleting sync configuration...');
         const deleted = deleteSyncConfig(syncId);
         if (!deleted) {
           out.failSpinner('Sync configuration not found');
@@ -312,8 +319,6 @@ Sync modes:
         out.stopSpinner();
 
         if (flags.dryRun) {
-          out.status(chalk.yellow('Dry run — no changes will be made:'));
-          out.status(formatDiff(diff));
           if (flags.output === 'json') {
             out.record({
               dryRun: true,
@@ -322,6 +327,9 @@ Sync modes:
               unchanged,
               totalBytes: diff.totalBytes,
             });
+          } else {
+            out.status(chalk.yellow('Dry run — no changes will be made:'));
+            out.status(formatDiff(diff));
           }
           return;
         }

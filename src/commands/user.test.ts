@@ -218,7 +218,7 @@ describe('user commands', () => {
       mockedPromptPassword.mockResolvedValueOnce('mypassword');
       sdkMock.user.requestAccountDeletion.mockResolvedValue({ message: 'Deletion scheduled', scheduledAt: '2026-03-01T00:00:00Z' });
 
-      await program.parseAsync(['node', 'cli', 'user', 'delete']);
+      await program.parseAsync(['node', 'cli', 'user', 'delete', '--yes']);
 
       expect(sdkMock.user.requestAccountDeletion).toHaveBeenCalledWith({
         password: 'mypassword',
@@ -231,7 +231,7 @@ describe('user commands', () => {
       mockedReadPasswordFromStdin.mockResolvedValueOnce('mypassword');
       sdkMock.user.requestAccountDeletion.mockResolvedValue({ message: 'Deletion scheduled', scheduledAt: '2026-03-01T00:00:00Z' });
 
-      await program.parseAsync(['node', 'cli', 'user', 'delete', '--password-stdin', '--reason', 'No longer needed', '--export-data']);
+      await program.parseAsync(['node', 'cli', 'user', 'delete', '--yes', '--password-stdin', '--reason', 'No longer needed', '--export-data']);
 
       expect(sdkMock.user.requestAccountDeletion).toHaveBeenCalledWith({
         password: 'mypassword',
@@ -243,7 +243,7 @@ describe('user commands', () => {
     it('should error when password is empty', async () => {
       mockedPromptPassword.mockResolvedValue(null);
 
-      await program.parseAsync(['node', 'cli', 'user', 'delete']);
+      await program.parseAsync(['node', 'cli', 'user', 'delete', '--yes']);
 
       expect(sdkMock.user.requestAccountDeletion).not.toHaveBeenCalled();
       const stderr = outputSpy.stderr.join('');

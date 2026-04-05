@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
+import { confirmAction } from '../utils/confirm.js';
 
 export function registerPublishVaultCommands(program: Command): void {
   const pv = program.command('publish-vault').description('Manage whole-vault publishing (public sites)');
@@ -43,7 +44,7 @@ export function registerPublishVaultCommands(program: Command): void {
     .option('--description <desc>', 'Site description')
     .option('--show-sidebar', 'Show sidebar navigation')
     .option('--enable-search', 'Enable search on the site')
-    .option('--theme <theme>', 'Site theme')
+    .option('--theme <theme>', 'Site theme (e.g. default, minimal, blog, docs)')
     .option('--domain <domainId>', 'Custom domain ID'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
@@ -74,7 +75,7 @@ export function registerPublishVaultCommands(program: Command): void {
     .option('--description <desc>', 'Site description')
     .option('--show-sidebar', 'Show sidebar')
     .option('--enable-search', 'Enable search')
-    .option('--theme <theme>', 'Site theme')
+    .option('--theme <theme>', 'Site theme (e.g. default, minimal, blog, docs)')
     .option('--domain <domainId>', 'Custom domain ID'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
@@ -99,12 +100,18 @@ export function registerPublishVaultCommands(program: Command): void {
 
   addGlobalFlags(pv.command('unpublish')
     .description('Unpublish a vault site')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      out.startSpinner('Unpublishing vault...');
       try {
+        const confirmed = await confirmAction(`Unpublish vault site for vault ${vaultId}?`, { yes: _opts.yes as boolean | undefined });
+        if (!confirmed) {
+          out.status('Unpublish cancelled.');
+          return;
+        }
+        out.startSpinner('Unpublishing vault...');
         const client = await getClientAsync();
         await client.publishVault.unpublish(vaultId);
         out.success('Vault unpublished', { vaultId });

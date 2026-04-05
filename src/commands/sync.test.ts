@@ -197,10 +197,11 @@ describe('sync commands', () => {
 
       await program.parseAsync(['node', 'cli', 'sync', 'list', '--output', 'json']);
 
-      const jsonLine = outputSpy.stdout.find(l => l.startsWith('{'));
-      expect(jsonLine).toBeDefined();
-      const parsed = JSON.parse(jsonLine!);
-      expect(parsed.id).toBe('sync-1');
+      const jsonOutput = outputSpy.stdout.find(l => l.startsWith('['));
+      expect(jsonOutput).toBeDefined();
+      const parsed = JSON.parse(jsonOutput!);
+      expect(Array.isArray(parsed)).toBe(true);
+      expect(parsed[0].id).toBe('sync-1');
     });
   });
 
@@ -208,7 +209,7 @@ describe('sync commands', () => {
     it('should delete sync config and state', async () => {
       mockConfigs.push({ id: 'sync-1' });
 
-      await program.parseAsync(['node', 'cli', 'sync', 'delete', 'sync-1']);
+      await program.parseAsync(['node', 'cli', 'sync', 'delete', 'sync-1', '--yes']);
 
       expect(deleteSyncConfig).toHaveBeenCalledWith('sync-1');
       expect(deleteSyncState).toHaveBeenCalledWith('sync-1');
@@ -217,7 +218,7 @@ describe('sync commands', () => {
     it('should report error when sync not found', async () => {
       vi.mocked(deleteSyncConfig).mockReturnValue(false);
 
-      await program.parseAsync(['node', 'cli', 'sync', 'delete', 'nonexistent']);
+      await program.parseAsync(['node', 'cli', 'sync', 'delete', 'nonexistent', '--yes']);
 
       expect(process.exitCode).toBe(1);
     });

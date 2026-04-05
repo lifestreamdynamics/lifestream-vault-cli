@@ -18,7 +18,11 @@ EXAMPLES
   lsvault search "meeting notes"
   lsvault search "project plan" --vault abc123
   lsvault search "typescript" --tags dev,code --limit 5
-  lsvault search "machine learning" --mode semantic`))
+  lsvault search "machine learning" --mode semantic
+
+NOTE
+  Semantic search (--mode semantic) requires the embedding worker to have
+  processed documents. If results are empty, ensure the worker is running.`))
     .action(async (query: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);

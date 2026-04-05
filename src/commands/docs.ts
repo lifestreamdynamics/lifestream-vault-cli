@@ -173,9 +173,11 @@ EXAMPLES
         } else {
           doc = await client.documents.put(vaultId, docPath, content);
         }
-        out.success(`Document saved: ${chalk.cyan(doc.path)} (${doc.sizeBytes ?? 0} bytes)`, {
-          path: doc.path,
-          sizeBytes: doc.sizeBytes ?? 0,
+        const docPath2 = doc.path ?? docPath;
+        const size = doc.sizeBytes ?? Buffer.byteLength(content, 'utf8');
+        out.success(`Document saved: ${chalk.cyan(docPath2)} (${size} bytes)`, {
+          path: docPath2,
+          sizeBytes: size,
           encrypted: doc.encrypted ?? false,
         });
       } catch (err) {

@@ -150,7 +150,7 @@ describe('publish-vault commands', () => {
     it('should unpublish a vault site', async () => {
       sdkMock.publishVault.unpublish.mockResolvedValue(undefined);
 
-      await program.parseAsync(['node', 'cli', 'publish-vault', 'unpublish', 'v1']);
+      await program.parseAsync(['node', 'cli', 'publish-vault', 'unpublish', 'v1', '--yes']);
 
       expect(sdkMock.publishVault.unpublish).toHaveBeenCalledWith('v1');
       const stdout = outputSpy.stdout.join('');
@@ -164,7 +164,7 @@ describe('publish-vault commands', () => {
     it('should handle unpublish errors gracefully', async () => {
       sdkMock.publishVault.unpublish.mockRejectedValue(new Error('Published vault not found'));
 
-      await program.parseAsync(['node', 'cli', 'publish-vault', 'unpublish', 'v1']);
+      await program.parseAsync(['node', 'cli', 'publish-vault', 'unpublish', 'v1', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Published vault not found');

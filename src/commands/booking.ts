@@ -411,7 +411,8 @@ export function registerBookingCommands(program: Command): void {
   addGlobalFlags(booking.command('reschedule')
     .description('Reschedule a booking by guest reschedule token')
     .argument('<token>', 'Reschedule token (from guest email link)')
-    .argument('<newStartAt>', 'New start time in ISO 8601 format (e.g. 2026-03-15T10:00:00Z)'))
+    .argument('<newStartAt>', 'New start time in ISO 8601 format (e.g. 2026-03-15T10:00:00Z)')
+    .addHelpText('after', '\n  The <token> is the guest reschedule token from the booking confirmation email,\n  not the booking ID.'))
     .action(async (token: string, newStartAt: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);

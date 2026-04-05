@@ -6,6 +6,7 @@ import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { formatBytes } from '../utils/format.js';
 import { promptPassword, readPasswordFromStdin } from '../utils/prompt.js';
+import { confirmAction } from '../utils/confirm.js';
 
 export function registerUserCommands(program: Command): void {
   const user = program.command('user').description('View account details and storage usage');
@@ -185,10 +186,17 @@ export function registerUserCommands(program: Command): void {
     .description('Request account deletion')
     .option('--password-stdin', 'Read password from stdin for CI usage')
     .option('--reason <reason>', 'Reason for deletion')
-    .option('--export-data', 'Request data export before deletion'))
+    .option('--export-data', 'Request data export before deletion')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (_opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+
+      const confirmed = await confirmAction('Are you sure you want to delete your account? This cannot be undone.', { yes: _opts.yes as boolean | undefined });
+      if (!confirmed) {
+        out.status('Account deletion cancelled.');
+        return;
+      }
 
       let password: string | null;
       if (_opts.passwordStdin) {

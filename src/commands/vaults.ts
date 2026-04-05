@@ -6,19 +6,23 @@ import { createOutput, handleError } from '../utils/output.js';
 import { generateVaultKey } from '@lifestreamdynamics/vault-sdk';
 import { getCredentialManager } from '../config.js';
 import { resolveVaultId } from '../utils/resolve-vault.js';
+import { confirmAction } from '../utils/confirm.js';
 
 export function registerVaultCommands(program: Command): void {
   const vaults = program.command('vaults').description('Create, list, and inspect document vaults');
 
   addGlobalFlags(vaults.command('list')
-    .description('List all vaults accessible to the current user'))
+    .description('List all vaults accessible to the current user')
+    .option('--include-archived', 'Include archived vaults in the list'))
     .action(async (_opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Fetching vaults...');
       try {
         const client = await getClientAsync();
-        const vaultList = await client.vaults.list();
+        const vaultList = await client.vaults.list({
+          includeArchived: _opts.includeArchived === true,
+        });
         out.stopSpinner();
         out.list(
           vaultList.map(v => ({ name: v.name, slug: v.slug, encrypted: v.encryptionEnabled ? 'yes' : 'no', description: v.description ?? null, id: v.id })),
@@ -51,6 +55,7 @@ export function registerVaultCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching vault...');
       try {
+        vaultId = await resolveVaultId(vaultId);
         const client = await getClientAsync();
         const vault = await client.vaults.get(vaultId);
         out.stopSpinner();
@@ -200,12 +205,18 @@ EXAMPLES
   // vault archive
   addGlobalFlags(vaults.command('archive')
     .description('Archive a vault')
-    .argument('<vaultId>', 'Vault ID'))
+    .argument('<vaultId>', 'Vault ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      out.startSpinner('Archiving vault...');
       try {
+        const confirmed = await confirmAction(`Archive vault ${vaultId}?`, { yes: _opts.yes as boolean | undefined });
+        if (!confirmed) {
+          out.status('Archive cancelled.');
+          return;
+        }
+        out.startSpinner('Archiving vault...');
         const client = await getClientAsync();
         const vault = await client.vaults.archive(vaultId);
         out.success(`Vault archived: ${vault.name}`, { id: vault.id, name: vault.name, isArchived: vault.isArchived });

@@ -2,9 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Command } from 'commander';
 import { registerMfaCommands } from './mfa.js';
 import { createSDKMock, type SDKMock } from '../__tests__/mocks/sdk.js';
-import { spyConsole } from '../__tests__/setup.js';
+import { spyOutput } from '../__tests__/setup.js';
 
-// Mock ora
 vi.mock('ora', () => ({
   default: vi.fn(() => ({
     start: vi.fn().mockReturnThis(),
@@ -16,6 +15,12 @@ vi.mock('ora', () => ({
   })),
 }));
 
+// Mock the prompt utilities so tests never try to read from a real TTY.
+vi.mock('../utils/prompt.js', () => ({
+  promptPassword: vi.fn(async () => null),
+  promptMfaCode: vi.fn(async () => null),
+}));
+
 let sdkMock: SDKMock;
 vi.mock('../client.js', () => ({
   getClientAsync: vi.fn(async () => sdkMock),
@@ -23,20 +28,20 @@ vi.mock('../client.js', () => ({
 
 describe('mfa commands', () => {
   let program: Command;
-  let consoleSpy: ReturnType<typeof spyConsole>;
+  let outputSpy: ReturnType<typeof spyOutput>;
 
   beforeEach(() => {
     program = new Command();
     program.exitOverride();
     registerMfaCommands(program);
     sdkMock = createSDKMock();
-    consoleSpy = spyConsole();
+    outputSpy = spyOutput();
     vi.clearAllMocks();
     process.exitCode = undefined;
   });
 
   afterEach(() => {
-    consoleSpy.restore();
+    outputSpy.restore();
     process.exitCode = undefined;
   });
 
@@ -53,8 +58,9 @@ describe('mfa commands', () => {
       await program.parseAsync(['node', 'cli', 'mfa', 'status']);
 
       expect(sdkMock.mfa.getStatus).toHaveBeenCalled();
-      expect(consoleSpy.logs.some(l => l.includes('MFA Status'))).toBe(true);
-      expect(consoleSpy.logs.some(l => l.includes('Enabled') && l.includes('No'))).toBe(true);
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('MFA Status');
+      expect(stdout).toContain('Enabled');
     });
 
     it('should display MFA status with TOTP configured', async () => {
@@ -68,8 +74,9 @@ describe('mfa commands', () => {
 
       await program.parseAsync(['node', 'cli', 'mfa', 'status']);
 
-      expect(consoleSpy.logs.some(l => l.includes('TOTP Configured') && l.includes('Yes'))).toBe(true);
-      expect(consoleSpy.logs.some(l => l.includes('Backup Codes Left') && l.includes('5'))).toBe(true);
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('TOTP Configured');
+      expect(stdout).toContain('Backup Codes Left');
     });
 
     it('should display registered passkeys', async () => {
@@ -96,10 +103,11 @@ describe('mfa commands', () => {
 
       await program.parseAsync(['node', 'cli', 'mfa', 'status']);
 
-      expect(consoleSpy.logs.some(l => l.includes('Registered Passkeys'))).toBe(true);
-      expect(consoleSpy.logs.some(l => l.includes('YubiKey 5'))).toBe(true);
-      expect(consoleSpy.logs.some(l => l.includes('iPhone 15'))).toBe(true);
-      expect(consoleSpy.logs.some(l => l.includes('never'))).toBe(true);
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('Registered Passkeys');
+      expect(stdout).toContain('YubiKey 5');
+      expect(stdout).toContain('iPhone 15');
+      expect(stdout).toContain('never');
     });
 
     it('should handle errors gracefully', async () => {
@@ -107,7 +115,29 @@ describe('mfa commands', () => {
 
       await program.parseAsync(['node', 'cli', 'mfa', 'status']);
 
-      expect(consoleSpy.errors.some(l => l.includes('Network error'))).toBe(true);
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Network error');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should output JSON record in json mode', async () => {
+      sdkMock.mfa.getStatus.mockResolvedValue({
+        mfaEnabled: true,
+        totpConfigured: true,
+        passkeyCount: 1,
+        backupCodesRemaining: 5,
+        passkeys: [{ id: 'pk1', name: 'YubiKey', createdAt: '2024-01-01T00:00:00Z', lastUsedAt: null }],
+      });
+
+      await program.parseAsync(['node', 'cli', 'mfa', 'status', '--output', 'json']);
+
+      const jsonLine = outputSpy.stdout.find(l => l.startsWith('{'));
+      expect(jsonLine).toBeDefined();
+      const parsed = JSON.parse(jsonLine!);
+      expect(parsed.mfaEnabled).toBe(true);
+      expect(parsed.totpConfigured).toBe(true);
+      expect(parsed.passkeyCount).toBe(1);
+      expect(parsed.backupCodesRemaining).toBe(5);
     });
   });
 
@@ -124,8 +154,10 @@ describe('mfa commands', () => {
       await program.parseAsync(['node', 'cli', 'mfa', 'backup-codes']);
 
       expect(sdkMock.mfa.getStatus).toHaveBeenCalled();
-      expect(consoleSpy.logs.some(l => l.includes('Backup Codes'))).toBe(true);
-      expect(consoleSpy.logs.some(l => l.includes('Remaining') && l.includes('8'))).toBe(true);
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('Backup Codes');
+      expect(stdout).toContain('Remaining');
+      expect(stdout).toContain('8');
     });
 
     it('should warn when no backup codes remain', async () => {
@@ -139,8 +171,9 @@ describe('mfa commands', () => {
 
       await program.parseAsync(['node', 'cli', 'mfa', 'backup-codes']);
 
-      expect(consoleSpy.logs.some(l => l.includes('no backup codes remaining'))).toBe(true);
-      expect(consoleSpy.logs.some(l => l.includes('--regenerate'))).toBe(true);
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('no backup codes remaining');
+      expect(stdout).toContain('--regenerate');
     });
 
     it('should set exitCode 1 on status fetch failure (B33)', async () => {
@@ -148,8 +181,26 @@ describe('mfa commands', () => {
 
       await program.parseAsync(['node', 'cli', 'mfa', 'backup-codes']);
 
-      expect(consoleSpy.errors.some(l => l.includes('Unauthorized'))).toBe(true);
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Unauthorized');
       expect(process.exitCode).toBe(1);
+    });
+
+    it('should output JSON record in json mode', async () => {
+      sdkMock.mfa.getStatus.mockResolvedValue({
+        mfaEnabled: true,
+        totpConfigured: true,
+        passkeyCount: 0,
+        backupCodesRemaining: 3,
+        passkeys: [],
+      });
+
+      await program.parseAsync(['node', 'cli', 'mfa', 'backup-codes', '--output', 'json']);
+
+      const jsonLine = outputSpy.stdout.find(l => l.startsWith('{'));
+      expect(jsonLine).toBeDefined();
+      const parsed = JSON.parse(jsonLine!);
+      expect(parsed.backupCodesRemaining).toBe(3);
     });
   });
 

@@ -112,8 +112,9 @@ export function registerCustomDomainCommands(program: Command): void {
     });
 
   addGlobalFlags(domains.command('verify')
-    .description('Verify a custom domain via DNS')
-    .argument('<domainId>', 'Domain ID'))
+    .description('Trigger DNS verification check for a custom domain')
+    .argument('<domainId>', 'Domain ID')
+    .addHelpText('after', '\n  Submits a verification request to the server, which checks your DNS TXT record.\n  Use "check" to read the current verification status without triggering a new check.'))
     .action(async (domainId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -128,8 +129,9 @@ export function registerCustomDomainCommands(program: Command): void {
     });
 
   addGlobalFlags(domains.command('check')
-    .description('Check DNS configuration for a custom domain')
-    .argument('<domainId>', 'Domain ID'))
+    .description('Show current DNS verification status for a custom domain')
+    .argument('<domainId>', 'Domain ID')
+    .addHelpText('after', '\n  Returns the current verification status without triggering a new check.\n  Use "verify" to submit a fresh DNS verification request to the server.'))
     .action(async (domainId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
