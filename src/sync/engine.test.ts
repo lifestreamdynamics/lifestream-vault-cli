@@ -157,6 +157,54 @@ describe('sync engine', () => {
       expect(diff.downloads).toHaveLength(0);
       expect(diff.deletes).toHaveLength(0);
     });
+
+    it('should download all remote files when local is empty', () => {
+      const diff = computePullDiff(
+        {},
+        {
+          'a.md': { path: 'a.md', hash: 'h1', mtime: '', size: 10 },
+          'b.md': { path: 'b.md', hash: 'h2', mtime: '', size: 20 },
+        },
+        { syncId: 's1', local: {}, remote: {}, updatedAt: '' },
+      );
+      expect(diff.downloads).toHaveLength(2);
+      expect(diff.downloads.every((d) => d.action === 'create')).toBe(true);
+      expect(diff.deletes).toHaveLength(0);
+    });
+
+    it('should produce no changes when remote is empty and no prior state', () => {
+      const diff = computePullDiff(
+        { 'local.md': { path: 'local.md', hash: 'h1', mtime: '', size: 10 } },
+        {},
+        { syncId: 's1', local: {}, remote: {}, updatedAt: '' },
+      );
+      expect(diff.downloads).toHaveLength(0);
+      expect(diff.deletes).toHaveLength(0);
+    });
+
+    it('should ignore orphaned lastState entries not in local or remote', () => {
+      const lastState: SyncState = {
+        syncId: 's1',
+        local: { 'gone.md': { path: 'gone.md', hash: 'x', mtime: '', size: 5 } },
+        remote: { 'gone.md': { path: 'gone.md', hash: 'x', mtime: '', size: 5 } },
+        updatedAt: '',
+      };
+      const diff = computePullDiff({}, {}, lastState);
+      // File is in lastState.remote but not in remoteFiles AND not in localFiles → no delete needed
+      expect(diff.downloads).toHaveLength(0);
+      expect(diff.deletes).toHaveLength(0);
+    });
+
+    it('should produce no actions for identical files with no prior state (first sync)', () => {
+      const state: FileState = { path: 'same.md', hash: 'identical', mtime: '', size: 30 };
+      const diff = computePullDiff(
+        { 'same.md': state },
+        { 'same.md': state },
+        { syncId: 's1', local: {}, remote: {}, updatedAt: '' },
+      );
+      expect(diff.downloads).toHaveLength(0);
+      expect(diff.deletes).toHaveLength(0);
+    });
   });
 
   describe('computePushDiff', () => {
@@ -199,6 +247,41 @@ describe('sync engine', () => {
         lastState,
       );
       expect(diff.deletes).toHaveLength(1);
+    });
+
+    it('should upload all local files when remote is empty', () => {
+      const diff = computePushDiff(
+        {
+          'a.md': { path: 'a.md', hash: 'h1', mtime: '', size: 10 },
+          'b.md': { path: 'b.md', hash: 'h2', mtime: '', size: 20 },
+        },
+        {},
+        { syncId: 's1', local: {}, remote: {}, updatedAt: '' },
+      );
+      expect(diff.uploads).toHaveLength(2);
+      expect(diff.uploads.every((u) => u.action === 'create')).toBe(true);
+      expect(diff.deletes).toHaveLength(0);
+    });
+
+    it('should produce no changes when local is empty and no prior state', () => {
+      const diff = computePushDiff(
+        {},
+        { 'remote.md': { path: 'remote.md', hash: 'h1', mtime: '', size: 10 } },
+        { syncId: 's1', local: {}, remote: {}, updatedAt: '' },
+      );
+      expect(diff.uploads).toHaveLength(0);
+      expect(diff.deletes).toHaveLength(0);
+    });
+
+    it('should produce no actions for identical files on first sync', () => {
+      const state: FileState = { path: 'same.md', hash: 'identical', mtime: '', size: 30 };
+      const diff = computePushDiff(
+        { 'same.md': state },
+        { 'same.md': state },
+        { syncId: 's1', local: {}, remote: {}, updatedAt: '' },
+      );
+      expect(diff.uploads).toHaveLength(0);
+      expect(diff.deletes).toHaveLength(0);
     });
   });
 

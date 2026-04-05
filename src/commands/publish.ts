@@ -5,6 +5,7 @@ import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { PublishDocumentParams, UpdatePublishParams } from '@lifestreamdynamics/vault-sdk';
 import { resolveVaultId } from '../utils/resolve-vault.js';
+import { loadConfigAsync } from '../config.js';
 
 export function registerPublishCommands(program: Command): void {
   const publish = program.command('publish').description('Publish documents to public profile pages');
@@ -68,6 +69,7 @@ export function registerPublishCommands(program: Command): void {
       out.startSpinner('Publishing document...');
       try {
         vaultId = await resolveVaultId(vaultId);
+        out.debug(`API: POST publish ${vaultId}/${docPath}`);
         const client = await getClientAsync();
         const params: PublishDocumentParams = {
           slug: String(_opts.slug),
@@ -77,9 +79,11 @@ export function registerPublishCommands(program: Command): void {
         if (_opts.ogImage) params.ogImage = String(_opts.ogImage);
 
         const pub = await client.publish.create(vaultId, docPath, params);
+        const config = await loadConfigAsync();
+        const baseUrl = config.apiUrl.replace(/\/api\/v\d+\/?$/, '');
         out.success('Document published successfully!', {
           slug: pub.slug,
-          url: `/${pub.publishedBy}/${pub.slug}`,
+          url: `${baseUrl}/${pub.publishedBy}/${pub.slug}`,
           isPublished: pub.isPublished,
           seoTitle: pub.seoTitle || null,
           seoDescription: pub.seoDescription || null,

@@ -101,6 +101,13 @@ EXAMPLES
   lsvault config use prod
   lsvault config use dev`)
     .action((name: string) => {
+      const profiles = listProfiles();
+      if (!profiles.includes(name)) {
+        process.stderr.write(chalk.red(`Profile '${name}' does not exist.`) + '\n');
+        process.stderr.write(chalk.dim('Available profiles: ' + (profiles.length ? profiles.join(', ') : 'none')) + '\n');
+        process.exitCode = 1;
+        return;
+      }
       setActiveProfile(name);
       process.stdout.write(chalk.green(`Active profile set to ${chalk.bold(name)}`) + '\n');
     });

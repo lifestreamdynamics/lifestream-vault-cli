@@ -87,7 +87,11 @@ export function registerAiCommands(program: Command): void {
   addGlobalFlags(ai.command('chat')
     .description('Send a message in an AI chat session')
     .argument('<sessionId>', 'Session ID')
-    .argument('<message>', 'Message to send'))
+    .argument('<message>', 'Message to send')
+    .addHelpText('after', `
+EXAMPLES
+  lsvault ai chat <session-id> "What are the key points in my notes?"
+  lsvault ai chat <session-id> "Summarize recent changes" -o json`))
     .action(async (sessionId: string, message: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);

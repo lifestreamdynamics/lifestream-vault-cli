@@ -144,8 +144,9 @@ export class Output {
       emptyMessage?: string;
     },
   ): void {
+    if (this.flags.quiet) return;
+
     if (data.length === 0) {
-      if (this.flags.quiet) return;
       if (this.flags.output === 'json') {
         process.stdout.write('[]\n');
         return;
@@ -157,8 +158,6 @@ export class Output {
       }
       return;
     }
-
-    if (this.flags.quiet) return;
 
     switch (this.flags.output) {
       case 'json':

@@ -128,6 +128,7 @@ describe('config commands', () => {
   describe('config use', () => {
     it('should set the active profile', async () => {
       const spy = spyOutput();
+      mListProfiles.mockReturnValue(['prod']);
       const program = createProgram();
 
       await program.parseAsync(['node', 'lsvault', 'config', 'use', 'prod']);
@@ -135,6 +136,39 @@ describe('config commands', () => {
       expect(mSetActiveProfile).toHaveBeenCalledWith('prod');
       expect(spy.stdout.join('').includes('prod')).toBe(true);
       spy.restore();
+    });
+
+    it('should reject nonexistent profile with exit code 1', async () => {
+      const spy = spyOutput();
+      mListProfiles.mockReturnValue(['dev', 'prod']);
+      const program = createProgram();
+      process.exitCode = undefined;
+
+      await program.parseAsync(['node', 'lsvault', 'config', 'use', 'staging']);
+
+      expect(mSetActiveProfile).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      const stderr = spy.stderr.join('');
+      expect(stderr).toContain("Profile 'staging' does not exist.");
+      expect(stderr).toContain('dev');
+      expect(stderr).toContain('prod');
+      spy.restore();
+      process.exitCode = undefined;
+    });
+
+    it('should show "none" in available profiles message when no profiles exist', async () => {
+      const spy = spyOutput();
+      mListProfiles.mockReturnValue([]);
+      const program = createProgram();
+      process.exitCode = undefined;
+
+      await program.parseAsync(['node', 'lsvault', 'config', 'use', 'anything']);
+
+      expect(mSetActiveProfile).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      expect(spy.stderr.join('')).toContain('none');
+      spy.restore();
+      process.exitCode = undefined;
     });
   });
 

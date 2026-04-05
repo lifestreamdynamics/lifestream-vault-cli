@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
+import { confirmAction } from '../utils/confirm.js';
 
 export function registerTeamCommands(program: Command): void {
   const teams = program.command('teams').description('Manage teams, members, invitations, and shared vaults');
@@ -16,8 +17,10 @@ export function registerTeamCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching teams...');
       try {
+        out.debug('API: GET teams');
         const client = await getClientAsync();
         const teamList = await client.teams.list();
+        out.debug(`Response: ${teamList.length} teams`);
         out.stopSpinner();
         out.list(
           teamList.map(t => ({ name: t.name, id: t.id, description: t.description || 'No description' })),
@@ -164,11 +167,11 @@ EXAMPLES
     .description('Update a member role')
     .argument('<teamId>', 'Team ID')
     .argument('<userId>', 'User ID')
-    .requiredOption('-r, --role <role>', 'New role (admin or member)'))
+    .requiredOption('-r, --role <role>', 'New role: admin, editor, or viewer'))
     .action(async (teamId: string, userId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      const role = String(_opts.role) as 'admin' | 'member';
+      const role = String(_opts.role) as 'admin' | 'editor' | 'viewer';
       out.startSpinner('Updating member role...');
       try {
         const client = await getClientAsync();
@@ -207,10 +210,16 @@ EXAMPLES
 
   addGlobalFlags(teams.command('leave')
     .description('Leave a team')
-    .argument('<teamId>', 'Team ID'))
+    .argument('<teamId>', 'Team ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (teamId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      const confirmed = await confirmAction(`Are you sure you want to leave team ${teamId}?`, { yes: !!_opts.yes });
+      if (!confirmed) {
+        out.status('Cancelled.');
+        return;
+      }
       out.startSpinner('Leaving team...');
       try {
         const client = await getClientAsync();
@@ -262,11 +271,11 @@ EXAMPLES
     .description('Invite a user to the team')
     .argument('<teamId>', 'Team ID')
     .argument('<email>', 'Email address')
-    .requiredOption('-r, --role <role>', 'Role (admin or member)'))
+    .requiredOption('-r, --role <role>', 'Role to assign: admin, editor, or viewer (default: editor)'))
     .action(async (teamId: string, email: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      const role = String(_opts.role) as 'admin' | 'member';
+      const role = (String(_opts.role) || 'editor') as 'admin' | 'editor' | 'viewer';
       out.startSpinner('Sending invitation...');
       try {
         const client = await getClientAsync();
@@ -284,10 +293,16 @@ EXAMPLES
   addGlobalFlags(invitations.command('revoke')
     .description('Revoke a pending invitation')
     .argument('<teamId>', 'Team ID')
-    .argument('<invitationId>', 'Invitation ID'))
+    .argument('<invitationId>', 'Invitation ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (teamId: string, invitationId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      const confirmed = await confirmAction(`Revoke invitation ${invitationId}?`, { yes: !!_opts.yes });
+      if (!confirmed) {
+        out.status('Cancelled.');
+        return;
+      }
       out.startSpinner('Revoking invitation...');
       try {
         const client = await getClientAsync();

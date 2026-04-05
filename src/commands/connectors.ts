@@ -19,6 +19,7 @@ export function registerConnectorCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching connectors...');
       try {
+        out.debug('API: GET connectors');
         if (_opts.vault) _opts.vault = await resolveVaultId(String(_opts.vault));
         const client = await getClientAsync();
         const connectorList = await client.connectors.list(_opts.vault as string | undefined);
@@ -208,11 +209,16 @@ VALID PROVIDERS
       const out = createOutput(flags);
       out.startSpinner('Triggering sync...');
       try {
+        out.debug(`API: POST connectors/${connectorId}/sync`);
         const client = await getClientAsync();
         const result = await client.connectors.sync(connectorId);
         out.success(result.message, { message: result.message });
       } catch (err) {
         handleError(out, err, 'Failed to trigger sync');
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/oauth|token|not authorized|unauthorized/i.test(msg)) {
+          out.status(chalk.dim('Hint: Ensure the connector has valid OAuth credentials. Run "lsvault connectors create" to set up.'));
+        }
       }
     });
 

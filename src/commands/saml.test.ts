@@ -171,12 +171,23 @@ describe('saml commands', () => {
   // ── delete-config ─────────────────────────────────────────────────────────
 
   describe('saml delete-config', () => {
-    it('should require --force flag', async () => {
+    it('should require --force flag and exit 1', async () => {
       await program.parseAsync(['node', 'cli', 'saml', 'delete-config', 'sso-1']);
 
       expect(sdkMock.saml.deleteConfig).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('--force');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should accept --yes as alias for --force', async () => {
+      sdkMock.saml.deleteConfig.mockResolvedValue(undefined);
+
+      await program.parseAsync(['node', 'cli', 'saml', 'delete-config', 'sso-1', '--yes']);
+
+      expect(sdkMock.saml.deleteConfig).toHaveBeenCalledWith('sso-1');
       const stdout = outputSpy.stdout.join('');
-      expect(stdout).toContain('--force');
+      expect(stdout).toContain('deleted');
     });
 
     it('should delete config with --force', async () => {
@@ -215,6 +226,15 @@ describe('saml commands', () => {
       expect(sdkMock.saml.getLoginUrl).toHaveBeenCalledWith('acmecorp');
       const stdout = outputSpy.stdout.join('');
       expect(stdout).toContain('acmecorp/login');
+    });
+
+    it('should reject a whitespace-only slug with exit code 1', async () => {
+      await program.parseAsync(['node', 'cli', 'saml', 'login-url', '   ']);
+
+      expect(sdkMock.saml.getLoginUrl).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Slug cannot be empty');
+      expect(process.exitCode).toBe(1);
     });
   });
 });

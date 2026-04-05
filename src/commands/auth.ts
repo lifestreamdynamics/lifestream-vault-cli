@@ -6,6 +6,8 @@ import { loadConfig, loadConfigAsync, getCredentialManager } from '../config.js'
 import { getClientAsync } from '../client.js';
 import { migrateCredentials, hasPlaintextCredentials, checkAndPromptMigration } from '../lib/migration.js';
 import { promptPassword, promptMfaCode } from '../utils/prompt.js';
+import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
+import { createOutput, handleError } from '../utils/output.js';
 
 export function registerAuthCommands(program: Command): void {
   const auth = program.command('auth').description('Authentication and credential management');
@@ -213,41 +215,50 @@ EXAMPLES
       }
     });
 
-  auth.command('whoami')
-    .description('Show the currently authenticated user, plan, and API URL')
-    .action(async () => {
+  addGlobalFlags(auth.command('whoami')
+    .description('Show the currently authenticated user, plan, and API URL'))
+    .action(async (_opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
       const config = await loadConfigAsync();
-      console.log(`API URL: ${config.apiUrl}`);
-      console.log(`API Key: ${config.apiKey ? config.apiKey.slice(0, 12) + '...' : chalk.yellow('not set')}`);
-      if (config.accessToken) {
-        console.log(`Auth:    ${chalk.green('JWT (email/password)')}`);
-      }
 
       // Warn about plaintext credentials
       await checkAndPromptMigration(getCredentialManager());
 
-      if (config.apiKey || config.accessToken) {
-        const spinner = ora('Fetching user info...').start();
-        try {
-          const client = await getClientAsync();
-          const user = await client.user.me();
-          spinner.stop();
-          console.log(`User:    ${chalk.cyan(user.email)}`);
-          console.log(`Name:    ${user.displayName || chalk.dim('not set')}`);
-          console.log(`Role:    ${user.role}`);
-          let plan = user.subscriptionTier;
-          if (!plan) {
-            try {
-              const sub = await client.subscription.get();
-              plan = sub.subscription.tier;
-            } catch { /* API key may not have scope */ }
-          }
-          console.log(`Plan:    ${plan ? chalk.green(plan) : chalk.dim('unknown')}`);
-        } catch (err) {
-          spinner.fail('Could not fetch user info');
-          console.error(err instanceof Error ? err.message : String(err));
-          process.exitCode = 1;
+      if (!config.apiKey && !config.accessToken) {
+        out.record({
+          apiUrl: config.apiUrl,
+          apiKey: null,
+          auth: 'none',
+        });
+        return;
+      }
+
+      out.startSpinner('Fetching user info...');
+      try {
+        const client = await getClientAsync();
+        const user = await client.user.me();
+        out.stopSpinner();
+
+        let plan = user.subscriptionTier;
+        if (!plan) {
+          try {
+            const sub = await client.subscription.get();
+            plan = sub.subscription.tier;
+          } catch { /* API key may not have scope */ }
         }
+
+        out.record({
+          apiUrl: config.apiUrl,
+          apiKey: config.apiKey ? config.apiKey.slice(0, 12) + '...' : null,
+          auth: config.accessToken ? 'JWT (email/password)' : 'API key',
+          email: user.email,
+          displayName: user.displayName || null,
+          role: user.role,
+          plan: plan || 'unknown',
+        });
+      } catch (err) {
+        handleError(out, err, 'Could not fetch user info');
       }
     });
 }

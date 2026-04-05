@@ -168,7 +168,7 @@ export function registerBookingCommands(program: Command): void {
         const client = await getClientAsync();
         await client.booking.deleteSlot(vaultId, slotId);
         out.stopSpinner();
-        out.status(chalk.green(`Slot ${slotId} deleted.`));
+        out.success(`Slot ${slotId} deleted.`, { id: slotId, deleted: true });
       } catch (err) {
         handleError(out, err, 'Delete slot failed');
       }

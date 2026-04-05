@@ -23,6 +23,12 @@ vi.mock('../utils/resolve-vault.js', () => ({
   resolveVaultId: vi.fn(async (id: string) => id),
 }));
 
+vi.mock('../config.js', () => ({
+  loadConfigAsync: vi.fn(async () => ({
+    apiUrl: 'https://vault.lifestreamdynamics.com/api/v1',
+  })),
+}));
+
 describe('publish commands', () => {
   let program: Command;
   let outputSpy: ReturnType<typeof spyOutput>;
@@ -132,6 +138,24 @@ describe('publish commands', () => {
         seoDescription: 'Description',
         ogImage: 'https://example.com/img.png',
       });
+    });
+
+    it('should produce an absolute URL in the success output', async () => {
+      sdkMock.publish.create.mockResolvedValue({
+        id: 'p3', documentId: 'd3', vaultId: 'v1', publishedBy: 'alice',
+        slug: 'hello-world', seoTitle: null, seoDescription: null,
+        ogImage: null, isPublished: true, publishedAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      await program.parseAsync([
+        'node', 'cli', 'publish', 'create', 'v1', 'hello.md', '--slug', 'hello-world',
+      ]);
+
+      const output = outputSpy.stdout.join('') + outputSpy.stderr.join('');
+      // URL must be absolute, not start with '/'
+      expect(output).toContain('https://vault.lifestreamdynamics.com/alice/hello-world');
+      expect(output).not.toMatch(/url[^h]*\/alice/);
     });
 
     it('should handle publish errors', async () => {

@@ -19,11 +19,13 @@ export function registerVaultCommands(program: Command): void {
       const out = createOutput(flags);
       out.startSpinner('Fetching vaults...');
       try {
+        out.debug('API: GET vaults');
         const client = await getClientAsync();
         const vaultList = await client.vaults.list({
           includeArchived: _opts.includeArchived === true,
         });
         out.stopSpinner();
+        out.debug(`Response: ${vaultList.length} vaults`);
         out.list(
           vaultList.map(v => ({ name: v.name, slug: v.slug, encrypted: v.encryptionEnabled ? 'yes' : 'no', description: v.description ?? null, id: v.id })),
           {

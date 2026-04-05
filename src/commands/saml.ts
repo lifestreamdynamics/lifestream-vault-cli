@@ -162,12 +162,14 @@ export function registerSamlCommands(program: Command): void {
   addGlobalFlags(saml.command('delete-config')
     .description('Delete an SSO configuration')
     .argument('<id>', 'SSO config ID')
-    .option('--force', 'Skip confirmation prompt'))
+    .option('--force', 'Skip confirmation prompt')
+    .option('-y, --yes', 'Alias for --force'))
     .action(async (id: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
-      if (!_opts.force) {
-        out.raw(chalk.yellow(`Pass --force to delete SSO config ${id}.`) + '\n');
+      if (!_opts.force && !_opts.yes) {
+        out.warn(`Pass --force to delete SSO config ${id}.`);
+        process.exitCode = 1;
         return;
       }
       out.startSpinner('Deleting SSO config...');
@@ -212,6 +214,11 @@ export function registerSamlCommands(program: Command): void {
     .action(async (slug: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      if (!slug || !slug.trim()) {
+        out.error('Slug cannot be empty.');
+        process.exitCode = 1;
+        return;
+      }
       try {
         const client = await getClientAsync();
         const url = client.saml.getLoginUrl(slug);

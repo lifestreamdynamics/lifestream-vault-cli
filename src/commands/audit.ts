@@ -47,6 +47,7 @@ EXAMPLES
         const logPath = String(_opts.logPath || DEFAULT_LOG_PATH);
         if (!fs.existsSync(logPath)) {
           out.warn(`Audit log file not found at ${logPath}`);
+          process.exitCode = 1;
           if (flags.output === 'json') {
             process.stdout.write('[]\n');
           }

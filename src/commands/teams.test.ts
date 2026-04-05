@@ -19,6 +19,10 @@ vi.mock('../client.js', () => ({
   getClientAsync: vi.fn(async () => sdkMock),
 }));
 
+vi.mock('../utils/confirm.js', () => ({
+  confirmAction: vi.fn(async (_msg: string, opts?: { yes?: boolean }) => opts?.yes ?? false),
+}));
+
 describe('teams commands', () => {
   let program: Command;
   let outputSpy: ReturnType<typeof spyOutput>;
@@ -194,7 +198,7 @@ describe('teams commands', () => {
     it('should list team members', async () => {
       sdkMock.teams.listMembers.mockResolvedValue([
         { id: 'm1', teamId: 't1', userId: 'u1', role: 'owner', joinedAt: '2024-01-01', user: { id: 'u1', email: 'owner@test.com', displayName: 'Owner' } },
-        { id: 'm2', teamId: 't1', userId: 'u2', role: 'member', joinedAt: '2024-01-02', user: { id: 'u2', email: 'member@test.com', displayName: null } },
+        { id: 'm2', teamId: 't1', userId: 'u2', role: 'editor', joinedAt: '2024-01-02', user: { id: 'u2', email: 'editor@test.com', displayName: null } },
       ]);
 
       await program.parseAsync(['node', 'cli', 'teams', 'members', 'list', 't1']);
@@ -203,7 +207,7 @@ describe('teams commands', () => {
       const stdout = outputSpy.stdout.join('');
       expect(stdout).toContain('Owner');
       expect(stdout).toContain('owner');
-      expect(stdout).toContain('member@test.com');
+      expect(stdout).toContain('editor@test.com');
     });
 
     it('should show message when no members found', async () => {
@@ -230,7 +234,7 @@ describe('teams commands', () => {
     it('should handle update errors', async () => {
       sdkMock.teams.updateMemberRole.mockRejectedValue(new Error('Cannot change owner'));
 
-      await program.parseAsync(['node', 'cli', 'teams', 'members', 'update', 't1', 'u1', '--role', 'member']);
+      await program.parseAsync(['node', 'cli', 'teams', 'members', 'update', 't1', 'u1', '--role', 'editor']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Cannot change owner');
@@ -259,18 +263,28 @@ describe('teams commands', () => {
   });
 
   describe('teams leave', () => {
-    it('should leave a team', async () => {
+    it('should leave a team with --yes', async () => {
+      sdkMock.teams.leave.mockResolvedValue(undefined);
+
+      await program.parseAsync(['node', 'cli', 'teams', 'leave', 't1', '--yes']);
+
+      expect(sdkMock.teams.leave).toHaveBeenCalledWith('t1');
+    });
+
+    it('should cancel without --yes when confirmAction returns false', async () => {
       sdkMock.teams.leave.mockResolvedValue(undefined);
 
       await program.parseAsync(['node', 'cli', 'teams', 'leave', 't1']);
 
-      expect(sdkMock.teams.leave).toHaveBeenCalledWith('t1');
+      expect(sdkMock.teams.leave).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Cancelled.');
     });
 
     it('should handle leave errors', async () => {
       sdkMock.teams.leave.mockRejectedValue(new Error('Owner cannot leave'));
 
-      await program.parseAsync(['node', 'cli', 'teams', 'leave', 't1']);
+      await program.parseAsync(['node', 'cli', 'teams', 'leave', 't1', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Owner cannot leave');
@@ -283,7 +297,7 @@ describe('teams commands', () => {
   describe('teams invitations list', () => {
     it('should list pending invitations', async () => {
       sdkMock.teams.listInvitations.mockResolvedValue([
-        { id: 'inv1', teamId: 't1', email: 'pending@test.com', role: 'member', invitedBy: 'u1', createdAt: '2024-01-01', expiresAt: '2024-01-08' },
+        { id: 'inv1', teamId: 't1', email: 'pending@test.com', role: 'editor', invitedBy: 'u1', createdAt: '2024-01-01', expiresAt: '2024-01-08' },
       ]);
 
       await program.parseAsync(['node', 'cli', 'teams', 'invitations', 'list', 't1']);
@@ -291,7 +305,7 @@ describe('teams commands', () => {
       expect(sdkMock.teams.listInvitations).toHaveBeenCalledWith('t1');
       const stdout = outputSpy.stdout.join('');
       expect(stdout).toContain('pending@test.com');
-      expect(stdout).toContain('member');
+      expect(stdout).toContain('editor');
     });
 
     it('should show message when no invitations', async () => {
@@ -307,12 +321,12 @@ describe('teams commands', () => {
   describe('teams invitations create', () => {
     it('should invite a member', async () => {
       sdkMock.teams.inviteMember.mockResolvedValue({
-        id: 'inv1', teamId: 't1', email: 'new@test.com', role: 'member', invitedBy: 'u1', createdAt: '2024-01-01', expiresAt: '2024-01-08',
+        id: 'inv1', teamId: 't1', email: 'new@test.com', role: 'editor', invitedBy: 'u1', createdAt: '2024-01-01', expiresAt: '2024-01-08',
       });
 
-      await program.parseAsync(['node', 'cli', 'teams', 'invitations', 'create', 't1', 'new@test.com', '--role', 'member']);
+      await program.parseAsync(['node', 'cli', 'teams', 'invitations', 'create', 't1', 'new@test.com', '--role', 'editor']);
 
-      expect(sdkMock.teams.inviteMember).toHaveBeenCalledWith('t1', 'new@test.com', 'member');
+      expect(sdkMock.teams.inviteMember).toHaveBeenCalledWith('t1', 'new@test.com', 'editor');
     });
 
     it('should handle invitation errors', async () => {
@@ -327,18 +341,28 @@ describe('teams commands', () => {
   });
 
   describe('teams invitations revoke', () => {
-    it('should revoke an invitation', async () => {
+    it('should revoke an invitation with --yes', async () => {
+      sdkMock.teams.revokeInvitation.mockResolvedValue(undefined);
+
+      await program.parseAsync(['node', 'cli', 'teams', 'invitations', 'revoke', 't1', 'inv1', '--yes']);
+
+      expect(sdkMock.teams.revokeInvitation).toHaveBeenCalledWith('t1', 'inv1');
+    });
+
+    it('should cancel without --yes when confirmAction returns false', async () => {
       sdkMock.teams.revokeInvitation.mockResolvedValue(undefined);
 
       await program.parseAsync(['node', 'cli', 'teams', 'invitations', 'revoke', 't1', 'inv1']);
 
-      expect(sdkMock.teams.revokeInvitation).toHaveBeenCalledWith('t1', 'inv1');
+      expect(sdkMock.teams.revokeInvitation).not.toHaveBeenCalled();
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Cancelled.');
     });
 
     it('should handle revocation errors', async () => {
       sdkMock.teams.revokeInvitation.mockRejectedValue(new Error('Not found'));
 
-      await program.parseAsync(['node', 'cli', 'teams', 'invitations', 'revoke', 't1', 'inv1']);
+      await program.parseAsync(['node', 'cli', 'teams', 'invitations', 'revoke', 't1', 'inv1', '--yes']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Not found');

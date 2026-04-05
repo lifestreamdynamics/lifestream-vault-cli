@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Command } from 'commander';
 import { registerAuthCommands } from './auth.js';
 import { createSDKMock, type SDKMock } from '../__tests__/mocks/sdk.js';
-import { spyConsole } from '../__tests__/setup.js';
+import { spyConsole, spyOutput } from '../__tests__/setup.js';
 
 // Mock ora
 vi.mock('ora', () => ({
@@ -211,6 +211,16 @@ describe('auth commands', () => {
   });
 
   describe('whoami', () => {
+    let outputSpy: ReturnType<typeof spyOutput>;
+
+    beforeEach(() => {
+      outputSpy = spyOutput();
+    });
+
+    afterEach(() => {
+      outputSpy.restore();
+    });
+
     it('should display API URL and masked API key', async () => {
       mockedLoadConfigAsync.mockResolvedValue({
         apiUrl: 'https://vault.lifestreamdynamics.com',
@@ -229,20 +239,22 @@ describe('auth commands', () => {
 
       await program.parseAsync(['node', 'cli', 'auth', 'whoami']);
 
-      expect(consoleSpy.logs.some(l => l.includes('https://vault.lifestreamdynamics.com'))).toBe(true);
-      expect(consoleSpy.logs.some(l => l.includes('lsv_k_abcdef'))).toBe(true);
+      const output = outputSpy.stdout.join('') + outputSpy.stderr.join('');
+      expect(output).toContain('https://vault.lifestreamdynamics.com');
+      expect(output).toContain('lsv_k_abcdef');
       // Should be masked (not show full key)
-      expect(consoleSpy.logs.some(l => l.includes('lsv_k_abcdefghij'))).toBe(false);
+      expect(output).not.toContain('lsv_k_abcdefghij');
     });
 
-    it('should show "not set" when no API key is configured', async () => {
+    it('should show "none" auth when no credentials are configured', async () => {
       mockedLoadConfigAsync.mockResolvedValue({
         apiUrl: 'https://vault.lifestreamdynamics.com',
       });
 
       await program.parseAsync(['node', 'cli', 'auth', 'whoami']);
 
-      expect(consoleSpy.logs.some(l => l.includes('not set'))).toBe(true);
+      const output = outputSpy.stdout.join('') + outputSpy.stderr.join('');
+      expect(output).toContain('none');
     });
 
     it('should fetch and display user info when API key is set', async () => {
@@ -264,9 +276,10 @@ describe('auth commands', () => {
       await program.parseAsync(['node', 'cli', 'auth', 'whoami']);
 
       expect(sdkMock.user.me).toHaveBeenCalled();
-      expect(consoleSpy.logs.some(l => l.includes('user@example.com'))).toBe(true);
-      expect(consoleSpy.logs.some(l => l.includes('Test User'))).toBe(true);
-      expect(consoleSpy.logs.some(l => l.includes('pro'))).toBe(true);
+      const output = outputSpy.stdout.join('') + outputSpy.stderr.join('');
+      expect(output).toContain('user@example.com');
+      expect(output).toContain('Test User');
+      expect(output).toContain('pro');
     });
 
     it('should fall back to subscription.get() when subscriptionTier is missing', async () => {
@@ -291,7 +304,8 @@ describe('auth commands', () => {
       await program.parseAsync(['node', 'cli', 'auth', 'whoami']);
 
       expect(sdkMock.subscription.get).toHaveBeenCalled();
-      expect(consoleSpy.logs.some(l => l.includes('business'))).toBe(true);
+      const output = outputSpy.stdout.join('') + outputSpy.stderr.join('');
+      expect(output).toContain('business');
     });
 
     it('should show "unknown" plan when subscriptionTier missing and subscription call fails', async () => {
@@ -313,7 +327,8 @@ describe('auth commands', () => {
       await program.parseAsync(['node', 'cli', 'auth', 'whoami']);
 
       expect(sdkMock.subscription.get).toHaveBeenCalled();
-      expect(consoleSpy.logs.some(l => l.includes('unknown'))).toBe(true);
+      const output = outputSpy.stdout.join('') + outputSpy.stderr.join('');
+      expect(output).toContain('unknown');
     });
 
     it('should handle API errors gracefully in whoami', async () => {
@@ -325,7 +340,32 @@ describe('auth commands', () => {
 
       await program.parseAsync(['node', 'cli', 'auth', 'whoami']);
 
-      expect(consoleSpy.errors.some(l => l.includes('Connection refused'))).toBe(true);
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Connection refused');
+    });
+
+    it('should output json when -o json is passed', async () => {
+      mockedLoadConfigAsync.mockResolvedValue({
+        apiUrl: 'https://vault.lifestreamdynamics.com',
+        apiKey: 'lsv_k_testkey123',
+      });
+      sdkMock.user.me.mockResolvedValue({
+        id: 'u1',
+        email: 'user@example.com',
+        displayName: 'Test User',
+        role: 'user',
+        subscriptionTier: 'pro',
+        createdAt: '2024-01-01',
+        updatedAt: '2024-01-01',
+      });
+
+      await program.parseAsync(['node', 'cli', 'auth', 'whoami', '-o', 'json']);
+
+      const stdout = outputSpy.stdout.join('');
+      const parsed = JSON.parse(stdout);
+      expect(parsed.email).toBe('user@example.com');
+      expect(parsed.plan).toBe('pro');
+      expect(parsed.apiUrl).toBe('https://vault.lifestreamdynamics.com');
     });
   });
 });

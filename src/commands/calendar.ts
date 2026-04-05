@@ -34,6 +34,7 @@ export function registerCalendarCommands(program: Command): void {
       out.startSpinner('Loading calendar...');
       try {
         vaultId = await resolveVaultId(vaultId);
+        out.debug(`API: GET calendar events for vault ${vaultId}`);
         const client = await getClientAsync();
         const response = await client.calendar.getActivity(vaultId, {
           start: (_opts.start as string | undefined) ?? getDefaultStart(),
@@ -145,9 +146,9 @@ export function registerCalendarCommands(program: Command): void {
           recurrence: (_opts.recurrence as string) || null,
         });
         out.stopSpinner();
-        out.status(dateStr === 'clear'
-          ? chalk.green(`Due date cleared for ${path}`)
-          : chalk.green(`Due date set to ${dateStr} for ${path}`)
+        out.success(
+          dateStr === 'clear' ? `Due date cleared for ${path}` : `Due date set to ${dateStr} for ${path}`,
+          { path, dueDate: dateStr === 'clear' ? null : dateStr },
         );
       } catch (err) {
         handleError(out, err, 'Set due date failed');
@@ -297,7 +298,7 @@ export function registerCalendarCommands(program: Command): void {
         const client = await getClientAsync();
         await client.calendar.deleteEvent(vaultId, eventId);
         out.stopSpinner();
-        out.status(chalk.green(`Event ${eventId} deleted.`));
+        out.success(`Event ${eventId} deleted.`, { id: eventId, deleted: true });
       } catch (err) {
         handleError(out, err, 'Delete event failed');
       }
@@ -814,7 +815,7 @@ NOTE
         const client = await getClientAsync();
         await client.calendar.removeParticipant(vaultId, eventId, participantId);
         out.stopSpinner();
-        out.status(chalk.green(`Participant ${participantId} removed.`));
+        out.success(`Participant ${participantId} removed.`, { id: participantId, eventId, removed: true });
       } catch (err) {
         handleError(out, err, 'Remove participant failed');
       }
