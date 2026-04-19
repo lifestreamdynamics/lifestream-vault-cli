@@ -9,6 +9,7 @@ export const createSDKMock = () => ({
     delete: vi.fn(),
     getGraph: vi.fn(),
     getUnresolvedLinks: vi.fn(),
+    getTree: vi.fn(),
   },
   documents: {
     list: vi.fn(),
@@ -33,6 +34,7 @@ export const createSDKMock = () => ({
   },
   ai: {
     chat: vi.fn(),
+    createSession: vi.fn(),
     listSessions: vi.fn(),
     getSession: vi.fn(),
     deleteSession: vi.fn(),

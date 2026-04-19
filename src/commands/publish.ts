@@ -166,11 +166,14 @@ export function registerPublishCommands(program: Command): void {
         const result = await client.publish.getSubdomain(vaultId);
         out.stopSpinner();
         if (flags.output === 'json') {
-          out.record({ subdomain: result.subdomain });
+          out.raw(JSON.stringify(result, null, 2) + '\n');
         } else if (result.subdomain == null) {
           out.status('No subdomain configured.');
         } else {
-          out.record({ subdomain: result.subdomain });
+          out.record({
+            subdomain: result.subdomain,
+            url: `https://${result.subdomain}.lifestreamdynamics.com`,
+          });
         }
       } catch (err) {
         handleError(out, err, 'Failed to fetch subdomain');

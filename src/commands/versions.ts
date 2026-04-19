@@ -148,7 +148,8 @@ EXAMPLES
     .argument('<version>', 'Version number to restore')
     .addHelpText('after', `
 EXAMPLES
-  lsvault versions restore abc123 notes/todo.md 2`))
+  lsvault versions restore abc123 notes/todo.md 2
+  lsvault versions restore abc123 notes/todo.md 2 --dry-run`))
     .action(async (vaultId: string, docPath: string, versionStr: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -158,6 +159,31 @@ EXAMPLES
         process.exitCode = 1;
         return;
       }
+
+      if (flags.dryRun) {
+        out.startSpinner(`Fetching version ${versionNum} preview...`);
+        try {
+          vaultId = await resolveVaultId(vaultId);
+          const client = await getClientAsync();
+          const version = await client.documents.getVersion(vaultId, docPath, versionNum);
+          out.stopSpinner();
+          if (flags.output === 'json') {
+            out.raw(JSON.stringify({ dryRun: true, version: { version: version.versionNum, createdAt: version.createdAt, size: version.content?.length ?? 0 } }, null, 2) + '\n');
+          } else {
+            process.stdout.write(chalk.bold('Dry run — no changes made\n\n'));
+            process.stdout.write(`Version: ${version.versionNum}\n`);
+            process.stdout.write(`Created: ${version.createdAt}\n`);
+            if (version.content) {
+              const preview = version.content.slice(0, 200);
+              process.stdout.write(`Content preview:\n${chalk.dim(preview)}${version.content.length > 200 ? '...' : ''}\n`);
+            }
+          }
+        } catch (err) {
+          handleError(out, err, 'Failed to preview version');
+        }
+        return;
+      }
+
       out.startSpinner(`Restoring to version ${versionNum}...`);
       try {
         vaultId = await resolveVaultId(vaultId);

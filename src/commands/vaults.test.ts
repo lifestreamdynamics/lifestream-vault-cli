@@ -151,6 +151,82 @@ describe('vaults commands', () => {
     });
   });
 
+  describe('vaults tree', () => {
+    it('should show full tree without --depth', async () => {
+      sdkMock.vaults.getTree.mockResolvedValue([
+        {
+          name: 'folder', type: 'directory', path: 'folder', children: [
+            { name: 'doc.md', type: 'file', path: 'folder/doc.md' },
+          ],
+        },
+      ]);
+
+      await program.parseAsync(['node', 'cli', 'vaults', 'tree', 'vault-1']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('folder');
+      expect(stdout).toContain('doc.md');
+    });
+
+    it('should limit tree depth with --depth 0', async () => {
+      sdkMock.vaults.getTree.mockResolvedValue([
+        {
+          name: 'folder', type: 'directory', path: 'folder', children: [
+            { name: 'doc.md', type: 'file', path: 'folder/doc.md' },
+          ],
+        },
+      ]);
+
+      await program.parseAsync(['node', 'cli', 'vaults', 'tree', 'vault-1', '--depth', '0']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('folder');
+      expect(stdout).not.toContain('doc.md');
+    });
+
+    it('should limit tree depth with --depth 1', async () => {
+      sdkMock.vaults.getTree.mockResolvedValue([
+        {
+          name: 'folder', type: 'directory', path: 'folder', children: [
+            {
+              name: 'sub', type: 'directory', path: 'folder/sub', children: [
+                { name: 'deep.md', type: 'file', path: 'folder/sub/deep.md' },
+              ],
+            },
+          ],
+        },
+      ]);
+
+      await program.parseAsync(['node', 'cli', 'vaults', 'tree', 'vault-1', '--depth', '1']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('folder');
+      expect(stdout).toContain('sub');
+      expect(stdout).not.toContain('deep.md');
+    });
+
+    it('should output tree as JSON with --output json', async () => {
+      const treeData = [{ name: 'doc.md', type: 'file', path: 'doc.md' }];
+      sdkMock.vaults.getTree.mockResolvedValue(treeData);
+
+      await program.parseAsync(['node', 'cli', 'vaults', 'tree', 'vault-1', '--output', 'json']);
+
+      const stdout = outputSpy.stdout.join('');
+      const parsed = JSON.parse(stdout) as unknown[];
+      expect(parsed).toHaveLength(1);
+    });
+
+    it('should handle errors gracefully', async () => {
+      sdkMock.vaults.getTree.mockRejectedValue(new Error('Vault not found'));
+
+      await program.parseAsync(['node', 'cli', 'vaults', 'tree', 'vault-1']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Vault not found');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
   describe('vaults create', () => {
     it('should create a vault with name only', async () => {
       sdkMock.vaults.create.mockResolvedValue({

@@ -176,10 +176,12 @@ EXAMPLES
   // vault tree
   addGlobalFlags(vaults.command('tree')
     .description('Show vault file tree')
-    .argument('<vaultId>', 'Vault ID or slug'))
+    .argument('<vaultId>', 'Vault ID or slug')
+    .option('--depth <n>', 'Maximum display depth (0 = root only)', parseInt))
     .action(async (vaultId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
+      const maxDepth = _opts.depth as number | undefined;
       out.startSpinner('Fetching vault tree...');
       try {
         vaultId = await resolveVaultId(vaultId);
@@ -190,6 +192,7 @@ EXAMPLES
           out.raw(JSON.stringify(tree, null, 2) + '\n');
         } else {
           function printNode(node: { name: string; type: string; path: string; children?: typeof tree }, depth: number): void {
+            if (maxDepth !== undefined && depth > maxDepth) return;
             const indent = '  '.repeat(depth);
             const icon = node.type === 'directory' ? chalk.yellow('📁') : chalk.cyan('📄');
             process.stdout.write(`${indent}${icon} ${node.name}\n`);

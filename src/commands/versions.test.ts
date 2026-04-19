@@ -186,6 +186,46 @@ describe('versions commands', () => {
       expect(stderr).toContain('Version content pruned');
       expect(process.exitCode).toBe(1);
     });
+
+    it('should show dry-run preview without restoring', async () => {
+      sdkMock.documents.getVersion.mockResolvedValue({
+        id: 'v1', versionNum: 2, content: '# Hello World\n\nThis is version 2.',
+        changeSource: 'api', sizeBytes: 36, isPinned: false, createdAt: '2024-01-01T00:00:00Z',
+      });
+
+      await program.parseAsync(['node', 'cli', 'versions', 'restore', 'vault-1', 'notes/todo.md', '2', '--dry-run']);
+
+      expect(sdkMock.documents.getVersion).toHaveBeenCalledWith('vault-1', 'notes/todo.md', 2);
+      expect(sdkMock.documents.restoreVersion).not.toHaveBeenCalled();
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('Dry run');
+      expect(stdout).toContain('Version: 2');
+    });
+
+    it('should output dry-run JSON when --output json is specified', async () => {
+      sdkMock.documents.getVersion.mockResolvedValue({
+        id: 'v1', versionNum: 3, content: '# Test',
+        changeSource: 'api', sizeBytes: 6, isPinned: false, createdAt: '2024-03-01T00:00:00Z',
+      });
+
+      await program.parseAsync(['node', 'cli', 'versions', 'restore', 'vault-1', 'notes/todo.md', '3', '--dry-run', '--output', 'json']);
+
+      expect(sdkMock.documents.restoreVersion).not.toHaveBeenCalled();
+      const stdout = outputSpy.stdout.join('');
+      const parsed = JSON.parse(stdout) as { dryRun: boolean; version: { version: number } };
+      expect(parsed.dryRun).toBe(true);
+      expect(parsed.version.version).toBe(3);
+    });
+
+    it('should handle dry-run fetch errors gracefully', async () => {
+      sdkMock.documents.getVersion.mockRejectedValue(new Error('Version not found'));
+
+      await program.parseAsync(['node', 'cli', 'versions', 'restore', 'vault-1', 'notes/todo.md', '99', '--dry-run']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Version not found');
+      expect(process.exitCode).toBe(1);
+    });
   });
 
   describe('versions pin', () => {

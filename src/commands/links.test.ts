@@ -182,6 +182,47 @@ describe('links commands', () => {
       expect(stdout).toContain('b.md');
     });
 
+    it('should show enhanced graph summary with most connected and orphan nodes', async () => {
+      sdkMock.vaults.getGraph.mockResolvedValue({
+        nodes: [
+          { id: 'n1', path: 'notes/a.md' },
+          { id: 'n2', path: 'notes/b.md' },
+          { id: 'n3', path: 'notes/orphan.md' },
+        ],
+        edges: [
+          { source: 'n1', target: 'n2' },
+        ],
+      });
+
+      await program.parseAsync(['node', 'cli', 'links', 'graph', 'vault-1']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('Nodes: 3');
+      expect(stdout).toContain('Edges: 1');
+      expect(stdout).toContain('Most connected');
+      expect(stdout).toContain('notes/a.md');
+      expect(stdout).toContain('Orphan nodes');
+      expect(stdout).toContain('notes/orphan.md');
+    });
+
+    it('should not show Most connected section when graph has no edges', async () => {
+      sdkMock.vaults.getGraph.mockResolvedValue({
+        nodes: [
+          { id: 'n1', path: 'solo.md' },
+        ],
+        edges: [],
+      });
+
+      await program.parseAsync(['node', 'cli', 'links', 'graph', 'vault-1']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('Nodes: 1');
+      expect(stdout).toContain('Edges: 0');
+      expect(stdout).not.toContain('Most connected');
+      expect(stdout).toContain('Orphan nodes');
+      expect(stdout).toContain('solo.md');
+    });
+
     it('should handle empty graph', async () => {
       sdkMock.vaults.getGraph.mockResolvedValue({
         nodes: [],

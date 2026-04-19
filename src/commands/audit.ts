@@ -101,8 +101,8 @@ EXAMPLES
     });
 
   addGlobalFlags(audit.command('export')
-    .description('Export audit log entries to a CSV file or stdout')
-    .option('--format <format>', 'Export format (csv)', 'csv')
+    .description('Export audit log entries to a CSV or JSON file or stdout')
+    .option('--format <format>', 'Export format (csv or json)', 'csv')
     .option('--file <file>', 'Output file path')
     .option('--status <code>', 'Filter by HTTP status code', parseInt)
     .option('--since <date>', 'Show entries since date (ISO 8601)')
@@ -112,8 +112,8 @@ EXAMPLES
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       try {
-        if (_opts.format !== 'csv') {
-          out.error(`Unsupported format: ${String(_opts.format)}. Only 'csv' is supported.`);
+        if (_opts.format !== 'csv' && _opts.format !== 'json') {
+          out.error(`Unsupported format: ${String(_opts.format)}. Supported: csv, json`);
           process.exitCode = 2;
           return;
         }
@@ -153,6 +153,26 @@ EXAMPLES
 
         if (entries.length === 0) {
           out.status('No audit log entries to export.');
+          return;
+        }
+
+        if (_opts.format === 'json') {
+          const jsonOutput = JSON.stringify(entries, null, 2);
+          if (_opts.file) {
+            const outputPath = String(_opts.file);
+            const outputDir = path.dirname(outputPath);
+            if (!fs.existsSync(outputDir)) {
+              fs.mkdirSync(outputDir, { recursive: true });
+            }
+            fs.writeFileSync(outputPath, jsonOutput, 'utf-8');
+            out.success(`Exported ${entries.length} entries to ${outputPath}`, {
+              entries: entries.length,
+              path: outputPath,
+              format: 'json',
+            });
+          } else {
+            out.raw(jsonOutput + '\n');
+          }
           return;
         }
 

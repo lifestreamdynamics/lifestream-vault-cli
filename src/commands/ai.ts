@@ -10,6 +10,30 @@ export function registerAiCommands(program: Command): void {
 
   const sessions = ai.command('sessions').description('AI chat session management');
 
+  addGlobalFlags(sessions.command('create')
+    .description('Create a new AI chat session')
+    .option('--title <title>', 'Session title')
+    .option('--vault <vaultId>', 'Vault ID to scope the session'))
+    .action(async (_opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      out.startSpinner('Creating AI session...');
+      try {
+        const client = await getClientAsync();
+        const session = await client.ai.createSession({
+          title: _opts.title ? String(_opts.title) : undefined,
+          vaultId: _opts.vault ? String(_opts.vault) : undefined,
+        });
+        out.success(`Session created: ${session.id}`, {
+          id: session.id,
+          title: session.title ?? 'Untitled',
+          vaultId: session.vaultId ?? null,
+        });
+      } catch (err) {
+        handleError(out, err, 'Failed to create AI session');
+      }
+    });
+
   addGlobalFlags(sessions.command('list')
     .description('List AI chat sessions'))
     .action(async (_opts: Record<string, unknown>) => {

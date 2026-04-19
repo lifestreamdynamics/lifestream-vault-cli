@@ -207,6 +207,37 @@ describe('publish commands', () => {
     });
   });
 
+  describe('publish subdomain get', () => {
+    it('should display subdomain with URL in text mode', async () => {
+      sdkMock.publish.getSubdomain.mockResolvedValue({ subdomain: 'my-site' });
+
+      await program.parseAsync(['node', 'cli', 'publish', 'subdomain', 'get', 'vault-1']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('my-site');
+      expect(stdout).toContain('lifestreamdynamics.com');
+    });
+
+    it('should show no subdomain message when subdomain is null', async () => {
+      sdkMock.publish.getSubdomain.mockResolvedValue({ subdomain: null });
+
+      await program.parseAsync(['node', 'cli', 'publish', 'subdomain', 'get', 'vault-1']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('No subdomain configured');
+    });
+
+    it('should output raw JSON in json mode', async () => {
+      sdkMock.publish.getSubdomain.mockResolvedValue({ subdomain: 'my-site' });
+
+      await program.parseAsync(['node', 'cli', 'publish', 'subdomain', 'get', 'vault-1', '--output', 'json']);
+
+      const stdout = outputSpy.stdout.join('');
+      const parsed = JSON.parse(stdout) as { subdomain: string };
+      expect(parsed.subdomain).toBe('my-site');
+    });
+  });
+
   describe('publish delete', () => {
     it('should unpublish a document', async () => {
       sdkMock.publish.delete.mockResolvedValue(undefined);

@@ -38,6 +38,54 @@ describe('ai commands', () => {
     process.exitCode = undefined;
   });
 
+  describe('ai sessions create', () => {
+    it('should create a new AI session', async () => {
+      sdkMock.ai.createSession.mockResolvedValue({
+        id: 'new-sess',
+        title: 'My Session',
+        vaultId: null,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      await program.parseAsync(['node', 'cli', 'ai', 'sessions', 'create', '--title', 'My Session']);
+
+      expect(sdkMock.ai.createSession).toHaveBeenCalledWith({
+        title: 'My Session',
+        vaultId: undefined,
+      });
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('new-sess');
+    });
+
+    it('should create a session with vault ID', async () => {
+      sdkMock.ai.createSession.mockResolvedValue({
+        id: 'new-sess',
+        title: null,
+        vaultId: 'vault-1',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      });
+
+      await program.parseAsync(['node', 'cli', 'ai', 'sessions', 'create', '--vault', 'vault-1']);
+
+      expect(sdkMock.ai.createSession).toHaveBeenCalledWith({
+        title: undefined,
+        vaultId: 'vault-1',
+      });
+    });
+
+    it('should handle errors gracefully', async () => {
+      sdkMock.ai.createSession.mockRejectedValue(new Error('Pro plan required'));
+
+      await program.parseAsync(['node', 'cli', 'ai', 'sessions', 'create']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Pro plan required');
+      expect(process.exitCode).toBe(1);
+    });
+  });
+
   describe('ai sessions list', () => {
     it('should list AI chat sessions', async () => {
       sdkMock.ai.listSessions.mockResolvedValue([

@@ -200,10 +200,43 @@ describe('audit commands', () => {
         { timestamp: '2026-02-13T12:00:00Z', method: 'GET', path: '/api/v1/vaults', status: 200, durationMs: 45 },
       ]);
 
-      await program.parseAsync(['node', 'cli', 'audit', 'export', '--log-path', logPath, '--format', 'json']);
+      await program.parseAsync(['node', 'cli', 'audit', 'export', '--log-path', logPath, '--format', 'xml']);
 
       const stderr = outputSpy.stderr.join('');
       expect(stderr).toContain('Unsupported format');
+    });
+
+    it('should export as JSON to stdout when --format json is specified', async () => {
+      const logPath = path.join(tmpDir, 'audit.log');
+      writeAuditLog(logPath, [
+        { timestamp: '2026-02-13T12:00:00Z', method: 'GET', path: '/api/v1/vaults', status: 200, durationMs: 45 },
+        { timestamp: '2026-02-13T12:01:00Z', method: 'POST', path: '/api/v1/vaults', status: 201, durationMs: 120 },
+      ]);
+
+      await program.parseAsync(['node', 'cli', 'audit', 'export', '--log-path', logPath, '--format', 'json']);
+
+      const stdout = outputSpy.stdout.join('');
+      const parsed = JSON.parse(stdout) as unknown[];
+      expect(Array.isArray(parsed)).toBe(true);
+      expect(parsed).toHaveLength(2);
+    });
+
+    it('should export as JSON to a file with --format json --file', async () => {
+      const logPath = path.join(tmpDir, 'audit.log');
+      const outputPath = path.join(tmpDir, 'export.json');
+      writeAuditLog(logPath, [
+        { timestamp: '2026-02-13T12:00:00Z', method: 'GET', path: '/api/v1/vaults', status: 200, durationMs: 45 },
+      ]);
+
+      await program.parseAsync(['node', 'cli', 'audit', 'export', '--log-path', logPath, '--format', 'json', '--file', outputPath]);
+
+      expect(fs.existsSync(outputPath)).toBe(true);
+      const content = fs.readFileSync(outputPath, 'utf-8');
+      const parsed = JSON.parse(content) as unknown[];
+      expect(Array.isArray(parsed)).toBe(true);
+      expect(parsed).toHaveLength(1);
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Exported 1 entries');
     });
 
     it('should filter exported entries by --status', async () => {

@@ -106,9 +106,40 @@ export function registerLinkCommands(program: Command): void {
         if (flags.output === 'json') {
           process.stdout.write(JSON.stringify({ nodes: graph.nodes, edges: graph.edges }) + '\n');
         } else {
-          process.stdout.write(chalk.bold(`Nodes: ${graph.nodes.length}  Edges: ${graph.edges.length}\n`));
+          process.stdout.write(chalk.bold(`Nodes: ${graph.nodes.length}  Edges: ${graph.edges.length}\n\n`));
+
+          // Most connected nodes (top 5)
+          const connectionCounts = new Map<string, number>();
           for (const node of graph.nodes) {
-            process.stdout.write(`  ${chalk.cyan(String(node.path ?? node.id))}\n`);
+            connectionCounts.set(node.id, 0);
+          }
+          for (const edge of graph.edges) {
+            connectionCounts.set(edge.source, (connectionCounts.get(edge.source) ?? 0) + 1);
+            connectionCounts.set(edge.target, (connectionCounts.get(edge.target) ?? 0) + 1);
+          }
+
+          const sorted = [...connectionCounts.entries()].sort((a, b) => b[1] - a[1]);
+          const topConnected = sorted.slice(0, 5).filter(([, count]) => count > 0);
+          if (topConnected.length > 0) {
+            process.stdout.write(chalk.bold('Most connected:\n'));
+            for (const [nodeId, count] of topConnected) {
+              const node = graph.nodes.find((n: { id: string }) => n.id === nodeId);
+              process.stdout.write(`  ${chalk.cyan(String((node as { path?: string } | undefined)?.path ?? nodeId))} (${count} links)\n`);
+            }
+            process.stdout.write('\n');
+          }
+
+          // Orphan nodes (no connections)
+          const orphans = sorted.filter(([, count]) => count === 0);
+          if (orphans.length > 0) {
+            process.stdout.write(chalk.bold(`Orphan nodes (${orphans.length}):\n`));
+            for (const [nodeId] of orphans.slice(0, 10)) {
+              const node = graph.nodes.find((n: { id: string }) => n.id === nodeId);
+              process.stdout.write(`  ${chalk.dim(String((node as { path?: string } | undefined)?.path ?? nodeId))}\n`);
+            }
+            if (orphans.length > 10) {
+              process.stdout.write(chalk.dim(`  ... and ${orphans.length - 10} more\n`));
+            }
           }
         }
       } catch (err) {
