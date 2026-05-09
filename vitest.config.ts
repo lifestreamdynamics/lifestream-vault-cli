@@ -4,7 +4,10 @@ import { resolve } from 'node:path';
 export default defineConfig({
   resolve: {
     alias: {
-      // Resolve workspace SDK dependency to built output
+      // Resolve workspace SDK dependency to built output. The subpath alias
+      // ('/audit') must be listed first so vitest matches it before the root
+      // alias falls back to treating "/audit" as a path under index.js.
+      '@lifestreamdynamics/vault-sdk/audit': resolve(__dirname, '../sdk/dist/audit.js'),
       '@lifestreamdynamics/vault-sdk': resolve(__dirname, '../sdk/dist/index.js'),
     },
   },
