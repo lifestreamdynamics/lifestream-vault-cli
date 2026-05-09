@@ -55,6 +55,8 @@ export interface SyncState {
   local: Record<string, FileState>;
   /** Map of document path -> file state for remote files */
   remote: Record<string, FileState>;
+  /** ETag from the most recent successful list response (for conditional polling). */
+  remoteListEtag?: string;
   /** ISO 8601 timestamp when state was last updated */
   updatedAt: string;
 }

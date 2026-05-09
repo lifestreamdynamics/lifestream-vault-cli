@@ -147,17 +147,24 @@ export function createWatcher(
       // Check remote for conflicts in bidirectional mode
       if (config.mode === 'sync' && lastRemote) {
         try {
-          const remote = await client.documents.get(config.vaultId, docPath);
-          const remoteHash = hashFileContent(remote.content);
-          if (remoteHash !== lastRemote.hash) {
-            const result = await handleConflict({
-              absPath, docPath, localContent: content, localHash,
-              lastLocal, lastRemote,
-              remoteContent: remote.content, remoteHash,
-              remoteUpdatedAt: remote.document.updatedAt, state,
-            });
-            if (result !== 'skip') return;
+          const result = await client.documents.get(config.vaultId, docPath, {
+            ifNoneMatch: `"${lastRemote.hash}"`,
+          });
+          if (!result.notModified) {
+            // Server returned the body — check if hash differs from our last-known state.
+            const remoteHash = hashFileContent(result.content);
+            if (remoteHash !== lastRemote.hash) {
+              const conflictResult = await handleConflict({
+                absPath, docPath, localContent: content, localHash,
+                lastLocal, lastRemote,
+                remoteContent: result.content, remoteHash,
+                remoteUpdatedAt: result.document.updatedAt, state,
+              });
+              if (conflictResult !== 'skip') return;
+            }
+            // 200 + matching hash: rare list/cache mismatch — fall through to push.
           }
+          // 304: remote unchanged since last sync — no conflict possible. Fall through to push.
         } catch {
           // Remote check failed — proceed with push
         }
