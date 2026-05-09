@@ -33,6 +33,7 @@ vi.mock('./ignore.js', () => ({
 
 import {
   scanLocalFiles,
+  scanRemoteFiles,
   executePull,
   executePush,
 } from './engine.js';
@@ -95,6 +96,39 @@ describe('sync engine', () => {
       expect(Object.keys(files)).toContain('hello.md');
       expect(Object.keys(files)).toContain('sub/nested.md');
       expect(Object.keys(files)).not.toContain('skip.txt');
+    });
+  });
+
+  describe('scanRemoteFiles', () => {
+    it('uses contentHash from the list response as FileState.hash', async () => {
+      const fakeClient = {
+        documents: {
+          list: vi.fn().mockResolvedValue([
+            {
+              path: 'a.md',
+              title: 'A',
+              tags: [],
+              sizeBytes: 10,
+              fileModifiedAt: '2025-01-01T00:00:00.000Z',
+              contentHash: 'a'.repeat(64),
+            },
+            {
+              path: 'sub/b.md',
+              title: 'B',
+              tags: [],
+              sizeBytes: 20,
+              fileModifiedAt: '2025-01-02T00:00:00.000Z',
+              contentHash: 'b'.repeat(64),
+            },
+          ]),
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const files = await scanRemoteFiles(fakeClient as any, 'vault-1', []);
+      expect(files['a.md'].hash).toBe('a'.repeat(64));
+      expect(files['sub/b.md'].hash).toBe('b'.repeat(64));
+      expect(files['a.md'].size).toBe(10);
     });
   });
 
@@ -410,16 +444,17 @@ describe('sync engine', () => {
       expect(mockClient.documents.delete).toHaveBeenCalledWith('vault-1', 'old.md');
     });
 
-    it('should stop on quota errors', async () => {
+    it('should stop submitting new uploads after a quota error', async () => {
       const config = makeConfig();
       const diff = {
         uploads: [
           { path: 'a.md', action: 'create' as const, direction: 'upload' as const, sizeBytes: 50, reason: 'New' },
           { path: 'b.md', action: 'create' as const, direction: 'upload' as const, sizeBytes: 50, reason: 'New' },
+          { path: 'c.md', action: 'create' as const, direction: 'upload' as const, sizeBytes: 50, reason: 'New' },
         ],
         downloads: [],
         deletes: [],
-        totalBytes: 100,
+        totalBytes: 150,
       };
 
       const mockClient = {
@@ -430,11 +465,118 @@ describe('sync engine', () => {
 
       mockedFs.readFileSync.mockReturnValue('content');
 
-      const result = await executePush(mockClient, config, diff);
+      // concurrency=1 forces serialised execution so the third upload is
+      // never picked up after the first quota error trips.
+      const result = await executePush(mockClient, config, diff, undefined, 1);
 
-      // Should stop after first quota error, not retry the second file
-      expect(result.errors).toHaveLength(1);
       expect(result.filesUploaded).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].path).toBe('a.md');
     });
+  });
+
+  describe('concurrency limiting', () => {
+    it('caps in-flight transfers to the configured concurrency', async () => {
+      const config = makeConfig();
+      const N = 12;
+      const diff = {
+        uploads: [],
+        downloads: Array.from({ length: N }, (_, i) => ({
+          path: `${i}.md`,
+          action: 'create' as const,
+          direction: 'download' as const,
+          sizeBytes: 1,
+          reason: 'New',
+        })),
+        deletes: [],
+        totalBytes: N,
+      };
+
+      let inFlight = 0;
+      let peak = 0;
+
+      const mockClient = {
+        documents: {
+          get: vi.fn().mockImplementation(async () => {
+            inFlight++;
+            peak = Math.max(peak, inFlight);
+            await new Promise((r) => setTimeout(r, 5));
+            inFlight--;
+            return { content: '#', document: {} };
+          }),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any;
+
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const result = await executePull(mockClient, config, diff, undefined, 4);
+
+      expect(result.filesDownloaded).toBe(N);
+      expect(peak).toBeLessThanOrEqual(4);
+      expect(peak).toBeGreaterThan(1); // confirm parallelism actually occurred
+    });
+
+    it('defaults to 4 in-flight transfers when concurrency is omitted', async () => {
+      const config = makeConfig();
+      const N = 8;
+      const diff = {
+        uploads: [],
+        downloads: Array.from({ length: N }, (_, i) => ({
+          path: `${i}.md`,
+          action: 'create' as const,
+          direction: 'download' as const,
+          sizeBytes: 1,
+          reason: 'New',
+        })),
+        deletes: [],
+        totalBytes: N,
+      };
+
+      let inFlight = 0;
+      let peak = 0;
+
+      const mockClient = {
+        documents: {
+          get: vi.fn().mockImplementation(async () => {
+            inFlight++;
+            peak = Math.max(peak, inFlight);
+            await new Promise((r) => setTimeout(r, 5));
+            inFlight--;
+            return { content: '#', document: {} };
+          }),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any;
+
+      mockedFs.existsSync.mockReturnValue(true);
+
+      await executePull(mockClient, config, diff);
+
+      expect(peak).toBeLessThanOrEqual(4);
+    });
+  });
+});
+
+describe('resolveConcurrency', () => {
+  it('returns the default when undefined', async () => {
+    const { resolveConcurrency } = await import('./engine.js');
+    expect(resolveConcurrency(undefined)).toBe(4);
+  });
+
+  it('accepts integers between 1 and 16', async () => {
+    const { resolveConcurrency } = await import('./engine.js');
+    expect(resolveConcurrency(1)).toBe(1);
+    expect(resolveConcurrency(16)).toBe(16);
+    expect(resolveConcurrency(8)).toBe(8);
+  });
+
+  it('rejects 0 / negative / >16 / non-integer values', async () => {
+    const { resolveConcurrency } = await import('./engine.js');
+    expect(() => resolveConcurrency(0)).toThrow(/between 1 and 16/);
+    expect(() => resolveConcurrency(-1)).toThrow(/between 1 and 16/);
+    expect(() => resolveConcurrency(17)).toThrow(/between 1 and 16/);
+    expect(() => resolveConcurrency(2.5)).toThrow(/between 1 and 16/);
+    expect(() => resolveConcurrency(NaN)).toThrow(/between 1 and 16/);
   });
 });

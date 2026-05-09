@@ -65,6 +65,7 @@ vi.mock('../sync/engine.js', () => ({
   }),
   computePullDiff: vi.fn(() => ({ downloads: [], deletes: [], uploads: [], totalBytes: 0 })),
   computePushDiff: vi.fn(() => ({ downloads: [], deletes: [], uploads: [], totalBytes: 0 })),
+  resolveConcurrency: vi.fn((v?: number) => v ?? 4),
 }));
 
 // Mock sync ignore module

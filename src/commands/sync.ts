@@ -22,6 +22,7 @@ import {
   executePush,
   computePullDiff,
   computePushDiff,
+  resolveConcurrency,
 } from '../sync/engine.js';
 import { formatDiff } from '../sync/diff.js';
 import { createWatcher } from '../sync/watcher.js';
@@ -175,7 +176,8 @@ Sync modes:
   // sync pull <syncId>
   addGlobalFlags(sync.command('pull')
     .description('Pull remote changes to local directory')
-    .argument('<syncId>', 'Sync configuration ID'))
+    .argument('<syncId>', 'Sync configuration ID')
+    .option('--concurrency <n>', 'Max concurrent file transfers (1-16, default 4)', (v) => parseInt(v, 10)))
     .action(async (syncId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -241,12 +243,14 @@ Sync modes:
           out.status(formatDiff(diff));
         }
 
+        const concurrency = resolveConcurrency(_opts.concurrency as number | undefined);
+
         out.startSpinner(`Pulling ${totalOps} file(s)...`);
         const result = await executePull(client, config, diff, (progress) => {
           if (progress.phase === 'transferring' && progress.currentFile) {
             out.startSpinner(`[${progress.current}/${progress.total}] ${progress.currentFile}`);
           }
-        });
+        }, concurrency);
 
         if (result.errors.length > 0) {
           out.failSpinner(`Pull completed with ${result.errors.length} error(s)`);
@@ -272,7 +276,8 @@ Sync modes:
   // sync push <syncId>
   addGlobalFlags(sync.command('push')
     .description('Push local changes to remote vault')
-    .argument('<syncId>', 'Sync configuration ID'))
+    .argument('<syncId>', 'Sync configuration ID')
+    .option('--concurrency <n>', 'Max concurrent file transfers (1-16, default 4)', (v) => parseInt(v, 10)))
     .action(async (syncId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -338,12 +343,14 @@ Sync modes:
           out.status(formatDiff(diff));
         }
 
+        const concurrency = resolveConcurrency(_opts.concurrency as number | undefined);
+
         out.startSpinner(`Pushing ${totalOps} file(s)...`);
         const result = await executePush(client, config, diff, (progress) => {
           if (progress.phase === 'transferring' && progress.currentFile) {
             out.startSpinner(`[${progress.current}/${progress.total}] ${progress.currentFile}`);
           }
-        });
+        }, concurrency);
 
         if (result.errors.length > 0) {
           out.failSpinner(`Push completed with ${result.errors.length} error(s)`);

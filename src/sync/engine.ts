@@ -84,7 +84,7 @@ export async function scanRemoteFiles(
     if (!shouldIgnore(doc.path, ignorePatterns)) {
       files[doc.path] = {
         path: doc.path,
-        hash: '', // We don't have content hash from list; will use mtime for comparison
+        hash: doc.contentHash,
         mtime: doc.fileModifiedAt,
         size: doc.sizeBytes,
       };
@@ -120,6 +120,28 @@ interface SyncOperationHandlers {
 }
 
 /**
+ * Default in-flight transfer count. A small number flattens the load1 spike
+ * a full-vault `sync pull` causes on the API host without making single
+ * transfers measurably slower.
+ */
+const DEFAULT_TRANSFER_CONCURRENCY = 4;
+const MAX_TRANSFER_CONCURRENCY = 16;
+
+/**
+ * Validates and clamps a user-supplied concurrency value. Throws on invalid
+ * values so the CLI can surface a clear error before kicking off any I/O.
+ */
+export function resolveConcurrency(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_TRANSFER_CONCURRENCY;
+  if (!Number.isInteger(value) || value < 1 || value > MAX_TRANSFER_CONCURRENCY) {
+    throw new Error(
+      `--concurrency must be an integer between 1 and ${MAX_TRANSFER_CONCURRENCY} (got ${value})`,
+    );
+  }
+  return value;
+}
+
+/**
  * Shared sync operation executor used by both pull and push.
  * Handles result initialization, state loading, progress callbacks,
  * quota error handling, state saving, and lastSync update.
@@ -129,6 +151,7 @@ async function executeSyncOperation(
   diff: SyncDiff,
   handlers: SyncOperationHandlers,
   onProgress?: ProgressCallback,
+  concurrency: number = DEFAULT_TRANSFER_CONCURRENCY,
 ): Promise<SyncResult> {
   const result: SyncResult = {
     filesUploaded: 0,
@@ -141,8 +164,12 @@ async function executeSyncOperation(
   const state = loadSyncState(config.id);
   const allOps = [...handlers.transfers, ...handlers.deletes];
   let current = 0;
+  // Once a quota error is hit anywhere in the pool we stop submitting new
+  // work but let in-flight transfers drain to keep state consistent.
+  let stopSubmitting = false;
 
-  for (const entry of handlers.transfers) {
+  async function runOne(entry: SyncDiffEntry): Promise<void> {
+    if (stopSubmitting) return;
     current++;
     onProgress?.({
       phase: 'transferring',
@@ -172,13 +199,27 @@ async function executeSyncOperation(
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (isQuotaError(message)) {
-        result.errors.push({ path: entry.path, error: message });
-        break; // Stop immediately on quota errors
-      }
       result.errors.push({ path: entry.path, error: message });
+      if (isQuotaError(message)) {
+        stopSubmitting = true;
+      }
     }
   }
+
+  // Bounded async pool. Workers race for entries off the queue tail; once
+  // the queue is empty (or stopSubmitting is set), each worker exits and
+  // Promise.all resolves only after every in-flight transfer has settled.
+  const queue = handlers.transfers.slice();
+  const poolSize = Math.min(Math.max(1, concurrency), Math.max(1, queue.length));
+  await Promise.all(
+    Array.from({ length: poolSize }, async () => {
+      while (!stopSubmitting) {
+        const entry = queue.shift();
+        if (!entry) return;
+        await runOne(entry);
+      }
+    }),
+  );
 
   for (const entry of handlers.deletes) {
     current++;
@@ -224,6 +265,7 @@ export async function executePull(
   config: SyncConfig,
   diff: SyncDiff,
   onProgress?: ProgressCallback,
+  concurrency?: number,
 ): Promise<SyncResult> {
   return executeSyncOperation(config, diff, {
     transfers: diff.downloads,
@@ -247,7 +289,7 @@ export async function executePull(
         fs.unlinkSync(localFile);
       }
     },
-  }, onProgress);
+  }, onProgress, concurrency);
 }
 
 /**
@@ -258,6 +300,7 @@ export async function executePush(
   config: SyncConfig,
   diff: SyncDiff,
   onProgress?: ProgressCallback,
+  concurrency?: number,
 ): Promise<SyncResult> {
   return executeSyncOperation(config, diff, {
     transfers: diff.uploads,
@@ -276,7 +319,7 @@ export async function executePush(
         client.documents.delete(cfg.vaultId, entry.path),
       );
     },
-  }, onProgress);
+  }, onProgress, concurrency);
 }
 
 /**
