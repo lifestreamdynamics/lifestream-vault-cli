@@ -68,6 +68,60 @@ describe('sync engine', () => {
       expect(files).toEqual({});
     });
 
+    it('reuses persisted hash when mtime and size match (no readFileSync)', () => {
+      const storedMtime = '2025-01-01T00:00:00.000Z';
+      const storedSize = 42;
+      const storedHash = 'stored-hash-' + 'x'.repeat(52);
+      const lastState = {
+        syncId: 'sync-1',
+        local: {
+          'hello.md': { path: 'hello.md', hash: storedHash, mtime: storedMtime, size: storedSize },
+        },
+        remote: {},
+        updatedAt: '',
+      };
+
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readdirSync.mockImplementation((() => [
+        { name: 'hello.md', isFile: () => true, isDirectory: () => false },
+      ]) as unknown as typeof fs.readdirSync);
+      mockedFs.statSync.mockReturnValue({
+        mtime: new Date(storedMtime),
+        size: storedSize,
+      } as fs.Stats);
+
+      const files = scanLocalFiles('/vault', [], lastState);
+      expect(files['hello.md'].hash).toBe(storedHash);
+      // readFileSync should NOT have been called for this file
+      expect(mockedFs.readFileSync).not.toHaveBeenCalled();
+    });
+
+    it('re-hashes file when size differs from stored state', () => {
+      const storedMtime = '2025-01-01T00:00:00.000Z';
+      const lastState = {
+        syncId: 'sync-1',
+        local: {
+          'hello.md': { path: 'hello.md', hash: 'old-hash', mtime: storedMtime, size: 42 },
+        },
+        remote: {},
+        updatedAt: '',
+      };
+
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readdirSync.mockImplementation((() => [
+        { name: 'hello.md', isFile: () => true, isDirectory: () => false },
+      ]) as unknown as typeof fs.readdirSync);
+      mockedFs.statSync.mockReturnValue({
+        mtime: new Date(storedMtime),
+        size: 99, // differs from stored 42
+      } as fs.Stats);
+      mockedFs.readFileSync.mockReturnValue(Buffer.from('new content'));
+
+      const files = scanLocalFiles('/vault', [], lastState);
+      expect(mockedFs.readFileSync).toHaveBeenCalled();
+      expect(files['hello.md'].hash).toContain('hash-new conten'); // mock returns hash-<first10>
+    });
+
     it('should scan .md files recursively', () => {
       mockedFs.existsSync.mockReturnValue(true);
       mockedFs.readdirSync.mockImplementation(((dirPath: string) => {
@@ -100,35 +154,105 @@ describe('sync engine', () => {
   });
 
   describe('scanRemoteFiles', () => {
-    it('uses contentHash from the list response as FileState.hash', async () => {
+    it('uses contentHash from syncList changes as FileState.hash', async () => {
       const fakeClient = {
         documents: {
-          list: vi.fn().mockResolvedValue([
-            {
-              path: 'a.md',
-              title: 'A',
-              tags: [],
-              sizeBytes: 10,
-              fileModifiedAt: '2025-01-01T00:00:00.000Z',
-              contentHash: 'a'.repeat(64),
-            },
-            {
-              path: 'sub/b.md',
-              title: 'B',
-              tags: [],
-              sizeBytes: 20,
-              fileModifiedAt: '2025-01-02T00:00:00.000Z',
-              contentHash: 'b'.repeat(64),
-            },
-          ]),
+          syncList: vi.fn().mockResolvedValue({
+            changes: [
+              {
+                path: 'a.md',
+                contentHash: 'a'.repeat(64),
+                fileModifiedAt: '2025-01-01T00:00:00.000Z',
+                kind: 'added',
+              },
+              {
+                path: 'sub/b.md',
+                contentHash: 'b'.repeat(64),
+                fileModifiedAt: '2025-01-02T00:00:00.000Z',
+                kind: 'added',
+              },
+            ],
+            removed: [],
+            unchanged: [],
+            listEtag: 'etag-1',
+            vaultUnchanged: false,
+          }),
         },
       };
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const files = await scanRemoteFiles(fakeClient as any, 'vault-1', []);
-      expect(files['a.md'].hash).toBe('a'.repeat(64));
-      expect(files['sub/b.md'].hash).toBe('b'.repeat(64));
-      expect(files['a.md'].size).toBe(10);
+      const result = await scanRemoteFiles(fakeClient as any, 'vault-1', []);
+      expect(result.vaultUnchanged).toBe(false);
+      expect(result.listEtag).toBe('etag-1');
+      expect(result.files['a.md'].hash).toBe('a'.repeat(64));
+      expect(result.files['sub/b.md'].hash).toBe('b'.repeat(64));
+    });
+
+    it('returns vaultUnchanged=true and rebuilds files from knownState on 304', async () => {
+      const knownRemote = {
+        'a.md': { path: 'a.md', hash: 'a'.repeat(64), mtime: '2025-01-01T00:00:00.000Z', size: 10 },
+        'b.md': { path: 'b.md', hash: 'b'.repeat(64), mtime: '2025-01-02T00:00:00.000Z', size: 20 },
+      };
+      const fakeClient = {
+        documents: {
+          syncList: vi.fn().mockResolvedValue({
+            changes: [],
+            removed: [],
+            unchanged: ['a.md', 'b.md'],
+            listEtag: 'etag-cached',
+            vaultUnchanged: true,
+          }),
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await scanRemoteFiles(fakeClient as any, 'vault-1', [], {
+        remote: knownRemote,
+        remoteListEtag: 'etag-cached',
+      });
+      expect(result.vaultUnchanged).toBe(true);
+      expect(result.listEtag).toBe('etag-cached');
+      expect(result.files['a.md'].hash).toBe('a'.repeat(64));
+      expect(result.files['a.md'].size).toBe(10);
+      expect(result.files['b.md'].size).toBe(20);
+      // No per-doc fetches needed
+      expect(fakeClient.documents.syncList).toHaveBeenCalledTimes(1);
+    });
+
+    it('reuses persisted FileState for unchanged paths and uses size=0 for changed paths', async () => {
+      const knownRemote = {
+        'existing.md': { path: 'existing.md', hash: 'old-hash', mtime: '2025-01-01T00:00:00.000Z', size: 50 },
+        'unchanged.md': { path: 'unchanged.md', hash: 'same-hash', mtime: '2025-01-01T00:00:00.000Z', size: 30 },
+      };
+      const fakeClient = {
+        documents: {
+          syncList: vi.fn().mockResolvedValue({
+            changes: [
+              { path: 'existing.md', contentHash: 'new-hash', fileModifiedAt: '2025-02-01T00:00:00.000Z', kind: 'changed' },
+              { path: 'added.md', contentHash: 'add-hash', fileModifiedAt: '2025-02-01T00:00:00.000Z', kind: 'added' },
+            ],
+            removed: [],
+            unchanged: ['unchanged.md'],
+            listEtag: 'etag-2',
+            vaultUnchanged: false,
+          }),
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = await scanRemoteFiles(fakeClient as any, 'vault-1', [], {
+        remote: knownRemote,
+        remoteListEtag: 'etag-1',
+      });
+      expect(result.vaultUnchanged).toBe(false);
+      // Changed entry uses new hash but size=0 (not available from syncList)
+      expect(result.files['existing.md'].hash).toBe('new-hash');
+      expect(result.files['existing.md'].size).toBe(0);
+      // Unchanged entry reuses persisted size
+      expect(result.files['unchanged.md'].hash).toBe('same-hash');
+      expect(result.files['unchanged.md'].size).toBe(30);
+      // Added entry
+      expect(result.files['added.md'].hash).toBe('add-hash');
     });
   });
 

@@ -55,6 +55,7 @@ export function resolveIgnorePatterns(
  * The docPath should be a relative path using forward slashes.
  */
 export function shouldIgnore(docPath: string, patterns: string[]): boolean {
+  const basename = path.posix.basename(docPath);
   for (const pattern of patterns) {
     // Directory patterns (ending with /)
     if (pattern.endsWith('/')) {
@@ -68,7 +69,6 @@ export function shouldIgnore(docPath: string, patterns: string[]): boolean {
       return true;
     }
     // Also check basename for file-level patterns (e.g., ".DS_Store" matches "sub/.DS_Store")
-    const basename = path.posix.basename(docPath);
     if (minimatch(basename, pattern, { dot: true })) {
       return true;
     }

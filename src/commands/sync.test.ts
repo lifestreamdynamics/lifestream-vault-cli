@@ -45,7 +45,13 @@ vi.mock('../sync/config.js', () => ({
 // Mock sync state module
 vi.mock('../sync/state.js', () => ({
   deleteSyncState: vi.fn(() => true),
-  loadSyncState: vi.fn(() => null),
+  loadSyncState: vi.fn(() => ({
+    syncId: 'test-sync-id',
+    local: {},
+    remote: {},
+    remoteListEtag: undefined,
+    updatedAt: '1970-01-01T00:00:00.000Z',
+  })),
   saveSyncState: vi.fn(),
   hashFileContent: vi.fn(() => 'hash'),
   buildRemoteFileState: vi.fn(),
@@ -54,7 +60,7 @@ vi.mock('../sync/state.js', () => ({
 // Mock sync engine module
 vi.mock('../sync/engine.js', () => ({
   scanLocalFiles: vi.fn(() => ({})),
-  scanRemoteFiles: vi.fn(async () => ({})),
+  scanRemoteFiles: vi.fn(async () => ({ files: {}, listEtag: '', vaultUnchanged: false })),
   executePull: vi.fn(async (_client: unknown, _config: unknown, _diff: unknown, onProgress?: (p: unknown) => void) => {
     if (onProgress) onProgress({ phase: 'complete', current: 0, total: 0 });
     return { filesDownloaded: 0, filesDeleted: 0, filesUploaded: 0, bytesTransferred: 0, errors: [] };
@@ -237,11 +243,15 @@ describe('sync commands', () => {
     it('should include unchanged count in JSON when up to date', async () => {
       // 5 remote files, no changes
       vi.mocked(scanRemoteFiles).mockResolvedValue({
-        'a.md': { path: 'a.md', hash: '', mtime: '', size: 0 },
-        'b.md': { path: 'b.md', hash: '', mtime: '', size: 0 },
-        'c.md': { path: 'c.md', hash: '', mtime: '', size: 0 },
-        'd.md': { path: 'd.md', hash: '', mtime: '', size: 0 },
-        'e.md': { path: 'e.md', hash: '', mtime: '', size: 0 },
+        files: {
+          'a.md': { path: 'a.md', hash: '', mtime: '', size: 0 },
+          'b.md': { path: 'b.md', hash: '', mtime: '', size: 0 },
+          'c.md': { path: 'c.md', hash: '', mtime: '', size: 0 },
+          'd.md': { path: 'd.md', hash: '', mtime: '', size: 0 },
+          'e.md': { path: 'e.md', hash: '', mtime: '', size: 0 },
+        },
+        listEtag: '',
+        vaultUnchanged: false,
       });
       vi.mocked(computePullDiff).mockReturnValue({ downloads: [], deletes: [], uploads: [], totalBytes: 0 });
 
@@ -256,8 +266,12 @@ describe('sync commands', () => {
 
     it('should output only JSON (no text status) when --dry-run and --output json', async () => {
       vi.mocked(scanRemoteFiles).mockResolvedValue({
-        'a.md': { path: 'a.md', hash: '', mtime: '', size: 100 },
-        'b.md': { path: 'b.md', hash: '', mtime: '', size: 200 },
+        files: {
+          'a.md': { path: 'a.md', hash: '', mtime: '', size: 100 },
+          'b.md': { path: 'b.md', hash: '', mtime: '', size: 200 },
+        },
+        listEtag: '',
+        vaultUnchanged: false,
       });
       vi.mocked(computePullDiff).mockReturnValue({
         downloads: [
@@ -292,9 +306,13 @@ describe('sync commands', () => {
 
     it('should include unchanged count after pull with changes', async () => {
       vi.mocked(scanRemoteFiles).mockResolvedValue({
-        'a.md': { path: 'a.md', hash: '', mtime: '', size: 100 },
-        'b.md': { path: 'b.md', hash: '', mtime: '', size: 200 },
-        'c.md': { path: 'c.md', hash: '', mtime: '', size: 300 },
+        files: {
+          'a.md': { path: 'a.md', hash: '', mtime: '', size: 100 },
+          'b.md': { path: 'b.md', hash: '', mtime: '', size: 200 },
+          'c.md': { path: 'c.md', hash: '', mtime: '', size: 300 },
+        },
+        listEtag: '',
+        vaultUnchanged: false,
       });
       vi.mocked(computePullDiff).mockReturnValue({
         downloads: [

@@ -23,6 +23,7 @@ import {
   computePullDiff,
   computePushDiff,
   resolveConcurrency,
+  type ScanRemoteResult,
 } from '../sync/engine.js';
 import { formatDiff } from '../sync/diff.js';
 import { createWatcher } from '../sync/watcher.js';
@@ -194,11 +195,15 @@ Sync modes:
         const lastState = loadSyncState(config.id);
 
         out.startSpinner('Scanning local files...');
-        const localFiles = scanLocalFiles(config.localPath, ignorePatterns);
+        const localFiles = scanLocalFiles(config.localPath, ignorePatterns, lastState);
         out.debug(`Found ${Object.keys(localFiles).length} local files`);
 
         out.startSpinner('Scanning remote files...');
-        const remoteFiles = await scanRemoteFiles(client, config.vaultId, ignorePatterns);
+        const remoteResult: ScanRemoteResult = await scanRemoteFiles(
+          client, config.vaultId, ignorePatterns,
+          { remote: lastState.remote ?? {}, remoteListEtag: lastState.remoteListEtag },
+        );
+        const remoteFiles = remoteResult.files;
         out.debug(`Found ${Object.keys(remoteFiles).length} remote files`);
 
         out.startSpinner('Computing diff...');
@@ -206,7 +211,16 @@ Sync modes:
 
         const unchanged = Object.keys(remoteFiles).length - diff.downloads.length;
         const totalOps = diff.downloads.length + diff.deletes.length;
+
+        // Persist the new list ETag regardless of whether there are changes
+        if (remoteResult.listEtag) {
+          lastState.remoteListEtag = remoteResult.listEtag;
+        }
+
         if (totalOps === 0) {
+          if (remoteResult.listEtag) {
+            saveSyncState(lastState);
+          }
           out.succeedSpinner('Everything is up to date');
           if (flags.output === 'json') {
             out.record({
@@ -294,11 +308,15 @@ Sync modes:
         const lastState = loadSyncState(config.id);
 
         out.startSpinner('Scanning local files...');
-        const localFiles = scanLocalFiles(config.localPath, ignorePatterns);
+        const localFiles = scanLocalFiles(config.localPath, ignorePatterns, lastState);
         out.debug(`Found ${Object.keys(localFiles).length} local files`);
 
         out.startSpinner('Scanning remote files...');
-        const remoteFiles = await scanRemoteFiles(client, config.vaultId, ignorePatterns);
+        const remoteResult: ScanRemoteResult = await scanRemoteFiles(
+          client, config.vaultId, ignorePatterns,
+          { remote: lastState.remote ?? {}, remoteListEtag: lastState.remoteListEtag },
+        );
+        const remoteFiles = remoteResult.files;
         out.debug(`Found ${Object.keys(remoteFiles).length} remote files`);
 
         out.startSpinner('Computing diff...');
@@ -306,7 +324,16 @@ Sync modes:
 
         const unchanged = Object.keys(localFiles).length - diff.uploads.length;
         const totalOps = diff.uploads.length + diff.deletes.length;
+
+        // Persist the new list ETag regardless of whether there are changes
+        if (remoteResult.listEtag) {
+          lastState.remoteListEtag = remoteResult.listEtag;
+        }
+
         if (totalOps === 0) {
+          if (remoteResult.listEtag) {
+            saveSyncState(lastState);
+          }
           out.succeedSpinner('Everything is up to date');
           if (flags.output === 'json') {
             out.record({
@@ -393,8 +420,12 @@ Sync modes:
         const lastState = loadSyncState(config.id);
 
         out.startSpinner('Scanning...');
-        const localFiles = scanLocalFiles(config.localPath, ignorePatterns);
-        const remoteFiles = await scanRemoteFiles(client, config.vaultId, ignorePatterns);
+        const localFiles = scanLocalFiles(config.localPath, ignorePatterns, lastState);
+        const remoteResult: ScanRemoteResult = await scanRemoteFiles(
+          client, config.vaultId, ignorePatterns,
+          { remote: lastState.remote ?? {}, remoteListEtag: lastState.remoteListEtag },
+        );
+        const remoteFiles = remoteResult.files;
 
         const pullDiff = computePullDiff(localFiles, remoteFiles, lastState);
         const pushDiff = computePushDiff(localFiles, remoteFiles, lastState);

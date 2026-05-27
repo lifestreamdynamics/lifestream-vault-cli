@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import type { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
+import type { LifestreamVaultClient, SyncListKnownState } from '@lifestreamdynamics/vault-sdk';
 import type { SyncConfig, SyncState, FileState } from './types.js';
 import { loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from './state.js';
 import { updateLastSync } from './config.js';
@@ -33,10 +33,14 @@ export interface SyncResult {
 /**
  * Scan local directory recursively for .md files.
  * Returns a map of relative doc paths -> FileState.
+ *
+ * When `lastState` is provided, files whose stat mtime and size match the
+ * persisted entry skip the readFileSync + hash step entirely (D-2 fast-path).
  */
 export function scanLocalFiles(
   localPath: string,
   ignorePatterns: string[],
+  lastState?: SyncState,
 ): Record<string, FileState> {
   const files: Record<string, FileState> = {};
 
@@ -52,14 +56,20 @@ export function scanLocalFiles(
       } else if (entry.isFile() && entry.name.endsWith('.md')) {
         if (!shouldIgnore(relPath, ignorePatterns)) {
           const absPath = path.join(dir, entry.name);
-          const content = fs.readFileSync(absPath);
           const stat = fs.statSync(absPath);
-          files[relPath] = {
-            path: relPath,
-            hash: hashFileContent(content),
-            mtime: stat.mtime.toISOString(),
-            size: stat.size,
-          };
+          const stored = lastState?.local?.[relPath];
+          if (stored && stat.size === stored.size && stat.mtime.toISOString() === stored.mtime) {
+            // mtime+size unchanged — reuse persisted hash, skip file read
+            files[relPath] = stored;
+          } else {
+            const content = fs.readFileSync(absPath);
+            files[relPath] = {
+              path: relPath,
+              hash: hashFileContent(content),
+              mtime: stat.mtime.toISOString(),
+              size: stat.size,
+            };
+          }
         }
       }
     }
@@ -69,28 +79,83 @@ export function scanLocalFiles(
   return files;
 }
 
+/** Result type for {@link scanRemoteFiles}. */
+export interface ScanRemoteResult {
+  /** Map of doc paths -> FileState for all non-ignored remote files. */
+  files: Record<string, FileState>;
+  /** List ETag from this response, for use in the next call. */
+  listEtag: string;
+  /** True when the server confirmed the vault is unchanged (304 fast-path). */
+  vaultUnchanged: boolean;
+}
+
 /**
- * Scan remote vault for document list.
- * Returns a map of doc paths -> FileState.
+ * Scan remote vault for document list using the syncList fast-path.
+ *
+ * When `knownState` is provided (with hashes and optionally a prior listEtag),
+ * the server may respond 304 and `vaultUnchanged` will be true — in that case
+ * `files` is rebuilt from `knownState.remote` without any per-doc network call.
+ *
+ * When `knownState` is omitted a full list is always fetched (backward-compat).
  */
 export async function scanRemoteFiles(
   client: LifestreamVaultClient,
   vaultId: string,
   ignorePatterns: string[],
-): Promise<Record<string, FileState>> {
-  const docs = await client.documents.list(vaultId);
+  knownState?: { remote: Record<string, FileState>; remoteListEtag?: string },
+): Promise<ScanRemoteResult> {
+  const sdkKnownState: SyncListKnownState = {
+    hashes: knownState
+      ? Object.fromEntries(Object.entries(knownState.remote).map(([k, v]) => [k, v.hash]))
+      : {},
+    listEtag: knownState?.remoteListEtag,
+  };
+
+  const sync = await client.documents.syncList(vaultId, sdkKnownState);
+
+  if (sync.vaultUnchanged) {
+    // Server confirmed nothing changed — rebuild files from persisted state.
+    const files: Record<string, FileState> = {};
+    if (knownState) {
+      for (const [docPath, fs_] of Object.entries(knownState.remote)) {
+        if (!shouldIgnore(docPath, ignorePatterns)) {
+          files[docPath] = fs_;
+        }
+      }
+    }
+    return { files, listEtag: sync.listEtag, vaultUnchanged: true };
+  }
+
+  // Build files from changes + unchanged paths.
   const files: Record<string, FileState> = {};
-  for (const doc of docs) {
-    if (!shouldIgnore(doc.path, ignorePatterns)) {
-      files[doc.path] = {
-        path: doc.path,
-        hash: doc.contentHash,
-        mtime: doc.fileModifiedAt,
-        size: doc.sizeBytes,
+
+  for (const change of sync.changes) {
+    if (!shouldIgnore(change.path, ignorePatterns)) {
+      files[change.path] = {
+        path: change.path,
+        hash: change.contentHash,
+        mtime: change.fileModifiedAt,
+        // sizeBytes is not provided by syncList change objects; use 0 as a
+        // fallback — size is only used for progress-bar estimation in the diff.
+        size: 0,
       };
     }
   }
-  return files;
+
+  for (const unchangedPath of sync.unchanged) {
+    if (!shouldIgnore(unchangedPath, ignorePatterns)) {
+      // Reuse the persisted FileState so size is preserved for progress reporting.
+      const stored = knownState?.remote?.[unchangedPath];
+      files[unchangedPath] = stored ?? {
+        path: unchangedPath,
+        hash: sdkKnownState.hashes[unchangedPath] ?? '',
+        mtime: '',
+        size: 0,
+      };
+    }
+  }
+
+  return { files, listEtag: sync.listEtag, vaultUnchanged: false };
 }
 
 /**
