@@ -169,6 +169,14 @@ function atomicWriteFileSync(targetPath: string, content: string, encoding: Buff
 }
 
 /**
+ * Called when the SDK signals a 429 response while transferring a file.
+ * The SDK will back off and retry automatically; the CLI uses this to
+ * update the spinner text so the user sees "Rate limited — waiting and retrying…"
+ * rather than an apparently frozen transfer.
+ */
+export type ThrottleCallback = (file: string) => void;
+
+/**
  * Direction-specific callbacks for the sync operation helper.
  */
 interface SyncOperationHandlers {
@@ -177,7 +185,7 @@ interface SyncOperationHandlers {
   /** The file entries to delete. */
   deletes: SyncDiffEntry[];
   /** Transfer a single file entry; returns the content for state tracking. */
-  transferFile(entry: SyncDiffEntry, config: SyncConfig): Promise<string>;
+  transferFile(entry: SyncDiffEntry, config: SyncConfig, onThrottle?: ThrottleCallback): Promise<string>;
   /** Delete a single file entry. */
   deleteFile(entry: SyncDiffEntry, config: SyncConfig): Promise<void>;
   /** Which counter to increment on successful transfer. */
@@ -217,6 +225,7 @@ async function executeSyncOperation(
   handlers: SyncOperationHandlers,
   onProgress?: ProgressCallback,
   concurrency: number = DEFAULT_TRANSFER_CONCURRENCY,
+  onThrottle?: ThrottleCallback,
 ): Promise<SyncResult> {
   const result: SyncResult = {
     filesUploaded: 0,
@@ -246,7 +255,7 @@ async function executeSyncOperation(
     });
 
     try {
-      const content = await handlers.transferFile(entry, config);
+      const content = await handlers.transferFile(entry, config, onThrottle);
       result[handlers.transferCounterKey]++;
       result.bytesTransferred += entry.sizeBytes;
 
@@ -266,6 +275,11 @@ async function executeSyncOperation(
       const message = err instanceof Error ? err.message : String(err);
       result.errors.push({ path: entry.path, error: message });
       if (isQuotaError(message)) {
+        stopSubmitting = true;
+      }
+      // 429 errors that reach here have already exhausted SDK-level retries.
+      // Stop submitting new work to avoid hammering a still-throttled API.
+      if (isThrottleError(message)) {
         stopSubmitting = true;
       }
     }
@@ -331,14 +345,16 @@ export async function executePull(
   diff: SyncDiff,
   onProgress?: ProgressCallback,
   concurrency?: number,
+  onThrottle?: ThrottleCallback,
 ): Promise<SyncResult> {
   return executeSyncOperation(config, diff, {
     transfers: diff.downloads,
     deletes: diff.deletes,
     transferCounterKey: 'filesDownloaded',
-    async transferFile(entry, cfg) {
+    async transferFile(entry, cfg, throttleCallback) {
       const { content } = await retryWithBackoff(() =>
         client.documents.get(cfg.vaultId, entry.path),
+        throttleCallback ? () => throttleCallback(entry.path) : undefined,
       );
       const localFile = path.join(cfg.localPath, entry.path);
       const localDir = path.dirname(localFile);
@@ -354,7 +370,7 @@ export async function executePull(
         fs.unlinkSync(localFile);
       }
     },
-  }, onProgress, concurrency);
+  }, onProgress, concurrency, onThrottle);
 }
 
 /**
@@ -366,16 +382,18 @@ export async function executePush(
   diff: SyncDiff,
   onProgress?: ProgressCallback,
   concurrency?: number,
+  onThrottle?: ThrottleCallback,
 ): Promise<SyncResult> {
   return executeSyncOperation(config, diff, {
     transfers: diff.uploads,
     deletes: diff.deletes,
     transferCounterKey: 'filesUploaded',
-    async transferFile(entry, cfg) {
+    async transferFile(entry, cfg, throttleCallback) {
       const localFile = path.join(cfg.localPath, entry.path);
       const content = fs.readFileSync(localFile, 'utf-8');
       await retryWithBackoff(() =>
         client.documents.put(cfg.vaultId, entry.path, content),
+        throttleCallback ? () => throttleCallback(entry.path) : undefined,
       );
       return content;
     },
@@ -384,13 +402,25 @@ export async function executePush(
         client.documents.delete(cfg.vaultId, entry.path),
       );
     },
-  }, onProgress, concurrency);
+  }, onProgress, concurrency, onThrottle);
 }
 
 /**
- * Retry a function with exponential backoff (max 3 retries).
+ * Retry a function with exponential backoff (max 3 retries) for transient
+ * network errors. Throttle (429) and quota/permission errors are NOT retried
+ * here — the SDK already retries 429s transparently (ky retry config), and
+ * quota/permission errors are not recoverable by retrying.
+ *
+ * @param onThrottle - Optional callback to invoke when a 429 is observed.
+ *   The SDK will retry automatically; this is called so the CLI can update
+ *   its spinner text to "Rate limited — waiting and retrying…".
+ *   The parameter value is the file path being transferred.
  */
-async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  onThrottle?: (file: string) => void,
+): Promise<T> {
+  const maxRetries = 3;
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -398,7 +428,16 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promis
     } catch (err) {
       lastError = err;
       const message = err instanceof Error ? err.message : String(err);
-      // Don't retry on non-transient errors
+
+      // Throttle errors: the SDK already exhausted its own retry budget with
+      // proper Retry-After backoff. Don't layer another retry loop on top —
+      // that would ignore the server's backoff signal and hammer the API.
+      if (isThrottleError(message)) {
+        onThrottle?.('');
+        throw err;
+      }
+
+      // Don't retry on other non-transient errors
       if (isQuotaError(message) || isPermissionError(message)) {
         throw err;
       }
@@ -409,6 +448,15 @@ async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries = 3): Promis
     }
   }
   throw lastError;
+}
+
+/**
+ * Returns true when the error message indicates the server sent HTTP 429
+ * (Too Many Requests / rate limited). The SDK retries 429s transparently;
+ * a 429 error thrown from the SDK means all retry attempts were exhausted.
+ */
+export function isThrottleError(message: string): boolean {
+  return /429|too many requests|rate.?limit|throttl/i.test(message);
 }
 
 function isQuotaError(message: string): boolean {

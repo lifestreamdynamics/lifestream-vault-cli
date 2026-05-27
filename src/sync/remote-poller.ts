@@ -10,6 +10,7 @@ import { shouldIgnore } from './ignore.js';
 import { loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from './state.js';
 import { updateLastSync } from './config.js';
 import { resolveConflict, detectConflict, createConflictFile, formatConflictLog } from './conflict.js';
+import { isThrottleError } from './engine.js';
 
 export interface PollerOptions {
   /** Patterns to ignore */
@@ -201,7 +202,17 @@ export function createRemotePoller(
         }
       }
     } catch (err) {
-      onError?.(err instanceof Error ? err : new Error(String(err)));
+      const message = err instanceof Error ? err.message : String(err);
+      if (isThrottleError(message)) {
+        // The SDK already retried the request with Retry-After backoff and
+        // exhausted its retry budget. Log a warning rather than invoking
+        // onError so the daemon loop does NOT immediately re-poll on top of
+        // the backoff that the SDK already applied.  The next scheduled poll
+        // (after intervalMs) will pick up the changes.
+        log('Rate limited by server — will retry on next scheduled poll');
+      } else {
+        onError?.(err instanceof Error ? err : new Error(String(err)));
+      }
     } finally {
       polling = false;
     }

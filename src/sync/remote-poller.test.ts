@@ -452,6 +452,68 @@ describe('remote-poller', () => {
   // -----------------------------------------------------------------------
   // Case 7: Removed doc → local file deleted, state cleaned up
   // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // Case 8: 429 / throttle error from syncList
+  // When the SDK exhausts its retry budget and throws a 429 error, the poller
+  // should log "rate limited" rather than calling onError, and the polling
+  // loop should remain alive for the next scheduled interval.
+  // -----------------------------------------------------------------------
+  it('429 / throttle from syncList: logs warning, does NOT call onError, keeps polling alive', async () => {
+    const config = makeConfig();
+    const state = makeState();
+    mockLoadSyncState.mockReturnValue(state);
+
+    const client = makeClient();
+    // Simulate SDK throwing after exhausting its own retry budget
+    client._syncList.mockRejectedValue(new Error('HTTP 429 Too Many Requests'));
+
+    const onLog = vi.fn();
+    const onError = vi.fn();
+    const poller = createRemotePoller(client as any, config, {
+      ignorePatterns: [],
+      intervalMs: 60000,
+      onLog,
+      onError,
+    });
+    await new Promise(r => setTimeout(r, 30));
+    poller.stop();
+
+    // onError must NOT be called for a throttle error
+    expect(onError).not.toHaveBeenCalled();
+
+    // A warning should be logged instead
+    const logMessages = onLog.mock.calls.map((c: any[]) => c[0] as string);
+    expect(logMessages.some((m: string) => /rate.?limit|retry|throttl/i.test(m))).toBe(true);
+
+    // State was not mutated (no saveSyncState)
+    expect(mockSaveSyncState).not.toHaveBeenCalled();
+  });
+
+  // -----------------------------------------------------------------------
+  // Case 9: Non-429 error from syncList still calls onError
+  // -----------------------------------------------------------------------
+  it('non-throttle error from syncList: calls onError as before', async () => {
+    const config = makeConfig();
+    const state = makeState();
+    mockLoadSyncState.mockReturnValue(state);
+
+    const client = makeClient();
+    client._syncList.mockRejectedValue(new Error('Network connection refused'));
+
+    const onError = vi.fn();
+    const poller = createRemotePoller(client as any, config, {
+      ignorePatterns: [],
+      intervalMs: 60000,
+      onError,
+    });
+    await new Promise(r => setTimeout(r, 30));
+    poller.stop();
+
+    // onError MUST be called for non-throttle errors
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError.mock.calls[0][0].message).toMatch(/connection refused/i);
+  });
+
   it('removed doc: local file deleted and state cleaned up', async () => {
     const config = makeConfig();
     const state = makeState({

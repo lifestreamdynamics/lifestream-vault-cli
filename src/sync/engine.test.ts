@@ -704,3 +704,38 @@ describe('resolveConcurrency', () => {
     expect(() => resolveConcurrency(NaN)).toThrow(/between 1 and 16/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// isThrottleError — unit tests
+// ---------------------------------------------------------------------------
+describe('isThrottleError', () => {
+  it('returns true for HTTP 429 error messages', async () => {
+    const { isThrottleError } = await import('./engine.js');
+    expect(isThrottleError('HTTP 429 Too Many Requests')).toBe(true);
+    expect(isThrottleError('Request failed with status code 429')).toBe(true);
+    expect(isThrottleError('429')).toBe(true);
+  });
+
+  it('returns true for "too many requests" messages', async () => {
+    const { isThrottleError } = await import('./engine.js');
+    expect(isThrottleError('too many requests')).toBe(true);
+    expect(isThrottleError('Too Many Requests')).toBe(true);
+  });
+
+  it('returns true for rate-limit and throttle messages', async () => {
+    const { isThrottleError } = await import('./engine.js');
+    expect(isThrottleError('rate limit exceeded')).toBe(true);
+    expect(isThrottleError('Rate-Limit reached')).toBe(true);
+    expect(isThrottleError('throttled by server')).toBe(true);
+    expect(isThrottleError('Request throttled')).toBe(true);
+  });
+
+  it('returns false for unrelated errors', async () => {
+    const { isThrottleError } = await import('./engine.js');
+    expect(isThrottleError('Network connection refused')).toBe(false);
+    expect(isThrottleError('Not found')).toBe(false);
+    expect(isThrottleError('storage limit exceeded')).toBe(false);
+    expect(isThrottleError('Unauthorized')).toBe(false);
+    expect(isThrottleError('')).toBe(false);
+  });
+});

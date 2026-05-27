@@ -264,7 +264,9 @@ Sync modes:
           if (progress.phase === 'transferring' && progress.currentFile) {
             out.startSpinner(`[${progress.current}/${progress.total}] ${progress.currentFile}`);
           }
-        }, concurrency);
+        }, concurrency, (file) => {
+          out.startSpinner(`Rate limited — waiting and retrying… (${file})`);
+        });
 
         if (result.errors.length > 0) {
           out.failSpinner(`Pull completed with ${result.errors.length} error(s)`);
@@ -377,7 +379,9 @@ Sync modes:
           if (progress.phase === 'transferring' && progress.currentFile) {
             out.startSpinner(`[${progress.current}/${progress.total}] ${progress.currentFile}`);
           }
-        }, concurrency);
+        }, concurrency, (file) => {
+          out.startSpinner(`Rate limited — waiting and retrying… (${file})`);
+        });
 
         if (result.errors.length > 0) {
           out.failSpinner(`Push completed with ${result.errors.length} error(s)`);
