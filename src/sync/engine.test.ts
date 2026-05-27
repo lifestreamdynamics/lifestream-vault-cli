@@ -704,3 +704,42 @@ describe('resolveConcurrency', () => {
     expect(() => resolveConcurrency(NaN)).toThrow(/between 1 and 16/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// isThrottleError — unit tests
+// ---------------------------------------------------------------------------
+describe('isThrottleError', () => {
+  it('returns true for a structured 429 status on the error object', async () => {
+    const { isThrottleError } = await import('./engine.js');
+    expect(isThrottleError({ statusCode: 429 })).toBe(true);
+    expect(isThrottleError({ status: 429 })).toBe(true);
+    expect(isThrottleError(Object.assign(new Error('Rate limit exceeded'), { statusCode: 429 }))).toBe(true);
+  });
+
+  it('returns true for unambiguous 429 / too-many-requests messages', async () => {
+    const { isThrottleError } = await import('./engine.js');
+    expect(isThrottleError(new Error('HTTP 429 Too Many Requests'))).toBe(true);
+    expect(isThrottleError('Request failed with status code 429')).toBe(true);
+    expect(isThrottleError('429')).toBe(true);
+    expect(isThrottleError('too many requests')).toBe(true);
+  });
+
+  it('does NOT match loose "rate limit"/"throttle" wording without a 429 (avoids false positives)', async () => {
+    const { isThrottleError } = await import('./engine.js');
+    // These are NOT 429s — e.g. an auth error mentioning a rate-limited account.
+    // Matching them would suppress a real error, so they must return false.
+    expect(isThrottleError('rate limit exceeded')).toBe(false);
+    expect(isThrottleError('throttled by server')).toBe(false);
+    expect(isThrottleError('access denied for rate-limited account')).toBe(false);
+  });
+
+  it('returns false for unrelated errors', async () => {
+    const { isThrottleError } = await import('./engine.js');
+    expect(isThrottleError('Network connection refused')).toBe(false);
+    expect(isThrottleError('Not found')).toBe(false);
+    expect(isThrottleError('storage limit exceeded')).toBe(false);
+    expect(isThrottleError('Unauthorized')).toBe(false);
+    expect(isThrottleError('')).toBe(false);
+    expect(isThrottleError({ statusCode: 403 })).toBe(false);
+  });
+});

@@ -362,4 +362,192 @@ describe('sync commands', () => {
       expect(parsed.unchanged).toBe(3);
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Throttle / 429 UX tests
+  //
+  // The SDK retries 429 responses transparently (ky retry config).  When a
+  // throttled request is ultimately resolved the CLI must:
+  //   - Report success (exit 0, errors: 0 in JSON)
+  //   - Show "Rate limited — waiting and retrying…" in the spinner
+  //
+  // These tests mock executePull/executePush to invoke the onThrottle callback
+  // (5th arg for progress, 6th arg for concurrency, 7th… wait — actual
+  // signatures: executePull(client, config, diff, onProgress?, concurrency?,
+  // onThrottle?)).  The mock receives all args; we capture the onThrottle cb
+  // and call it to simulate the SDK observing a 429.
+  // -----------------------------------------------------------------------
+  describe('throttle / rate-limit UX', () => {
+    describe('sync pull — 429 retried to success', () => {
+      beforeEach(() => {
+        mockConfigs.push({
+          id: 'pull-throttle', vaultId: 'vault-1', localPath: '/tmp/test',
+          mode: 'pull', onConflict: 'newer', ignore: [],
+          lastSyncAt: '1970-01-01T00:00:00.000Z', autoSync: false,
+        });
+      });
+
+      it('reports success (errors: 0, exit 0) when pull is throttled then succeeds', async () => {
+        vi.mocked(scanRemoteFiles).mockResolvedValue({
+          files: {
+            'notes/a.md': { path: 'notes/a.md', hash: 'h1', mtime: '', size: 100 },
+          },
+          listEtag: 'etag-1',
+          vaultUnchanged: false,
+        });
+        vi.mocked(computePullDiff).mockReturnValue({
+          downloads: [{ path: 'notes/a.md', action: 'create' as const, direction: 'pull' as const, sizeBytes: 100, reason: 'new' }],
+          deletes: [],
+          uploads: [],
+          totalBytes: 100,
+        });
+
+        // Simulate SDK transparently retrying a 429: onThrottle is called but
+        // the overall executePull still succeeds (no errors).
+        vi.mocked(executePull).mockImplementationOnce(async (
+          _client,
+          _config,
+          _diff,
+          _onProgress,
+          _concurrency,
+          onThrottle,
+        ) => {
+          // Simulate the SDK encountering a 429 mid-transfer and calling back
+          onThrottle?.('notes/a.md');
+          // ...but ultimately succeeding
+          return { filesDownloaded: 1, filesDeleted: 0, filesUploaded: 0, bytesTransferred: 100, errors: [] };
+        });
+
+        await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-throttle', '--output', 'json']);
+
+        // Exit code must be 0 (success, not failure)
+        expect(process.exitCode).not.toBe(1);
+
+        // JSON output must record success — no spurious error
+        const jsonLine = outputSpy.stdout.find(l => l.includes('"errors"'));
+        expect(jsonLine).toBeDefined();
+        const parsed = JSON.parse(jsonLine!);
+        expect(parsed.errors).toBe(0);
+        expect(parsed.downloaded).toBe(1);
+      });
+
+      it('passes an onThrottle callback to executePull so the spinner can show "Rate limited"', async () => {
+        vi.mocked(scanRemoteFiles).mockResolvedValue({
+          files: { 'doc.md': { path: 'doc.md', hash: 'h1', mtime: '', size: 50 } },
+          listEtag: 'etag-2',
+          vaultUnchanged: false,
+        });
+        vi.mocked(computePullDiff).mockReturnValue({
+          downloads: [{ path: 'doc.md', action: 'create' as const, direction: 'pull' as const, sizeBytes: 50, reason: 'new' }],
+          deletes: [],
+          uploads: [],
+          totalBytes: 50,
+        });
+
+        let capturedThrottleCb: ((file: string) => void) | undefined;
+
+        vi.mocked(executePull).mockImplementationOnce(async (
+          _client,
+          _config,
+          _diff,
+          _onProgress,
+          _concurrency,
+          onThrottle,
+        ) => {
+          capturedThrottleCb = onThrottle as ((file: string) => void) | undefined;
+          return { filesDownloaded: 1, filesDeleted: 0, filesUploaded: 0, bytesTransferred: 50, errors: [] };
+        });
+
+        await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-throttle']);
+
+        // The command must wire a throttle callback so the SDK can signal rate-limiting
+        expect(capturedThrottleCb).toBeDefined();
+        expect(typeof capturedThrottleCb).toBe('function');
+
+        // Calling it must not throw — it updates the spinner (or is a no-op in non-TTY tests)
+        expect(() => capturedThrottleCb?.('doc.md')).not.toThrow();
+      });
+    });
+
+    describe('sync push — 429 retried to success', () => {
+      beforeEach(() => {
+        mockConfigs.push({
+          id: 'push-throttle', vaultId: 'vault-1', localPath: '/tmp/test',
+          mode: 'push', onConflict: 'newer', ignore: [],
+          lastSyncAt: '1970-01-01T00:00:00.000Z', autoSync: false,
+        });
+      });
+
+      it('reports success (errors: 0, exit 0) when push is throttled then succeeds', async () => {
+        vi.mocked(scanLocalFiles).mockReturnValue({
+          'notes/b.md': { path: 'notes/b.md', hash: 'h2', mtime: '', size: 200 },
+        });
+        vi.mocked(computePushDiff).mockReturnValue({
+          downloads: [],
+          deletes: [],
+          uploads: [{ path: 'notes/b.md', action: 'create' as const, direction: 'push' as const, sizeBytes: 200, reason: 'new' }],
+          totalBytes: 200,
+        });
+
+        vi.mocked(executePush).mockImplementationOnce(async (
+          _client, _config, _diff, _onProgress, _concurrency, onThrottle,
+        ) => {
+          // SDK encountered 429 but backed off and ultimately succeeded
+          onThrottle?.('notes/b.md');
+          return { filesDownloaded: 0, filesDeleted: 0, filesUploaded: 1, bytesTransferred: 200, errors: [] };
+        });
+
+        await program.parseAsync(['node', 'cli', 'sync', 'push', 'push-throttle', '--output', 'json']);
+
+        expect(process.exitCode).not.toBe(1);
+
+        const jsonLine = outputSpy.stdout.find(l => l.includes('"errors"'));
+        expect(jsonLine).toBeDefined();
+        const parsed = JSON.parse(jsonLine!);
+        expect(parsed.errors).toBe(0);
+        expect(parsed.uploaded).toBe(1);
+      });
+    });
+
+    describe('sync pull — 429 exhausted (SDK retries depleted)', () => {
+      beforeEach(() => {
+        mockConfigs.push({
+          id: 'pull-429-fail', vaultId: 'vault-1', localPath: '/tmp/test',
+          mode: 'pull', onConflict: 'newer', ignore: [],
+          lastSyncAt: '1970-01-01T00:00:00.000Z', autoSync: false,
+        });
+      });
+
+      it('records the error when 429 exhausts all SDK retries', async () => {
+        vi.mocked(scanRemoteFiles).mockResolvedValue({
+          files: { 'doc.md': { path: 'doc.md', hash: 'h1', mtime: '', size: 50 } },
+          listEtag: '',
+          vaultUnchanged: false,
+        });
+        vi.mocked(computePullDiff).mockReturnValue({
+          downloads: [{ path: 'doc.md', action: 'create' as const, direction: 'pull' as const, sizeBytes: 50, reason: 'new' }],
+          deletes: [],
+          uploads: [],
+          totalBytes: 50,
+        });
+
+        // SDK threw after exhausting retries — one error recorded
+        vi.mocked(executePull).mockResolvedValueOnce({
+          filesDownloaded: 0, filesDeleted: 0, filesUploaded: 0, bytesTransferred: 0,
+          errors: [{ path: 'doc.md', error: 'HTTP 429 Too Many Requests' }],
+        });
+
+        await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-429-fail', '--output', 'json']);
+
+        const jsonLine = outputSpy.stdout.find(l => l.includes('"errors"'));
+        expect(jsonLine).toBeDefined();
+        const parsed = JSON.parse(jsonLine!);
+        // The error is recorded in the result so the operator knows about it
+        expect(parsed.errors).toBe(1);
+        // But it is still a partial result, not a thrown exception (exit code may be non-zero
+        // depending on failSpinner behaviour; the important thing is JSON is emitted)
+        expect(parsed.downloaded).toBe(0);
+      });
+    });
+  });
 });
