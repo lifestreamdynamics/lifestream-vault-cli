@@ -279,7 +279,7 @@ async function executeSyncOperation(
       }
       // 429 errors that reach here have already exhausted SDK-level retries.
       // Stop submitting new work to avoid hammering a still-throttled API.
-      if (isThrottleError(message)) {
+      if (isThrottleError(err)) {
         stopSubmitting = true;
       }
     }
@@ -432,7 +432,7 @@ async function retryWithBackoff<T>(
       // Throttle errors: the SDK already exhausted its own retry budget with
       // proper Retry-After backoff. Don't layer another retry loop on top —
       // that would ignore the server's backoff signal and hammer the API.
-      if (isThrottleError(message)) {
+      if (isThrottleError(err)) {
         onThrottle?.('');
         throw err;
       }
@@ -451,12 +451,25 @@ async function retryWithBackoff<T>(
 }
 
 /**
- * Returns true when the error message indicates the server sent HTTP 429
- * (Too Many Requests / rate limited). The SDK retries 429s transparently;
- * a 429 error thrown from the SDK means all retry attempts were exhausted.
+ * Returns true when an error represents an HTTP 429 (Too Many Requests / rate
+ * limited) response. The SDK retries 429s transparently; a 429 reaching here
+ * means all retry attempts were exhausted.
+ *
+ * Prefers the structured status code the SDK attaches (RateLimitError sets
+ * `statusCode = 429`) and only falls back to a narrow message match. The
+ * message fallback is intentionally strict — it does NOT match "rate limit" or
+ * "throttle" loosely, since those words appear in unrelated errors (e.g. an
+ * authorization message mentioning a rate-limited account) and a false positive
+ * would suppress a real error.
  */
-export function isThrottleError(message: string): boolean {
-  return /429|too many requests|rate.?limit|throttl/i.test(message);
+export function isThrottleError(err: unknown): boolean {
+  if (err && typeof err === 'object') {
+    const code = (err as { statusCode?: unknown; status?: unknown }).statusCode
+      ?? (err as { status?: unknown }).status;
+    if (code === 429) return true;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return /\b429\b|too many requests/i.test(message);
 }
 
 function isQuotaError(message: string): boolean {

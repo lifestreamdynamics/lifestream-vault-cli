@@ -202,8 +202,7 @@ export function createRemotePoller(
         }
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (isThrottleError(message)) {
+      if (isThrottleError(err)) {
         // The SDK already retried the request with Retry-After backoff and
         // exhausted its retry budget. Log a warning rather than invoking
         // onError so the daemon loop does NOT immediately re-poll on top of
