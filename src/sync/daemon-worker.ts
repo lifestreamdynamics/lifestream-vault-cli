@@ -12,7 +12,7 @@ import { loadConfigAsync } from '../config.js';
 import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import type { FSWatcher } from 'chokidar';
 import { scanLocalFiles, scanRemoteFiles, computePushDiff, computePullDiff, executePush, executePull } from './engine.js';
-import { loadSyncState } from './state.js';
+import { loadSyncState, saveSyncState } from './state.js';
 
 interface ManagedSync {
   syncId: string;
@@ -66,8 +66,16 @@ async function start(): Promise<void> {
       log(`Reconciling ${config.id.slice(0, 8)} (${config.mode} mode)...`);
       const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
       const lastState = loadSyncState(config.id);
-      const localFiles = scanLocalFiles(config.localPath, ignorePatterns);
-      const remoteFiles = await scanRemoteFiles(client, config.vaultId, ignorePatterns);
+      const localFiles = scanLocalFiles(config.localPath, ignorePatterns, lastState);
+      const remoteResult = await scanRemoteFiles(
+        client, config.vaultId, ignorePatterns,
+        { remote: lastState.remote ?? {}, remoteListEtag: lastState.remoteListEtag },
+      );
+      const remoteFiles = remoteResult.files;
+      if (remoteResult.listEtag) {
+        lastState.remoteListEtag = remoteResult.listEtag;
+        saveSyncState(lastState);
+      }
 
       let pushed = 0;
       let pulled = 0;

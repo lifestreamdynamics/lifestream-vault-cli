@@ -50,7 +50,7 @@ export function saveSyncState(state: SyncState): void {
     fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
   }
   state.updatedAt = new Date().toISOString();
-  fs.writeFileSync(stateFilePath(state.syncId), JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
+  fs.writeFileSync(stateFilePath(state.syncId), JSON.stringify(state) + '\n', { mode: 0o600 });
 }
 
 /**

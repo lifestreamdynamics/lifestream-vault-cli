@@ -11,7 +11,7 @@ const mockCreateRemotePoller = vi.fn(() => ({ stop: vi.fn() }));
 const mockRemovePid = vi.fn();
 const mockLoadConfig = vi.fn(async () => ({ apiUrl: 'http://localhost', apiKey: 'test-key' }));
 const mockScanLocalFiles = vi.fn(() => ({}));
-const mockScanRemoteFiles = vi.fn(async () => ({}));
+const mockScanRemoteFiles = vi.fn(async () => ({ files: {}, listEtag: '', vaultUnchanged: false }));
 const mockComputePushDiff = vi.fn((): Record<string, unknown> => ({ uploads: [], deletes: [], downloads: [], totalBytes: 0 }));
 const mockComputePullDiff = vi.fn((): Record<string, unknown> => ({ uploads: [], deletes: [], downloads: [], totalBytes: 0 }));
 const mockExecutePush = vi.fn(async (): Promise<Record<string, unknown>> => ({ filesUploaded: 0, filesDownloaded: 0, filesDeleted: 0, bytesTransferred: 0, errors: [] }));
@@ -32,7 +32,7 @@ vi.mock('./engine.js', () => ({
   executePush: mockExecutePush,
   executePull: mockExecutePull,
 }));
-vi.mock('./state.js', () => ({ loadSyncState: mockLoadSyncState }));
+vi.mock('./state.js', () => ({ loadSyncState: mockLoadSyncState, saveSyncState: vi.fn() }));
 vi.mock('@lifestreamdynamics/vault-sdk', () => ({
   LifestreamVaultClient: vi.fn(function() { return {}; }),
 }));
