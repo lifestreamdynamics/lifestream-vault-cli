@@ -5,7 +5,23 @@ import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { CreateHookParams } from '@lifestreamdynamics/vault-sdk';
 import { resolveVaultId } from '../utils/resolve-vault.js';
-import { VAULT_EVENT_TYPES } from '@lifestreamdynamics/vault-shared';
+
+/**
+ * Valid hook trigger events. Unlike webhooks, hooks do NOT accept the `*`
+ * wildcard. Inlined from the internal `@lifestreamdynamics/vault-shared`
+ * package (not published to npm) so the standalone CLI build has no
+ * unpublishable workspace dependency. Keep in sync with `VAULT_EVENT_TYPES` in
+ * packages/shared/src/constants.ts.
+ */
+const VAULT_EVENT_TYPES = [
+  'document.created', 'document.updated', 'document.deleted', 'document.moved', 'document.copied',
+  'directory.created', 'document.overdue', 'document.due-soon',
+  'calendar.event.created', 'calendar.event.updated', 'calendar.event.deleted', 'calendar.event.due',
+  'calendar.event.overdue', 'calendar.event.status_changed',
+  'booking.created', 'booking.confirmed', 'booking.cancelled', 'booking.no_show', 'booking.completed',
+  'booking.reminder', 'booking.rescheduled',
+  'calendar.event.participant.added', 'calendar.event.participant.responded',
+] as const;
 
 export function registerHookCommands(program: Command): void {
   const hooks = program.command('hooks').description('Manage vault event hooks');

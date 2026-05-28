@@ -5,7 +5,23 @@ import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { CreateWebhookParams, UpdateWebhookParams } from '@lifestreamdynamics/vault-sdk';
 import { resolveVaultId } from '../utils/resolve-vault.js';
-import { WEBHOOK_EVENT_TYPES } from '@lifestreamdynamics/vault-shared';
+
+/**
+ * Valid webhook event names, including the `*` wildcard. Inlined from the
+ * internal `@lifestreamdynamics/vault-shared` package (not published to npm) so
+ * the standalone CLI build has no unpublishable workspace dependency. Keep in
+ * sync with `WEBHOOK_EVENT_TYPES` in packages/shared/src/constants.ts.
+ */
+const WEBHOOK_EVENT_TYPES = [
+  '*',
+  'document.created', 'document.updated', 'document.deleted', 'document.moved', 'document.copied',
+  'directory.created', 'document.overdue', 'document.due-soon',
+  'calendar.event.created', 'calendar.event.updated', 'calendar.event.deleted', 'calendar.event.due',
+  'calendar.event.overdue', 'calendar.event.status_changed',
+  'booking.created', 'booking.confirmed', 'booking.cancelled', 'booking.no_show', 'booking.completed',
+  'booking.reminder', 'booking.rescheduled',
+  'calendar.event.participant.added', 'calendar.event.participant.responded',
+] as const;
 
 export function registerWebhookCommands(program: Command): void {
   const webhooks = program.command('webhooks').description('Manage vault webhooks');
