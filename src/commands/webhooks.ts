@@ -8,9 +8,9 @@ import { resolveVaultId } from '../utils/resolve-vault.js';
 
 /**
  * Valid webhook event names, including the `*` wildcard. Inlined from the
- * internal `@lifestreamdynamics/vault-shared` package (not published to npm) so
- * the standalone CLI build has no unpublishable workspace dependency. Keep in
- * sync with `WEBHOOK_EVENT_TYPES` in packages/shared/src/constants.ts.
+ * internal vault-shared package (not published to npm) so the standalone CLI
+ * build has no unpublishable workspace dependency. Keep in sync with
+ * WEBHOOK_EVENT_TYPES in packages/shared/src/constants.ts.
  */
 const WEBHOOK_EVENT_TYPES = [
   '*',

@@ -8,10 +8,9 @@ import { resolveVaultId } from '../utils/resolve-vault.js';
 
 /**
  * Valid hook trigger events. Unlike webhooks, hooks do NOT accept the `*`
- * wildcard. Inlined from the internal `@lifestreamdynamics/vault-shared`
- * package (not published to npm) so the standalone CLI build has no
- * unpublishable workspace dependency. Keep in sync with `VAULT_EVENT_TYPES` in
- * packages/shared/src/constants.ts.
+ * wildcard. Inlined from the internal vault-shared package (not published to
+ * npm) so the standalone CLI build has no unpublishable workspace dependency.
+ * Keep in sync with VAULT_EVENT_TYPES in packages/shared/src/constants.ts.
  */
 const VAULT_EVENT_TYPES = [
   'document.created', 'document.updated', 'document.deleted', 'document.moved', 'document.copied',
