@@ -5,6 +5,7 @@ import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { CreateHookParams } from '@lifestreamdynamics/vault-sdk';
 import { resolveVaultId } from '../utils/resolve-vault.js';
+import { VAULT_EVENT_TYPES } from '@lifestreamdynamics/vault-shared';
 
 export function registerHookCommands(program: Command): void {
   const hooks = program.command('hooks').description('Manage vault event hooks');
@@ -56,17 +57,35 @@ export function registerHookCommands(program: Command): void {
     .description('Create a new hook')
     .argument('<vaultId>', 'Vault ID or slug')
     .argument('<name>', 'Hook name')
-    .requiredOption('--trigger <event>', 'Trigger event (document.created, document.updated, document.deleted, document.moved, document.copied)')
+    .requiredOption('--trigger <event>', 'Trigger event (e.g. document.created, calendar.event.created, booking.confirmed)')
     .requiredOption('--action <type>', 'Action type (webhook, ai_prompt, document_operation, auto_calendar_event, auto_booking_process)')
     .requiredOption('--config <json>', 'Action configuration as JSON')
     .option('--filter <json>', 'Trigger filter as JSON')
     .addHelpText('after', `
-VALID TRIGGER EVENTS
-  document.created        Document was created
-  document.updated        Document content was updated
-  document.deleted        Document was deleted
-  document.moved          Document was moved or renamed
-  document.copied         Document was copied
+VALID TRIGGER EVENTS (no wildcard — hooks fire on a single event type)
+  document.created                    Document was created
+  document.updated                    Document content was updated
+  document.deleted                    Document was deleted
+  document.moved                      Document was moved or renamed
+  document.copied                     Document was copied
+  directory.created                   Directory was created
+  document.overdue                    Document is past its due date
+  document.due-soon                   Document is due soon
+  calendar.event.created              Calendar event was created
+  calendar.event.updated              Calendar event was updated
+  calendar.event.deleted              Calendar event was deleted
+  calendar.event.due                  Calendar event is due
+  calendar.event.overdue              Calendar event is overdue
+  calendar.event.status_changed       Calendar event status changed
+  booking.created                     Booking was created
+  booking.confirmed                   Booking was confirmed
+  booking.cancelled                   Booking was cancelled
+  booking.no_show                     Booking was marked no-show
+  booking.completed                   Booking was completed
+  booking.reminder                    Booking reminder sent
+  booking.rescheduled                 Booking was rescheduled
+  calendar.event.participant.added    Participant added to event
+  calendar.event.participant.responded Participant responded to event
 
 VALID ACTION TYPES
   webhook                 Send an HTTP notification to a URL
@@ -78,6 +97,7 @@ VALID ACTION TYPES
 EXAMPLES
   lsvault hooks create <vaultId> my-hook --trigger document.created --action webhook --config '{"url":"https://example.com/hook"}'
   lsvault hooks create <vaultId> ai-tag --trigger document.created --action ai_prompt --config '{"prompt":"Suggest tags"}'
+  lsvault hooks create <vaultId> booking-hook --trigger booking.confirmed --action webhook --config '{"url":"https://example.com/hook"}'
   lsvault hooks create <vaultId> move-docs --trigger document.created --action document_operation --config '{"operation":"move","targetPath":"inbox/"}'`))
     .action(async (vaultId: string, name: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
@@ -103,14 +123,14 @@ EXAMPLES
         }
       }
 
-      const VALID_TRIGGERS = ['document.created', 'document.updated', 'document.deleted', 'document.moved', 'document.copied'];
+      const VALID_TRIGGERS: readonly string[] = VAULT_EVENT_TYPES;
       const VALID_ACTIONS = ['webhook', 'ai_prompt', 'document_operation', 'auto_calendar_event', 'auto_booking_process'];
 
       const trigger = String(_opts.trigger);
       const action = String(_opts.action);
 
       if (!VALID_TRIGGERS.includes(trigger)) {
-        out.error(`Invalid trigger "${trigger}". Valid values: document.created, document.updated, document.deleted, document.moved, document.copied`);
+        out.error(`Invalid trigger "${trigger}". Valid values: ${VALID_TRIGGERS.join(', ')}`);
         process.exitCode = 1;
         return;
       }

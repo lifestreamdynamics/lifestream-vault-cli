@@ -179,6 +179,60 @@ describe('hooks commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    it('should reject * as a hook trigger (wildcards not supported for hooks)', async () => {
+      await program.parseAsync([
+        'node', 'cli', 'hooks', 'create', 'v1', 'WildcardHook',
+        '--trigger', '*',
+        '--action', 'webhook',
+        '--config', '{}',
+      ]);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Invalid trigger "*"');
+      expect(sdkMock.hooks.create).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should accept calendar.event.created as a hook trigger', async () => {
+      sdkMock.hooks.create.mockResolvedValue({
+        id: 'h3', vaultId: 'v1', name: 'Cal Hook', triggerEvent: 'calendar.event.created',
+        triggerFilter: null, actionType: 'webhook', actionConfig: { url: 'https://example.com' },
+        isActive: true, createdAt: '2024-01-01', updatedAt: '2024-01-01',
+      });
+
+      await program.parseAsync([
+        'node', 'cli', 'hooks', 'create', 'v1', 'Cal Hook',
+        '--trigger', 'calendar.event.created',
+        '--action', 'webhook',
+        '--config', '{"url":"https://example.com"}',
+      ]);
+
+      expect(sdkMock.hooks.create).toHaveBeenCalledWith('v1', expect.objectContaining({
+        triggerEvent: 'calendar.event.created',
+      }));
+      expect(process.exitCode).not.toBe(1);
+    });
+
+    it('should accept booking.confirmed as a hook trigger', async () => {
+      sdkMock.hooks.create.mockResolvedValue({
+        id: 'h4', vaultId: 'v1', name: 'Booking Hook', triggerEvent: 'booking.confirmed',
+        triggerFilter: null, actionType: 'webhook', actionConfig: { url: 'https://example.com' },
+        isActive: true, createdAt: '2024-01-01', updatedAt: '2024-01-01',
+      });
+
+      await program.parseAsync([
+        'node', 'cli', 'hooks', 'create', 'v1', 'Booking Hook',
+        '--trigger', 'booking.confirmed',
+        '--action', 'webhook',
+        '--config', '{"url":"https://example.com"}',
+      ]);
+
+      expect(sdkMock.hooks.create).toHaveBeenCalledWith('v1', expect.objectContaining({
+        triggerEvent: 'booking.confirmed',
+      }));
+      expect(process.exitCode).not.toBe(1);
+    });
+
     it('should show error for invalid action', async () => {
       await program.parseAsync([
         'node', 'cli', 'hooks', 'create', 'v1', 'Bad',
