@@ -1,6 +1,6 @@
 {
   "name": "@lifestreamdynamics/vault-cli",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Command-line interface for Lifestream Vault",
   "engines": {
     "node": ">=22"
