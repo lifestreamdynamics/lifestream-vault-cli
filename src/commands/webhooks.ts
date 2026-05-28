@@ -5,6 +5,7 @@ import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { CreateWebhookParams, UpdateWebhookParams } from '@lifestreamdynamics/vault-sdk';
 import { resolveVaultId } from '../utils/resolve-vault.js';
+import { WEBHOOK_EVENT_TYPES } from '@lifestreamdynamics/vault-shared';
 
 export function registerWebhookCommands(program: Command): void {
   const webhooks = program.command('webhooks').description('Manage vault webhooks');
@@ -53,19 +54,38 @@ export function registerWebhookCommands(program: Command): void {
     .description('Create a new webhook')
     .argument('<vaultId>', 'Vault ID or slug')
     .argument('<url>', 'Webhook endpoint URL')
-    .option('--events <events>', 'Comma-separated events (document.created, document.updated, document.deleted, document.moved, document.copied, or * for all)', 'document.created,document.updated,document.deleted')
+    .option('--events <events>', 'Comma-separated events (document.created, calendar.event.created, booking.created, *, etc.)', 'document.created,document.updated,document.deleted')
     .addHelpText('after', `
 VALID EVENT NAMES
-  document.created   Document was created
-  document.updated   Document content was updated
-  document.deleted   Document was deleted
-  document.moved     Document was moved or renamed
-  document.copied    Document was copied
-  *                  All events
+  document.created                    Document was created
+  document.updated                    Document content was updated
+  document.deleted                    Document was deleted
+  document.moved                      Document was moved or renamed
+  document.copied                     Document was copied
+  directory.created                   Directory was created
+  document.overdue                    Document is past its due date
+  document.due-soon                   Document is due soon
+  calendar.event.created              Calendar event was created
+  calendar.event.updated              Calendar event was updated
+  calendar.event.deleted              Calendar event was deleted
+  calendar.event.due                  Calendar event is due
+  calendar.event.overdue              Calendar event is overdue
+  calendar.event.status_changed       Calendar event status changed
+  booking.created                     Booking was created
+  booking.confirmed                   Booking was confirmed
+  booking.cancelled                   Booking was cancelled
+  booking.no_show                     Booking was marked no-show
+  booking.completed                   Booking was completed
+  booking.reminder                    Booking reminder sent
+  booking.rescheduled                 Booking was rescheduled
+  calendar.event.participant.added    Participant added to event
+  calendar.event.participant.responded Participant responded to event
+  *                                   All events
 
 EXAMPLES
   lsvault webhooks create <vaultId> https://example.com/hook
   lsvault webhooks create <vaultId> https://example.com/hook --events "document.created,document.deleted"
+  lsvault webhooks create <vaultId> https://example.com/hook --events "calendar.event.created,booking.created"
   lsvault webhooks create <vaultId> https://example.com/hook --events "*"`))
     .action(async (vaultId: string, url: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
@@ -77,7 +97,7 @@ EXAMPLES
         return;
       }
 
-      const VALID_EVENTS = ['document.created', 'document.updated', 'document.deleted', 'document.moved', 'document.copied', '*'];
+      const VALID_EVENTS: readonly string[] = WEBHOOK_EVENT_TYPES;
       const events = String(_opts.events || 'document.created,document.updated,document.deleted').split(',').map((e: string) => e.trim());
       const invalid = events.filter(e => !VALID_EVENTS.includes(e));
       if (invalid.length > 0) {

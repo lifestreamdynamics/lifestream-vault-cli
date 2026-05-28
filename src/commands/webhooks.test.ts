@@ -145,6 +145,26 @@ describe('webhooks commands', () => {
       });
     });
 
+    it('should accept calendar.event.created as a valid event', async () => {
+      sdkMock.webhooks.create.mockResolvedValue({
+        id: 'wh4', vaultId: 'v1', url: 'https://example.com/hook',
+        events: ['calendar.event.created'], isActive: true,
+        createdAt: '2024-01-01', updatedAt: '2024-01-01',
+        secret: 'whsec_cal',
+      });
+
+      await program.parseAsync([
+        'node', 'cli', 'webhooks', 'create', 'v1', 'https://example.com/hook',
+        '--events', 'calendar.event.created',
+      ]);
+
+      expect(sdkMock.webhooks.create).toHaveBeenCalledWith('v1', {
+        url: 'https://example.com/hook',
+        events: ['calendar.event.created'],
+      });
+      expect(process.exitCode).not.toBe(1);
+    });
+
     it('should show error for invalid URL scheme', async () => {
       await program.parseAsync([
         'node', 'cli', 'webhooks', 'create', 'v1', 'ftp://example.com/hook',
