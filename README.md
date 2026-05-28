@@ -158,7 +158,7 @@ lsvault auth login --api-key lsv_k_your_api_key_here
 
 **Create an API Key:**
 ```bash
-lsvault keys create --name "CI/CD Pipeline" --scopes vaults:read,documents:read
+lsvault keys create "CI/CD Pipeline" --scopes read,write
 ```
 
 ### Email/Password Authentication
@@ -313,46 +313,52 @@ lsvault search "meeting" --tags work,urgent --limit 10
 | Command | Description |
 |---------|-------------|
 | `lsvault teams list` | List all teams |
-| `lsvault teams create` | Create a new team |
+| `lsvault teams create <name>` | Create a new team |
 | `lsvault teams get <teamId>` | Get team details |
 | `lsvault teams update <teamId>` | Update team settings |
 | `lsvault teams delete <teamId>` | Delete a team |
-| `lsvault teams members <teamId>` | List team members |
-| `lsvault teams invite <teamId>` | Invite user to team |
-| `lsvault teams remove <teamId> <userId>` | Remove member from team |
+| `lsvault teams members list <teamId>` | List team members |
+| `lsvault teams members update <teamId> <userId> --role <role>` | Update a member's role (admin/editor/viewer) |
+| `lsvault teams members remove <teamId> <userId>` | Remove member from team |
+| `lsvault teams invitations create <teamId> <email> --role <role>` | Invite a user to the team |
+| `lsvault teams invitations list <teamId>` | List pending invitations |
+| `lsvault teams invitations revoke <teamId> <invitationId>` | Revoke an invitation |
+| `lsvault teams vaults list <teamId>` | List shared team vaults |
+| `lsvault teams vaults create <teamId> <name>` | Create a shared team vault |
 
 **Example:**
 ```bash
 # Create a team
-lsvault teams create --name "Engineering" --description "Dev team workspace"
+lsvault teams create "Engineering" --description "Dev team workspace"
 
 # Invite a member
-lsvault teams invite team_abc123 --email engineer@example.com --role member
+lsvault teams invitations create team_abc123 engineer@example.com --role editor
 
 # List members
-lsvault teams members team_abc123
+lsvault teams members list team_abc123
 ```
 
 ### Sharing & Publishing
 
 | Command | Description |
 |---------|-------------|
-| `lsvault shares list` | List all share links |
+| `lsvault shares list <vaultId> <path>` | List share links for a document |
 | `lsvault shares create <vaultId> <path>` | Create a share link for a document |
-| `lsvault shares revoke <shareId>` | Revoke a share link |
-| `lsvault publish list` | List published documents |
-| `lsvault publish create <vaultId> <path>` | Publish a document publicly |
-| `lsvault publish unpublish <publishId>` | Unpublish a document |
+| `lsvault shares revoke <vaultId> <shareId>` | Revoke a share link |
+| `lsvault publish list <vaultId>` | List published documents in a vault |
+| `lsvault publish create <vaultId> <path> --slug <slug>` | Publish a document publicly |
+| `lsvault publish delete <vaultId> <path>` | Unpublish a document |
 
 **Example:**
 ```bash
-# Create a password-protected share link
-lsvault shares create vault_abc123 /reports/Q1.md \
-  --password secret123 \
-  --expires-in 7d
+# Create a password-protected share link (prompts for the password)
+lsvault shares create vault_abc123 reports/Q1.md \
+  --permission view \
+  --protect-with-password \
+  --expires 2026-12-31
 
 # Publish a document
-lsvault publish create vault_abc123 /blog/post.md --slug my-first-post
+lsvault publish create vault_abc123 blog/post.md --slug my-first-post
 ```
 
 ### Publish Vault Commands
@@ -386,26 +392,25 @@ lsvault publish-vault unpublish vault_abc123
 | Command | Description |
 |---------|-------------|
 | `lsvault hooks list <vaultId>` | List vault hooks |
-| `lsvault hooks create <vaultId>` | Create a new hook |
-| `lsvault hooks update <hookId>` | Update hook configuration |
-| `lsvault hooks delete <hookId>` | Delete a hook |
-| `lsvault webhooks list` | List all webhooks |
-| `lsvault webhooks create` | Create a new webhook |
-| `lsvault webhooks update <webhookId>` | Update webhook configuration |
-| `lsvault webhooks delete <webhookId>` | Delete a webhook |
+| `lsvault hooks create <vaultId> <name>` | Create a new hook |
+| `lsvault hooks delete <vaultId> <hookId>` | Delete a hook |
+| `lsvault hooks executions <vaultId> <hookId>` | View hook execution history |
+| `lsvault webhooks list <vaultId>` | List vault webhooks |
+| `lsvault webhooks create <vaultId> <url>` | Create a new webhook |
+| `lsvault webhooks update <vaultId> <webhookId>` | Update webhook configuration |
+| `lsvault webhooks delete <vaultId> <webhookId>` | Delete a webhook |
 
 **Example:**
 ```bash
-# Create an auto-tag hook
-lsvault hooks create vault_abc123 \
-  --type auto-tag \
-  --config '{"patterns":{"meeting":"#meeting"}}'
+# Create a hook that runs an AI prompt on document creation
+lsvault hooks create vault_abc123 "Auto-tag" \
+  --trigger document.created \
+  --action ai_prompt \
+  --config '{"prompt":"Suggest tags"}'
 
 # Create a webhook for document updates
-lsvault webhooks create \
-  --url https://api.example.com/webhook \
-  --events document.created,document.updated \
-  --secret webhook_secret_key
+lsvault webhooks create vault_abc123 https://api.example.com/webhook \
+  --events document.created,document.updated
 ```
 
 ### Calendar
@@ -414,10 +419,11 @@ lsvault webhooks create \
 |---------|-------------|
 | `lsvault calendar view <vaultId>` | Browse calendar views and activity heatmap |
 | `lsvault calendar due <vaultId>` | List documents by due date |
+| `lsvault calendar set-due <vaultId> <path> --date <date>` | Set or clear a document due date (pass `--date clear` to clear) |
 | `lsvault calendar events <vaultId>` | List calendar events |
-| `lsvault calendar create-event <vaultId>` | Create a calendar event |
-| `lsvault calendar update-event <vaultId> <eventId>` | Update a calendar event |
-| `lsvault calendar delete-event <vaultId> <eventId>` | Delete a calendar event |
+| `lsvault calendar event create <vaultId> <title>` | Create a calendar event |
+| `lsvault calendar event update <vaultId> <eventId>` | Update a calendar event |
+| `lsvault calendar event delete <vaultId> <eventId>` | Delete a calendar event |
 
 ### Booking Commands
 
@@ -638,13 +644,13 @@ Manage multiple configurations with profiles:
 # List profiles
 lsvault config profiles
 
-# Create a profile
-lsvault config create-profile production --api-url https://vault.lifestreamdynamics.com
+# Create a profile by setting a value in it (profiles are created on first use)
+lsvault config set apiUrl https://vault.lifestreamdynamics.com --profile production
 
 # Switch profiles
 lsvault config use production
 
-# Set config values
+# Set config values (in the active profile)
 lsvault config set apiUrl https://vault.lifestreamdynamics.com
 
 # Get config values
@@ -759,12 +765,13 @@ lsvault sync watch sync_xyz789
 lsvault search "quarterly report" --vault vault_abc123 -o json
 
 # Create a share link for the found document
-lsvault shares create vault_abc123 /reports/Q4-2025.md \
-  --password secure123 \
-  --expires-in 30d
+lsvault shares create vault_abc123 reports/Q4-2025.md \
+  --permission view \
+  --protect-with-password \
+  --expires 2026-01-31
 
 # Publish a document publicly
-lsvault publish create vault_abc123 /blog/announcement.md \
+lsvault publish create vault_abc123 blog/announcement.md \
   --slug new-features-2026
 ```
 
@@ -772,30 +779,27 @@ lsvault publish create vault_abc123 /blog/announcement.md \
 
 ```bash
 # Create a team
-lsvault teams create --name "Product Team" --description "Product docs"
+lsvault teams create "Product Team" --description "Product docs"
 
 # Create a vault
 lsvault vaults create "Product Docs" --description "Product documentation"
 
 # Invite team members
-lsvault teams invite team_abc123 --email pm@example.com --role admin
-lsvault teams invite team_abc123 --email dev@example.com --role member
+lsvault teams invitations create team_abc123 pm@example.com --role admin
+lsvault teams invitations create team_abc123 dev@example.com --role editor
 
-# Configure webhook for team updates
-lsvault webhooks create \
-  --url https://slack.example.com/webhook \
-  --events document.created,document.updated \
-  --filter '{"vaultId":"vault_xyz789"}'
+# Configure a webhook for vault updates
+lsvault webhooks create vault_xyz789 https://slack.example.com/webhook \
+  --events document.created,document.updated
 ```
 
 ### Automation with API Keys
 
 ```bash
 # Create a read-only API key for monitoring
-lsvault keys create \
-  --name "Monitoring Script" \
-  --scopes vaults:read,documents:read \
-  --expires-in 90d
+lsvault keys create "Monitoring Script" \
+  --scopes read \
+  --expires 2026-12-31
 
 # Use API key in scripts
 export LSVAULT_API_KEY=lsv_k_generated_key
