@@ -22,7 +22,16 @@ describe('sync ignore', () => {
       expect(DEFAULT_IGNORE_PATTERNS).toContain('node_modules/');
       expect(DEFAULT_IGNORE_PATTERNS).toContain('.DS_Store');
       expect(DEFAULT_IGNORE_PATTERNS).toContain('*.tmp');
+      expect(DEFAULT_IGNORE_PATTERNS).toContain('*.tmp.*');
       expect(DEFAULT_IGNORE_PATTERNS).toContain('.lsvault/');
+    });
+
+    it('*.tmp.* pattern causes shouldIgnore to return true for hex-suffixed temp files', () => {
+      // Covers the 8-hex-char randomised temp files from atomicWriteFileSync.
+      expect(shouldIgnore('a.md.tmp.deadbeef', DEFAULT_IGNORE_PATTERNS)).toBe(true);
+      expect(shouldIgnore('sub/notes.md.tmp.a1b2c3d4', DEFAULT_IGNORE_PATTERNS)).toBe(true);
+      // Regular .md files must not be accidentally matched.
+      expect(shouldIgnore('notes.md', DEFAULT_IGNORE_PATTERNS)).toBe(false);
     });
   });
 

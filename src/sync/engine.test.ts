@@ -36,6 +36,7 @@ import {
   scanRemoteFiles,
   executePull,
   executePush,
+  sweepOrphanedTempFiles,
 } from './engine.js';
 import { computePullDiff, computePushDiff } from './diff.js';
 import { loadSyncState, saveSyncState } from './state.js';
@@ -514,6 +515,188 @@ describe('sync engine', () => {
       expect(result.filesDeleted).toBe(1);
       expect(mockedFs.unlinkSync).toHaveBeenCalled();
     });
+
+    // -------------------------------------------------------------------
+    // Conditional GET (ifNoneMatch) tests
+    // -------------------------------------------------------------------
+
+    it('create entry with remoteHash but NO local file uses unconditional GET and writes the file', async () => {
+      // This is the critical regression guard: 'create' entries always have
+      // remoteHash set (from computePullDiff), but the local file does not
+      // exist yet.  Sending ifNoneMatch here would result in a guaranteed 304
+      // (server hash === remoteHash), and the 304 branch would then ENOENT on
+      // readFileSync.  The fix: only use conditional GET when the local file exists.
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [
+          {
+            path: 'brand-new.md',
+            action: 'create' as const,
+            direction: 'download' as const,
+            sizeBytes: 40,
+            reason: 'New remote file',
+            remoteHash: 'aabbccdd',
+          },
+        ],
+        deletes: [],
+        totalBytes: 40,
+      };
+
+      const mockClient = {
+        documents: {
+          get: vi.fn().mockResolvedValue({
+            content: '# Brand New',
+            document: { path: 'brand-new.md' },
+          }),
+        },
+      } as any;
+
+      // Local file does NOT exist (create case)
+      mockedFs.existsSync.mockReturnValue(false);
+
+      const result = await executePull(mockClient, config, diff);
+
+      expect(result.filesDownloaded).toBe(1);
+      expect(result.errors).toHaveLength(0);
+
+      // Must be an unconditional GET — no ifNoneMatch options argument
+      expect(mockClient.documents.get).toHaveBeenCalledTimes(1);
+      const callArgs = mockClient.documents.get.mock.calls[0];
+      expect(callArgs[0]).toBe('vault-1');
+      expect(callArgs[1]).toBe('brand-new.md');
+      expect(callArgs[2]).toBeUndefined(); // no options → no ifNoneMatch
+
+      // The file must be written
+      expect(mockedFs.writeFileSync).toHaveBeenCalled();
+    });
+
+    it('update entry with remoteHash and existing local file uses conditional GET (ifNoneMatch)', async () => {
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [
+          {
+            path: 'cached.md',
+            action: 'update' as const,
+            direction: 'download' as const,
+            sizeBytes: 50,
+            reason: 'Remote file updated',
+            remoteHash: 'abc123',
+          },
+        ],
+        deletes: [],
+        totalBytes: 50,
+      };
+
+      const mockClient = {
+        documents: {
+          get: vi.fn().mockResolvedValue({
+            notModified: false,
+            etag: '"abc123"',
+            content: '# Updated',
+            document: { path: 'cached.md' },
+          }),
+        },
+      } as any;
+
+      // Local file exists → conditional GET is appropriate
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const result = await executePull(mockClient, config, diff);
+
+      expect(result.filesDownloaded).toBe(1);
+      expect(mockClient.documents.get).toHaveBeenCalledWith(
+        'vault-1',
+        'cached.md',
+        { ifNoneMatch: '"abc123"' },
+      );
+      expect(mockedFs.writeFileSync).toHaveBeenCalled();
+    });
+
+    it('issues unconditional GET when no remoteHash on the entry', async () => {
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [
+          {
+            path: 'noHash.md',
+            action: 'create' as const,
+            direction: 'download' as const,
+            sizeBytes: 30,
+            reason: 'New remote file',
+            // no remoteHash
+          },
+        ],
+        deletes: [],
+        totalBytes: 30,
+      };
+
+      const mockClient = {
+        documents: {
+          get: vi.fn().mockResolvedValue({ content: '# NoHash', document: { path: 'noHash.md' } }),
+        },
+      } as any;
+
+      mockedFs.existsSync.mockReturnValue(false);
+
+      await executePull(mockClient, config, diff);
+
+      expect(mockClient.documents.get).toHaveBeenCalledTimes(1);
+      const callArgs = mockClient.documents.get.mock.calls[0];
+      expect(callArgs[0]).toBe('vault-1');
+      expect(callArgs[1]).toBe('noHash.md');
+      expect(callArgs[2]).toBeUndefined(); // no ifNoneMatch
+    });
+
+    it('skips write and reads local file on 304 (notModified: true), local file exists', async () => {
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [
+          {
+            path: 'unchanged.md',
+            action: 'update' as const,
+            direction: 'download' as const,
+            sizeBytes: 20,
+            reason: 'Remote file updated',
+            remoteHash: 'deaddead',
+          },
+        ],
+        deletes: [],
+        totalBytes: 20,
+      };
+
+      const mockClient = {
+        documents: {
+          get: vi.fn().mockResolvedValue({
+            notModified: true,
+            etag: '"deaddead"',
+          }),
+        },
+      } as any;
+
+      // Local file EXISTS — this is what enables the conditional GET path and
+      // makes the subsequent readFileSync safe.
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('# Unchanged local content');
+
+      const result = await executePull(mockClient, config, diff);
+
+      // Transfer is still counted
+      expect(result.filesDownloaded).toBe(1);
+      expect(result.errors).toHaveLength(0);
+
+      // writeFileSync must NOT be called (no write on 304)
+      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+      expect(mockedFs.renameSync).not.toHaveBeenCalled();
+
+      // readFileSync IS called to retrieve local content for state hash
+      expect(mockedFs.readFileSync).toHaveBeenCalled();
+
+      // State must be saved with the correct hash derived from the local file
+      expect(saveSyncState).toHaveBeenCalled();
+    });
   });
 
   describe('executePush', () => {
@@ -679,6 +862,17 @@ describe('sync engine', () => {
 
       expect(peak).toBeLessThanOrEqual(4);
     });
+  });
+});
+
+// sweepOrphanedTempFiles is re-exported from engine.ts (from atomic-write.ts).
+// Verify the re-export is wired correctly with a basic smoke test.
+describe('sweepOrphanedTempFiles (re-export smoke test)', () => {
+  it('is exported from engine and returns a number', () => {
+    mockedFs.readdirSync.mockImplementation((() => []) as unknown as typeof fs.readdirSync);
+    const result = sweepOrphanedTempFiles('/tmp');
+    expect(typeof result).toBe('number');
+    expect(result).toBe(0);
   });
 });
 

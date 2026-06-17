@@ -3,13 +3,15 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
-import type { LifestreamVaultClient, SyncListKnownState } from '@lifestreamdynamics/vault-sdk';
+import type { LifestreamVaultClient, SyncListKnownState, DocumentGetResult, DocumentWithContent } from '@lifestreamdynamics/vault-sdk';
 import type { SyncConfig, SyncState, FileState } from './types.js';
 import { loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from './state.js';
 import { updateLastSync } from './config.js';
 import { resolveIgnorePatterns, shouldIgnore } from './ignore.js';
 import { computePullDiff, computePushDiff, type SyncDiff, type SyncDiffEntry } from './diff.js';
+import { atomicWriteFileSync, sweepOrphanedTempFiles } from './atomic-write.js';
+
+export { sweepOrphanedTempFiles };
 
 export interface SyncProgress {
   phase: 'scanning' | 'computing' | 'transferring' | 'complete';
@@ -156,16 +158,6 @@ export async function scanRemoteFiles(
   }
 
   return { files, listEtag: sync.listEtag, vaultUnchanged: false };
-}
-
-/**
- * Write a file atomically using a temp file + rename.
- * Prevents partial reads if the process is interrupted mid-write.
- */
-function atomicWriteFileSync(targetPath: string, content: string, encoding: BufferEncoding = 'utf-8'): void {
-  const tmpFile = targetPath + '.tmp.' + randomBytes(4).toString('hex');
-  fs.writeFileSync(tmpFile, content, encoding);
-  fs.renameSync(tmpFile, targetPath);
 }
 
 /**
@@ -352,12 +344,35 @@ export async function executePull(
     deletes: diff.deletes,
     transferCounterKey: 'filesDownloaded',
     async transferFile(entry, cfg, throttleCallback) {
-      const { content } = await retryWithBackoff(() =>
-        client.documents.get(cfg.vaultId, entry.path),
-        throttleCallback ? () => throttleCallback(entry.path) : undefined,
-      );
       const localFile = path.join(cfg.localPath, entry.path);
       const localDir = path.dirname(localFile);
+
+      // Only use a conditional GET when (a) we have the remote hash AND (b)
+      // the local file already exists.  For 'create' entries the local file
+      // does not exist yet — the server will always 304 (our remoteHash IS the
+      // server's current hash), which would send the 304 branch into a
+      // readFileSync on a non-existent path (ENOENT).  Guarding on existsSync
+      // also makes the readFileSync in the 304 branch provably safe.
+      const useConditional = entry.remoteHash !== undefined && fs.existsSync(localFile);
+
+      const result = await retryWithBackoff<DocumentGetResult | DocumentWithContent>(
+        () => useConditional
+          ? client.documents.get(cfg.vaultId, entry.path, { ifNoneMatch: `"${entry.remoteHash}"` })
+          : client.documents.get(cfg.vaultId, entry.path),
+        throttleCallback ? () => throttleCallback(entry.path) : undefined,
+      );
+
+      // 304 Not Modified — local already has the right content; skip the write.
+      // Safe: only reached when useConditional === true, which requires the
+      // local file to exist.
+      if ('notModified' in result && result.notModified) {
+        const localContent = fs.readFileSync(localFile, 'utf-8');
+        return localContent;
+      }
+
+      // 200 response — result has `content` (handle both shapes of the union).
+      const content = (result as { content: string }).content;
+
       if (!fs.existsSync(localDir)) {
         fs.mkdirSync(localDir, { recursive: true });
       }
