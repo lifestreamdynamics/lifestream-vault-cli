@@ -13,6 +13,7 @@ export const DEFAULT_IGNORE_PATTERNS = [
   '.hg/',
   'node_modules/',
   '*.tmp',
+  '*.tmp.*',
   '.DS_Store',
   'Thumbs.db',
   '.lsvault/',

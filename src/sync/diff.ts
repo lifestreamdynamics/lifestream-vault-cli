@@ -18,6 +18,12 @@ export interface SyncDiffEntry {
   sizeBytes: number;
   /** Human-readable reason for this change */
   reason: string;
+  /**
+   * SHA-256 hash of the remote file at diff-computation time.
+   * Present on download entries so executePull can issue a conditional GET
+   * (If-None-Match) and skip the write when the local file is already current.
+   */
+  remoteHash?: string;
 }
 
 export interface SyncDiff {
@@ -58,6 +64,7 @@ export function computePullDiff(
           direction: 'download',
           sizeBytes: remote.size,
           reason: 'Deleted locally, exists remotely (pull restores)',
+          remoteHash: remote.hash,
         });
       } else {
         // New remote file
@@ -67,6 +74,7 @@ export function computePullDiff(
           direction: 'download',
           sizeBytes: remote.size,
           reason: 'New remote file',
+          remoteHash: remote.hash,
         });
       }
     } else if (lastRemote && remote.hash !== lastRemote.hash) {
@@ -77,6 +85,7 @@ export function computePullDiff(
         direction: 'download',
         sizeBytes: remote.size,
         reason: 'Remote file updated',
+        remoteHash: remote.hash,
       });
     } else if (!lastRemote && remote.hash !== local.hash) {
       // First sync, files differ — remote wins on pull
@@ -86,6 +95,7 @@ export function computePullDiff(
         direction: 'download',
         sizeBytes: remote.size,
         reason: 'Content differs (first sync, pull prefers remote)',
+        remoteHash: remote.hash,
       });
     }
   }

@@ -23,6 +23,7 @@ import {
   computePullDiff,
   computePushDiff,
   resolveConcurrency,
+  sweepOrphanedTempFiles,
   type ScanRemoteResult,
 } from '../sync/engine.js';
 import { formatDiff } from '../sync/diff.js';
@@ -193,6 +194,12 @@ Sync modes:
         const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const lastState = loadSyncState(config.id);
+
+        // Clean up any orphaned temp files left by a prior interrupted pull.
+        const swept = sweepOrphanedTempFiles(config.localPath);
+        if (swept > 0) {
+          out.debug(`Removed ${swept} orphaned temp file(s) from ${config.localPath}`);
+        }
 
         out.startSpinner('Scanning local files...');
         const localFiles = scanLocalFiles(config.localPath, ignorePatterns, lastState);

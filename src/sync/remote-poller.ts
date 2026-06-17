@@ -11,6 +11,7 @@ import { loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } f
 import { updateLastSync } from './config.js';
 import { resolveConflict, detectConflict, createConflictFile, formatConflictLog } from './conflict.js';
 import { isThrottleError } from './engine.js';
+import { atomicWriteFileSync } from './atomic-write.js';
 
 export interface PollerOptions {
   /** Patterns to ignore */
@@ -136,9 +137,7 @@ export function createRemotePoller(
             if (resolution === 'remote') {
               conflictFile = createConflictFile(config.localPath, change.path, localContent, 'local');
               onLocalWrite?.(change.path);
-              const tmpConflict = localFile + '.tmp';
-              fs.writeFileSync(tmpConflict, content, 'utf-8');
-              fs.renameSync(tmpConflict, localFile);
+              atomicWriteFileSync(localFile, content, 'utf-8');
               log(`Conflict: ${change.path} — used remote, saved local as ${conflictFile}`);
             } else {
               conflictFile = createConflictFile(config.localPath, change.path, content, 'remote');
@@ -164,9 +163,7 @@ export function createRemotePoller(
           fs.mkdirSync(dir, { recursive: true });
         }
         onLocalWrite?.(change.path);
-        const tmpFile = localFile + '.tmp';
-        fs.writeFileSync(tmpFile, content, 'utf-8');
-        fs.renameSync(tmpFile, localFile);
+        atomicWriteFileSync(localFile, content, 'utf-8');
         log(`Pulled: ${change.path}`);
         changes++;
 

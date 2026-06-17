@@ -11,7 +11,7 @@ import { removePid } from './daemon.js';
 import { loadConfigAsync } from '../config.js';
 import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import type { FSWatcher } from 'chokidar';
-import { scanLocalFiles, scanRemoteFiles, computePushDiff, computePullDiff, executePush, executePull } from './engine.js';
+import { scanLocalFiles, scanRemoteFiles, computePushDiff, computePullDiff, executePush, executePull, sweepOrphanedTempFiles } from './engine.js';
 import { loadSyncState, saveSyncState } from './state.js';
 
 interface ManagedSync {
@@ -57,6 +57,18 @@ async function start(): Promise<void> {
   }
 
   log(`Found ${configs.length} auto-sync configuration(s)`);
+
+  // One-time orphan sweep: remove any temp files left by prior interrupted pulls.
+  for (const config of configs) {
+    try {
+      const swept = sweepOrphanedTempFiles(config.localPath);
+      if (swept > 0) {
+        log(`Swept ${swept} orphaned temp file(s) from ${config.localPath}`);
+      }
+    } catch {
+      // Non-fatal — continue startup.
+    }
+  }
 
   const client = await createClient();
 
