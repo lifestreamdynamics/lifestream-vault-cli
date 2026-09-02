@@ -843,6 +843,17 @@ export LSVAULT_API_KEY=lsv_k_generated_key
 lsvault vaults list -o json | jq '.[] | .name'
 ```
 
+## 🗒️ Release Notes
+
+### 1.5.0 (unpublished — bundled with the 2026-09 service alignment)
+
+- **Sync roots fail closed.** Every root now carries a `.lsvault-sync-root` identity marker. Sync configurations created by 1.4.x are untrusted until you verify the directory and run `lsvault sync trust-root <syncId>`; the daemon skips untrusted roots and logs them. This prevents a missing or unmounted directory from being pushed as a mass remote deletion.
+- `lsvault sync init … --create-dir` creates a missing local directory; without the flag a missing directory is now an error.
+- `lsvault sync daemon run` runs the daemon in the foreground for systemd/launchd supervision. Supervise `daemon run`, not `daemon start`.
+- `LSVAULT_HTTP_TIMEOUT_MS` sets the SDK request timeout (default 30000, range 1000–300000).
+- **Team vaults:** only team owners/admins can delete documents. A push from an editor account that deletes files reports the 403 per document and continues; the deletions are not retried. Vaults you are not a member of now return 404 instead of 403.
+- Team vault storage moved server-side to `teams/<teamId>/<slug>`; the CLI is unaffected but a daemon host should upgrade only after running `trust-root` for each sync.
+
 ## 🐛 Troubleshooting
 
 ### Authentication Issues
