@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 vi.mock('node:fs');
+vi.mock('./root-marker.js', () => ({ assertSyncRoot: vi.fn(), SYNC_ROOT_MARKER: '.lsvault-sync-root' }));
 const mockedFs = vi.mocked(fs);
 
 // ---- SDK mock (factory only references literals, no closures) ----
@@ -67,6 +68,7 @@ const mockBuildRemoteFileState = vi.mocked(buildRemoteFileState);
 const mockUpdateLastSync = vi.mocked(updateLastSync);
 
 import { createRemotePoller } from './remote-poller.js';
+import { assertSyncRoot } from './root-marker.js';
 import type { SyncConfig, SyncState } from './types.js';
 
 // ---- helpers ----
@@ -116,6 +118,7 @@ function makeClient() {
 describe('remote-poller', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedFs.lstatSync.mockImplementation(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); });
     // Default fs stubs
     mockedFs.existsSync.mockReturnValue(false);
     mockedFs.mkdirSync.mockImplementation(() => undefined as any);
@@ -133,6 +136,87 @@ describe('remote-poller', () => {
       mtime: updatedAt,
       size: content.length,
     }));
+  });
+
+  it('performs zero network operations when the root is invalid', async () => {
+    vi.mocked(assertSyncRoot).mockImplementationOnce(() => { throw new Error('Sync root marker is missing'); });
+    const client = makeClient();
+    const onError = vi.fn();
+    const poller = createRemotePoller(client as any, makeConfig(), { ignorePatterns: [], intervalMs: 60_000, onError });
+    await new Promise(r => setTimeout(r, 25));
+    poller.stop();
+    expect(client._syncList).not.toHaveBeenCalled();
+    expect(client._get).not.toHaveBeenCalled();
+    expect(client._put).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledOnce();
+  });
+
+  it('uses the shared serializer and marks downloaded files before writing them', async () => {
+    const client = makeClient();
+    client._syncList.mockResolvedValue({
+      vaultUnchanged: false,
+      changes: [{ path: 'notes/pulled.md', contentHash: 'new', fileModifiedAt: '2026-05-01T00:00:00.000Z', kind: 'created' }],
+      removed: [], unchanged: [], listEtag: 'W/"new"',
+    });
+    client._get.mockResolvedValue({ content: 'remote content', document: { updatedAt: '2026-05-01T00:00:00.000Z' } });
+    const serialize = vi.fn(async <T>(operation: () => Promise<T>) => operation());
+    const onLocalWrite = vi.fn();
+
+    const poller = createRemotePoller(client as any, makeConfig(), {
+      ignorePatterns: [], intervalMs: 60_000, serialize, onLocalWrite,
+    });
+    await new Promise(r => setTimeout(r, 30));
+    poller.stop();
+
+    expect(serialize).toHaveBeenCalledOnce();
+    expect(onLocalWrite).toHaveBeenCalledWith('notes/pulled.md');
+  });
+
+  it.each(['../outside.md', '/tmp/absolute.md', 'notes\\windows-escape.md', '.lsvault-sync-root'])(
+    'rejects unsafe remote path %s before download or filesystem mutation',
+    async unsafePath => {
+      const client = makeClient();
+      client._syncList.mockResolvedValue({
+        vaultUnchanged: false,
+        changes: [{ path: unsafePath, contentHash: 'new', fileModifiedAt: '2026-05-01T00:00:00.000Z', kind: 'created' }],
+        removed: [], unchanged: [], listEtag: 'W/"new"',
+      });
+      const onError = vi.fn();
+      const poller = createRemotePoller(client as any, makeConfig(), {
+        ignorePatterns: [], intervalMs: 60_000, onError,
+      });
+      await poller.stop();
+
+      expect(client._get).not.toHaveBeenCalled();
+      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+      expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/Unsafe|reserved/) }));
+    },
+  );
+
+  it('drains a slow download before shutdown completes', async () => {
+    const client = makeClient();
+    client._syncList.mockResolvedValue({
+      vaultUnchanged: false,
+      changes: [{ path: 'notes/slow.md', contentHash: 'new', fileModifiedAt: '2026-05-01T00:00:00.000Z', kind: 'created' }],
+      removed: [], unchanged: [], listEtag: 'W/"new"',
+    });
+    let releaseDownload!: (value: unknown) => void;
+    client._get.mockImplementation(() => new Promise(resolve => { releaseDownload = resolve; }));
+    const poller = createRemotePoller(client as any, makeConfig(), {
+      ignorePatterns: [], intervalMs: 60_000, shutdownTimeoutMs: 1_000,
+    });
+    await vi.waitFor(() => expect(client._get).toHaveBeenCalledOnce());
+
+    let stopped = false;
+    const stopping = poller.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseDownload({ content: '# downloaded', document: { updatedAt: '2026-05-01T00:00:00.000Z' } });
+    await stopping;
+    expect(mockedFs.writeFileSync).toHaveBeenCalled();
+    expect(mockSaveSyncState).toHaveBeenCalled();
   });
 
   // -----------------------------------------------------------------------
@@ -525,6 +609,7 @@ describe('remote-poller', () => {
       },
     });
     mockLoadSyncState.mockReturnValue(state);
+    mockHashFileContent.mockReturnValue('hash-old');
 
     const client = makeClient();
     client._syncList.mockResolvedValue({
@@ -555,5 +640,43 @@ describe('remote-poller', () => {
     const savedState = mockSaveSyncState.mock.calls[0][0] as SyncState;
     expect(savedState.remote['notes/deleted.md']).toBeUndefined();
     expect(savedState.local['notes/deleted.md']).toBeUndefined();
+  });
+
+  it('remote delete concurrent with a local edit preserves the edit under local policy', async () => {
+    const config = makeConfig({ onConflict: 'local' });
+    const state = makeState({
+      remote: {
+        'notes/edited.md': makeRemoteFileState('notes/edited.md', 'hash-old'),
+      },
+      local: {
+        'notes/edited.md': makeRemoteFileState('notes/edited.md', 'hash-old'),
+      },
+    });
+    mockLoadSyncState.mockReturnValue(state);
+    mockHashFileContent.mockImplementation(content => content === '# local edit' ? 'hash-new' : `sha256-${content.slice(0, 16)}`);
+    mockedFs.existsSync.mockReturnValue(true);
+    mockedFs.readFileSync.mockReturnValue('# local edit' as any);
+    mockedFs.statSync.mockReturnValue({ mtime: new Date('2026-06-02T00:00:00.000Z') } as any);
+    const client = makeClient();
+    client._syncList.mockResolvedValue({
+      vaultUnchanged: false,
+      changes: [],
+      removed: ['notes/edited.md'],
+      unchanged: [],
+      listEtag: 'W/"deleted"',
+    });
+    client._put.mockResolvedValue({});
+
+    const poller = createRemotePoller(client as any, config, {
+      ignorePatterns: [], intervalMs: 60_000,
+    });
+    await poller.stop();
+
+    expect(client._put).toHaveBeenCalledWith(config.vaultId, 'notes/edited.md', '# local edit');
+    expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+    const savedState = mockSaveSyncState.mock.calls.at(-1)?.[0] as SyncState;
+    expect(savedState.local['notes/edited.md'].hash).toBe('hash-new');
+    expect(savedState.remote['notes/edited.md']).toBeDefined();
+    expect(savedState.remoteListEtag).toBeUndefined();
   });
 });

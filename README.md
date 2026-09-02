@@ -257,13 +257,15 @@ lsvault docs get vault_abc123 notes/meeting.md --meta
 
 | Command | Description |
 |---------|-------------|
-| `lsvault sync init <vaultId> <localPath>` | Initialize sync configuration |
+| `lsvault sync init <vaultId> <localPath> [--create-dir]` | Initialize sync; optionally create a missing local directory |
+| `lsvault sync trust-root <syncId>` | Verify and mark a legacy sync root before first use |
 | `lsvault sync list` | List all sync configurations |
 | `lsvault sync status <syncId>` | Show sync status and statistics |
 | `lsvault sync pull <syncId>` | Pull remote changes to local |
 | `lsvault sync push <syncId>` | Push local changes to remote |
 | `lsvault sync watch <syncId>` | Watch for changes and auto-sync |
 | `lsvault sync daemon start` | Start background sync daemon |
+| `lsvault sync daemon run` | Run daemon in the foreground for a service supervisor |
 | `lsvault sync daemon stop` | Stop background sync daemon |
 | `lsvault sync daemon status` | Check daemon status |
 | `lsvault sync delete <syncId>` | Remove sync configuration |
@@ -277,6 +279,9 @@ lsvault sync init vault_abc123 ~/my-vault \
   --ignore ".git/**" "*.tmp" \
   --auto-sync \
   --interval 5m
+
+# A missing directory is rejected unless creation is explicit
+lsvault sync init vault_abc123 ~/new-vault --create-dir
 
 # Perform one-time pull
 lsvault sync pull sync_xyz789
@@ -608,6 +613,36 @@ lsvault sync daemon stop
 ```
 
 The daemon runs as a background process and syncs all configured vaults with `autoSync` enabled.
+It reports success only after at least one valid sync is ready. Its default log is
+`~/.lsvault/daemon/daemon.log`.
+
+For systemd, launchd, or another process supervisor, use the foreground entrypoint:
+
+```bash
+lsvault sync daemon run
+```
+
+Configure the supervisor to restart that command on failure. Do not supervise
+`daemon start`, because that command is only the short-lived detached launcher.
+
+### Sync-root safety marker
+
+Each initialized root contains `.lsvault-sync-root`, a hidden JSON identity file.
+The CLI validates its sync ID and vault ID before scanning or making sync API
+requests. If the directory is missing, unmounted, unreadable, unwritable, or has
+the wrong marker, syncing fails closed; it is never treated as an empty vault.
+A correctly marked directory with no Markdown files remains a valid intentional
+empty root.
+
+Configurations created by older CLI versions are intentionally untrusted until
+you verify the path and run:
+
+```bash
+lsvault sync trust-root <syncId>
+```
+
+The daemon skips invalid roots, reports them in the daemon log, and continues
+running any other valid configurations.
 
 ### Ignore Patterns
 
@@ -680,11 +715,13 @@ Sync configurations are stored per vault in `~/.lsvault/sync/`:
 |----------|-------------|---------|
 | `LSVAULT_API_URL` | API server base URL | `https://vault.lifestreamdynamics.com` |
 | `LSVAULT_API_KEY` | API key for authentication | - |
+| `LSVAULT_HTTP_TIMEOUT_MS` | SDK request timeout, 1000-300000 milliseconds | `30000` |
 
 **Example:**
 ```bash
 export LSVAULT_API_URL=https://vault.lifestreamdynamics.com
 export LSVAULT_API_KEY=lsv_k_your_key_here
+export LSVAULT_HTTP_TIMEOUT_MS=60000
 lsvault vaults list
 ```
 

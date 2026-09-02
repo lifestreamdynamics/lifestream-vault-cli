@@ -28,6 +28,8 @@ export interface SyncConfig {
   syncInterval?: string;
   /** Whether auto-sync is enabled */
   autoSync: boolean;
+  /** Version of the local sync-root marker this configuration trusts. */
+  rootMarkerVersion?: 1;
 }
 
 /**

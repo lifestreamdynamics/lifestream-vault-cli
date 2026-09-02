@@ -25,8 +25,8 @@ function makeFileState(overrides: Partial<FileState> = {}): FileState {
 describe('sync conflict', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedFs.lstatSync.mockImplementation(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); });
   });
-
   describe('detectConflict', () => {
     it('should return false when only local changed', () => {
       const local = makeFileState({ hash: 'new-local' });
@@ -129,6 +129,11 @@ describe('sync conflict', () => {
         expect.any(String),
         { recursive: true },
       );
+    });
+
+    it('rejects a conflict path that escapes the sync root', () => {
+      expect(() => createConflictFile('/vault', '../outside.md', 'content', 'local')).toThrow(/Unsafe/);
+      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
     });
   });
 

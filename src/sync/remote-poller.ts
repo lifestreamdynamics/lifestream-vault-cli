@@ -12,6 +12,10 @@ import { updateLastSync } from './config.js';
 import { resolveConflict, detectConflict, createConflictFile, formatConflictLog } from './conflict.js';
 import { isThrottleError } from './engine.js';
 import { atomicWriteFileSync } from './atomic-write.js';
+import { assertSyncRoot } from './root-marker.js';
+import type { SyncOperationSerializer } from './watcher.js';
+import { getHttpTimeoutMs } from '../client.js';
+import { resolveWithinSyncRoot } from './safe-path.js';
 
 export interface PollerOptions {
   /** Patterns to ignore */
@@ -26,6 +30,10 @@ export interface PollerOptions {
   onError?: (error: Error) => void;
   /** Callback when a file is written locally (for watcher loop prevention) */
   onLocalWrite?: (docPath: string) => void;
+  /** Shared watcher/poller operation queue for one sync state file. */
+  serialize?: SyncOperationSerializer;
+  /** Maximum time to wait for an in-flight poll during shutdown. */
+  shutdownTimeoutMs?: number;
 }
 
 /**
@@ -36,7 +44,7 @@ export function createRemotePoller(
   client: LifestreamVaultClient,
   config: SyncConfig,
   options: PollerOptions,
-): { stop: () => void } {
+): { stop: () => Promise<void> } {
   const {
     ignorePatterns,
     intervalMs = 30000,
@@ -44,17 +52,19 @@ export function createRemotePoller(
     onConflictLog,
     onError,
     onLocalWrite,
+    serialize,
+    shutdownTimeoutMs = getHttpTimeoutMs() + 5_000,
   } = options;
 
   const log = (msg: string) => onLog?.(`[poll:${config.id.slice(0, 8)}] ${msg}`);
   let timer: ReturnType<typeof setInterval> | null = null;
   let polling = false;
+  let stopping = false;
+  let activePoll: Promise<void> | null = null;
 
-  async function poll(): Promise<void> {
-    if (polling) return; // Skip if previous poll still in progress
-    polling = true;
-
+  async function pollOnce(): Promise<void> {
     try {
+      assertSyncRoot(config);
       const state = loadSyncState(config.id);
       let changes = 0;
       let stateMutated = false;
@@ -67,6 +77,7 @@ export function createRemotePoller(
         listEtag: state.remoteListEtag,
       };
 
+      assertSyncRoot(config);
       const sync = await client.documents.syncList(config.vaultId, known);
 
       // Steady-state: server confirmed nothing changed — skip all per-doc work.
@@ -79,6 +90,7 @@ export function createRemotePoller(
       // Process added/changed documents.
       for (const change of sync.changes) {
         if (shouldIgnore(change.path, ignorePatterns)) continue;
+        const localFile = resolveWithinSyncRoot(config.localPath, change.path);
 
         const lastRemote = state.remote[change.path];
 
@@ -89,6 +101,7 @@ export function createRemotePoller(
           // Conditional GET — server can still 304 us if our hash is current
           // (rare: syncList classified this as 'changed' but the GET hash matches
           // our last-known hash — possible race between list and get).
+          assertSyncRoot(config);
           const result = await client.documents.get(config.vaultId, change.path, {
             ifNoneMatch: `"${lastRemote.hash}"`,
           });
@@ -105,12 +118,12 @@ export function createRemotePoller(
           remoteHash = hashFileContent(content);
         } else {
           // First-time entry: unconditional GET.
+          assertSyncRoot(config);
           const fetched = await client.documents.get(config.vaultId, change.path);
           content = fetched.content;
           remoteHash = hashFileContent(content);
         }
 
-        const localFile = path.join(config.localPath, change.path);
         const localExists = fs.existsSync(localFile);
 
         if (localExists) {
@@ -135,12 +148,17 @@ export function createRemotePoller(
             let conflictFile: string | null = null;
 
             if (resolution === 'remote') {
+              assertSyncRoot(config);
               conflictFile = createConflictFile(config.localPath, change.path, localContent, 'local');
+              assertSyncRoot(config);
+              const mutationTarget = resolveWithinSyncRoot(config.localPath, change.path);
               onLocalWrite?.(change.path);
-              atomicWriteFileSync(localFile, content, 'utf-8');
+              atomicWriteFileSync(mutationTarget, content, 'utf-8');
               log(`Conflict: ${change.path} — used remote, saved local as ${conflictFile}`);
             } else {
+              assertSyncRoot(config);
               conflictFile = createConflictFile(config.localPath, change.path, content, 'remote');
+              assertSyncRoot(config);
               await client.documents.put(config.vaultId, change.path, localContent);
               log(`Conflict: ${change.path} — used local, saved remote as ${conflictFile}`);
             }
@@ -158,12 +176,14 @@ export function createRemotePoller(
         }
 
         // No conflict — download the file atomically
-        const dir = path.dirname(localFile);
+        assertSyncRoot(config);
+        const mutationTarget = resolveWithinSyncRoot(config.localPath, change.path);
+        const dir = path.dirname(mutationTarget);
         if (!fs.existsSync(dir)) {
           fs.mkdirSync(dir, { recursive: true });
         }
         onLocalWrite?.(change.path);
-        atomicWriteFileSync(localFile, content, 'utf-8');
+        atomicWriteFileSync(mutationTarget, content, 'utf-8');
         log(`Pulled: ${change.path}`);
         changes++;
 
@@ -180,9 +200,65 @@ export function createRemotePoller(
       // Process remote deletions.
       for (const removedPath of sync.removed) {
         if (shouldIgnore(removedPath, ignorePatterns)) continue;
-        const localFile = path.join(config.localPath, removedPath);
+        assertSyncRoot(config);
+        const localFile = resolveWithinSyncRoot(config.localPath, removedPath);
         if (fs.existsSync(localFile)) {
-          fs.unlinkSync(localFile);
+          const localContent = fs.readFileSync(localFile, 'utf-8');
+          const localHash = hashFileContent(localContent);
+          const lastLocal = state.local[removedPath];
+          const localChanged = !lastLocal || localHash !== lastLocal.hash;
+
+          if (localChanged) {
+            // A remote tombstone and a local edit are a real conflict. Treat
+            // deletion as the remote side's latest state and preserve the
+            // losing content before applying the configured policy.
+            const localMtime = fs.statSync(localFile).mtime.toISOString();
+            const localState = {
+              path: removedPath,
+              hash: localHash,
+              mtime: localMtime,
+              size: Buffer.byteLength(localContent),
+            };
+            const remoteDeletionState = {
+              path: removedPath,
+              hash: '',
+              mtime: new Date().toISOString(),
+              size: 0,
+            };
+            const resolution = resolveConflict(config.onConflict, localState, remoteDeletionState);
+            let conflictFile: string | null = null;
+
+            if (resolution === 'local') {
+              assertSyncRoot(config);
+              await client.documents.put(config.vaultId, removedPath, localContent);
+              state.local[removedPath] = localState;
+              state.remote[removedPath] = buildRemoteFileState(
+                removedPath,
+                localContent,
+                new Date().toISOString(),
+              );
+              // The PUT invalidates the list ETag returned by this poll.
+              state.remoteListEtag = undefined;
+              log(`Conflict: ${removedPath} — restored local edit to remote`);
+            } else {
+              assertSyncRoot(config);
+              conflictFile = createConflictFile(config.localPath, removedPath, localContent, 'local');
+              assertSyncRoot(config);
+              const mutationTarget = resolveWithinSyncRoot(config.localPath, removedPath);
+              onLocalWrite?.(removedPath);
+              fs.unlinkSync(mutationTarget);
+              delete state.local[removedPath];
+              delete state.remote[removedPath];
+              log(`Conflict: ${removedPath} — accepted remote deletion, saved local as ${conflictFile}`);
+            }
+            onConflictLog?.(formatConflictLog(removedPath, resolution, conflictFile));
+            stateMutated = true;
+            changes++;
+            continue;
+          }
+
+          onLocalWrite?.(removedPath);
+          fs.unlinkSync(resolveWithinSyncRoot(config.localPath, removedPath));
           log(`Deleted local: ${removedPath} (removed from remote)`);
           changes++;
         }
@@ -209,26 +285,64 @@ export function createRemotePoller(
       } else {
         onError?.(err instanceof Error ? err : new Error(String(err)));
       }
+    }
+  }
+
+  async function poll(): Promise<void> {
+    if (polling || stopping) return; // Skip if previous poll is running or shutdown began
+    polling = true;
+    try {
+      if (serialize) {
+        await serialize(pollOnce);
+      } else {
+        await pollOnce();
+      }
     } finally {
       polling = false;
     }
   }
 
+  function startPoll(): void {
+    const running = poll();
+    activePoll = running;
+    running
+      .catch(err => onError?.(err instanceof Error ? err : new Error(String(err))))
+      .finally(() => {
+        if (activePoll === running) activePoll = null;
+      });
+  }
+
   // Initial poll
-  poll().catch(err => onError?.(err instanceof Error ? err : new Error(String(err))));
+  startPoll();
 
   // Start interval
   timer = setInterval(() => {
-    poll().catch(err => onError?.(err instanceof Error ? err : new Error(String(err))));
+    startPoll();
   }, intervalMs);
 
   log(`Polling every ${intervalMs / 1000}s`);
 
   return {
-    stop: () => {
+    stop: async () => {
+      stopping = true;
       if (timer) {
         clearInterval(timer);
         timer = null;
+      }
+      const running = activePoll;
+      if (running) {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const completed = await Promise.race([
+          running.then(() => true),
+          new Promise<false>(resolve => {
+            timeout = setTimeout(() => resolve(false), shutdownTimeoutMs);
+            timeout.unref?.();
+          }),
+        ]);
+        if (timeout) clearTimeout(timeout);
+        if (!completed) {
+          throw new Error(`Poller shutdown drain timed out after ${shutdownTimeoutMs}ms`);
+        }
       }
       log('Stopped polling');
     },

@@ -3,6 +3,19 @@ import { Command } from 'commander';
 import { registerSyncCommands } from './sync.js';
 import { createSDKMock, type SDKMock } from '../__tests__/mocks/sdk.js';
 import { spyOutput } from '../__tests__/setup.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const { mockCreateWatcher, mockCreateRemotePoller } = vi.hoisted(() => ({
+  mockCreateWatcher: vi.fn(() => ({
+    ready: Promise.resolve(),
+    markLocalWrite: vi.fn(),
+    serialize: async <T>(operation: () => Promise<T>) => operation(),
+    stop: vi.fn().mockResolvedValue(undefined),
+  })),
+  mockCreateRemotePoller: vi.fn(() => ({ stop: vi.fn().mockResolvedValue(undefined) })),
+}));
 
 // Mock ora
 vi.mock('ora', () => ({
@@ -40,7 +53,16 @@ vi.mock('../sync/config.js', () => ({
   getSyncConfig: vi.fn((id: string) => {
     return mockConfigs.find(c => c.id === id) ?? null;
   }),
+  trustSyncRoot: vi.fn(),
 }));
+
+vi.mock('../sync/root-marker.js', () => ({
+  assertSyncRoot: vi.fn(),
+  prepareSyncRoot: vi.fn(),
+  SYNC_ROOT_MARKER: '.lsvault-sync-root',
+}));
+vi.mock('../sync/watcher.js', () => ({ createWatcher: mockCreateWatcher }));
+vi.mock('../sync/remote-poller.js', () => ({ createRemotePoller: mockCreateRemotePoller }));
 
 // Mock sync state module
 vi.mock('../sync/state.js', () => ({
@@ -88,6 +110,7 @@ vi.mock('../client.js', () => ({
 import { createSyncConfig, deleteSyncConfig, loadSyncConfigs } from '../sync/config.js';
 import { deleteSyncState } from '../sync/state.js';
 import { scanLocalFiles, scanRemoteFiles, computePullDiff, computePushDiff, executePull, executePush } from '../sync/engine.js';
+import { assertSyncRoot, prepareSyncRoot } from '../sync/root-marker.js';
 
 describe('sync commands', () => {
   let program: Command;
@@ -109,6 +132,15 @@ describe('sync commands', () => {
   });
 
   describe('sync init', () => {
+    it('fails before API access when the local root is invalid', async () => {
+      vi.mocked(prepareSyncRoot).mockImplementationOnce(() => { throw new Error('Sync root does not exist'); });
+
+      await program.parseAsync(['node', 'cli', 'sync', 'init', 'vault-1', '/missing/root']);
+
+      expect(sdkMock.vaults.get).not.toHaveBeenCalled();
+      expect(createSyncConfig).not.toHaveBeenCalled();
+    });
+
     it('should initialize sync for a vault', async () => {
       sdkMock.vaults.get.mockResolvedValue({
         id: 'vault-1',
@@ -125,6 +157,7 @@ describe('sync commands', () => {
           mode: 'sync',
           onConflict: 'newer',
         }),
+        expect.objectContaining({ markRoot: true }),
       );
     });
 
@@ -148,6 +181,7 @@ describe('sync commands', () => {
           onConflict: 'remote',
           autoSync: true,
         }),
+        expect.objectContaining({ markRoot: true }),
       );
     });
 
@@ -157,6 +191,89 @@ describe('sync commands', () => {
       await program.parseAsync(['node', 'cli', 'sync', 'init', 'bad-vault', '/tmp/test']);
 
       expect(outputSpy.stderr.some(l => l.includes('Not found'))).toBe(true);
+    });
+  });
+
+  describe('sync resolve root safety', () => {
+    beforeEach(() => {
+      mockConfigs.push({
+        id: 'test-sync-id',
+        vaultId: 'vault-1',
+        localPath: '/tmp/test-vault',
+        mode: 'sync',
+        onConflict: 'newer',
+        ignore: [],
+        lastSyncAt: '1970-01-01T00:00:00.000Z',
+        autoSync: false,
+        rootMarkerVersion: 1,
+      });
+    });
+
+    it('revalidates the root after fetching remote content and before writing locally', async () => {
+      sdkMock.documents.get.mockResolvedValue({ content: '# remote' } as any);
+      vi.mocked(assertSyncRoot)
+        .mockImplementationOnce(() => undefined)
+        .mockImplementationOnce(() => { throw new Error('Sync root marker is missing'); });
+
+      await program.parseAsync([
+        'node', 'cli', 'sync', 'resolve', 'test-sync-id', 'note.md', '--use', 'remote',
+      ]);
+
+      expect(sdkMock.documents.get).toHaveBeenCalledOnce();
+      expect(assertSyncRoot).toHaveBeenCalledTimes(2);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('rejects traversal paths before local or remote access', async () => {
+      await program.parseAsync([
+        'node', 'cli', 'sync', 'resolve', 'test-sync-id', '../outside.md', '--use', 'local',
+      ]);
+
+      expect(sdkMock.documents.put).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('rejects a manual resolution path through a real symlink', async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lsvault-manual-root-'));
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'lsvault-manual-outside-'));
+      fs.symlinkSync(outside, path.join(root, 'linked'), 'dir');
+      mockConfigs[0].localPath = root;
+      try {
+        await program.parseAsync([
+          'node', 'cli', 'sync', 'resolve', 'test-sync-id', 'linked/outside.md', '--use', 'local',
+        ]);
+        expect(sdkMock.documents.put).not.toHaveBeenCalled();
+        expect(process.exitCode).toBe(1);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('sync watch shutdown', () => {
+    it('waits for an in-flight poll and exits nonzero when its bounded drain fails', async () => {
+      mockConfigs.push({
+        id: 'watch-sync', vaultId: 'vault-1', localPath: '/tmp/test-vault', mode: 'sync',
+        onConflict: 'newer', ignore: [], lastSyncAt: '', autoSync: false, rootMarkerVersion: 1,
+      });
+      let rejectPoller!: (reason: Error) => void;
+      const stopPoller = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectPoller = reject; }));
+      mockCreateRemotePoller.mockReturnValueOnce({ stop: stopPoller });
+      const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+      try {
+        void program.parseAsync(['node', 'cli', 'sync', 'watch', 'watch-sync']);
+        await vi.waitFor(() => expect(mockCreateRemotePoller).toHaveBeenCalledOnce());
+
+        process.emit('SIGINT');
+        await vi.waitFor(() => expect(stopPoller).toHaveBeenCalledOnce());
+        expect(exit).not.toHaveBeenCalled();
+
+        rejectPoller(new Error('Poller shutdown drain timed out after 35000ms'));
+        await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
+      } finally {
+        exit.mockRestore();
+      }
     });
   });
 

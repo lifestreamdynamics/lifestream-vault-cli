@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import { loadConfig, loadConfigAsync, getCredentialManager } from '../config.js';
-import { getClientAsync } from '../client.js';
+import { getClientAsync, getHttpTimeoutMs } from '../client.js';
 import { migrateCredentials, hasPlaintextCredentials, checkAndPromptMigration } from '../lib/migration.js';
 import { promptPassword, promptMfaCode } from '../utils/prompt.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
@@ -58,7 +58,7 @@ EXAMPLES
             apiUrl,
             opts.email,
             password,
-            {},
+            { timeout: getHttpTimeoutMs() },
             {
               mfaCode: opts.mfaCode,
               onMfaRequired: async (challenge) => {
@@ -138,6 +138,7 @@ EXAMPLES
           baseUrl: config.apiUrl,
           accessToken: config.accessToken || 'expired',
           refreshToken: config.refreshToken,
+          timeout: getHttpTimeoutMs(),
           refreshBufferMs: Number.MAX_SAFE_INTEGER, // Force immediate refresh
           onTokenRefresh: async (tokens) => {
             await cm.saveCredentials({

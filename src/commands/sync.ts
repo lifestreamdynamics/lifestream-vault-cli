@@ -12,6 +12,7 @@ import {
   createSyncConfig,
   deleteSyncConfig,
   getSyncConfig,
+  trustSyncRoot,
 } from '../sync/config.js';
 import { deleteSyncState, loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from '../sync/state.js';
 import { resolveIgnorePatterns } from '../sync/ignore.js';
@@ -29,8 +30,10 @@ import {
 import { formatDiff } from '../sync/diff.js';
 import { createWatcher } from '../sync/watcher.js';
 import { createRemotePoller } from '../sync/remote-poller.js';
-import { startDaemon, stopDaemon, getDaemonStatus } from '../sync/daemon.js';
+import { runDaemonForeground, startDaemon, stopDaemon, getDaemonStatus } from '../sync/daemon.js';
+import { assertSyncRoot, prepareSyncRoot } from '../sync/root-marker.js';
 import type { SyncMode, ConflictStrategy } from '../sync/types.js';
+import { resolveWithinSyncRoot } from '../sync/safe-path.js';
 
 export function registerSyncCommands(program: Command): void {
   const sync = program.command('sync').description('Configure and manage vault sync');
@@ -45,6 +48,7 @@ export function registerSyncCommands(program: Command): void {
     .option('--ignore <patterns...>', 'Glob patterns to ignore')
     .option('--interval <interval>', 'Auto-sync interval (e.g., 5m, 1h)')
     .option('--auto-sync', 'Enable auto-sync')
+    .option('--create-dir', 'Create the local directory when it does not exist')
     .addHelpText('after', `
 Examples:
   lsvault sync init <vaultId> ~/my-vault
@@ -60,9 +64,13 @@ Sync modes:
       const out = createOutput(flags);
       out.startSpinner('Initializing sync...');
       try {
+        const absPath = path.resolve(localPath);
+        prepareSyncRoot(absPath, {
+          createDir: _opts.createDir === true,
+          requireUnmarked: true,
+        });
         const client = await getClientAsync();
         const vault = await client.vaults.get(vaultId);
-        const absPath = path.resolve(localPath);
 
         const mode = (_opts.mode as SyncMode | undefined) ?? 'sync';
         const onConflict = (_opts.onConflict as ConflictStrategy | undefined) ?? 'newer';
@@ -81,6 +89,9 @@ Sync modes:
           ignore,
           syncInterval,
           autoSync,
+        }, {
+          markRoot: true,
+          createDir: _opts.createDir === true,
         });
 
         out.success(`Sync initialized for vault "${vault.name}"`, {
@@ -98,6 +109,26 @@ Sync modes:
         }
       } catch (err) {
         handleError(out, err, 'Failed to initialize sync');
+      }
+    });
+
+  // sync trust-root <syncId>
+  addGlobalFlags(sync.command('trust-root')
+    .description('Trust and mark the local root of a legacy sync configuration')
+    .argument('<syncId>', 'Sync configuration ID'))
+    .action(async (syncId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      try {
+        const config = trustSyncRoot(syncId);
+        out.success('Sync root trusted', {
+          id: config.id,
+          vaultId: config.vaultId,
+          localPath: config.localPath,
+          rootMarkerVersion: config.rootMarkerVersion,
+        });
+      } catch (err) {
+        handleError(out, err, 'Failed to trust sync root');
       }
     });
 
@@ -191,6 +222,7 @@ Sync modes:
           return;
         }
 
+        assertSyncRoot(config);
         const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const lastState = loadSyncState(config.id);
@@ -312,6 +344,7 @@ Sync modes:
           return;
         }
 
+        assertSyncRoot(config);
         const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const lastState = loadSyncState(config.id);
@@ -426,6 +459,7 @@ Sync modes:
           return;
         }
 
+        assertSyncRoot(config);
         const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const lastState = loadSyncState(config.id);
@@ -517,6 +551,7 @@ Sync modes:
           return;
         }
 
+        assertSyncRoot(config);
         const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const pollInterval = parseInt(String(_opts.pollInterval ?? '30000'), 10);
@@ -536,15 +571,27 @@ Sync modes:
         const errorHandler = (err: Error) => out.error(err.message);
 
         // Start local watcher
-        const { stop: stopWatcher } = createWatcher(client, config, {
+        const {
+          ready: watcherReady,
+          markLocalWrite,
+          serialize,
+          stop: stopWatcher,
+        } = createWatcher(client, config, {
           ignorePatterns,
           onLog: logHandler,
           onConflictLog: conflictHandler,
           onError: errorHandler,
         });
 
+        try {
+          await watcherReady;
+        } catch (err) {
+          await stopWatcher().catch(() => undefined);
+          throw err;
+        }
+
         // Start remote poller (only for sync and pull modes)
-        let stopPoller: (() => void) | undefined;
+        let stopPoller: (() => Promise<void>) | undefined;
         if (config.mode === 'sync') {
           const poller = createRemotePoller(client, config, {
             ignorePatterns,
@@ -552,21 +599,42 @@ Sync modes:
             onLog: logHandler,
             onConflictLog: conflictHandler,
             onError: errorHandler,
+            onLocalWrite: markLocalWrite,
+            serialize,
           });
           stopPoller = poller.stop;
         }
 
         // Handle graceful shutdown
-        const shutdown = async () => {
+        let shutdownPromise: Promise<void> | null = null;
+        const performShutdown = async (): Promise<void> => {
           out.status('\nStopping...');
-          stopPoller?.();
-          await stopWatcher();
+          const results = await Promise.allSettled([
+            stopPoller?.() ?? Promise.resolve(),
+            stopWatcher(),
+          ]);
+          const errors = results
+            .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+            .map(result => result.reason instanceof Error ? result.reason.message : String(result.reason));
+          if (errors.length > 0) throw new Error(`Sync watch did not drain cleanly: ${errors.join('; ')}`);
           out.status('Sync watch stopped.');
-          process.exit(0);
         };
 
-        process.on('SIGINT', shutdown);
-        process.on('SIGTERM', shutdown);
+        const shutdown = () => {
+          process.removeListener('SIGINT', shutdown);
+          process.removeListener('SIGTERM', shutdown);
+          shutdownPromise ??= performShutdown();
+          void shutdownPromise.then(
+            () => process.exit(0),
+            err => {
+              out.error(err instanceof Error ? err.message : String(err));
+              process.exit(1);
+            },
+          );
+        };
+
+        process.once('SIGINT', shutdown);
+        process.once('SIGTERM', shutdown);
 
         // Keep process alive
         await new Promise(() => {}); // Never resolves — relies on signal handlers
@@ -593,6 +661,7 @@ Sync modes:
           return;
         }
 
+        assertSyncRoot(config);
         const useVersion = String(_opts.use);
         if (useVersion !== 'local' && useVersion !== 'remote') {
           out.failSpinner('--use must be "local" or "remote"');
@@ -601,16 +670,18 @@ Sync modes:
         }
 
         const client = await getClientAsync();
-        const localFile = path.join(config.localPath, docPath);
+        const localFile = resolveWithinSyncRoot(config.localPath, docPath);
         const state = loadSyncState(config.id);
 
         if (useVersion === 'local') {
+          assertSyncRoot(config);
           if (!fs.existsSync(localFile)) {
             out.failSpinner(`Local file not found: ${localFile}`);
             process.exitCode = 1;
             return;
           }
           const content = fs.readFileSync(localFile, 'utf-8');
+          assertSyncRoot(config);
           await client.documents.put(config.vaultId, docPath, content);
 
           state.local[docPath] = {
@@ -622,11 +693,14 @@ Sync modes:
           state.remote[docPath] = buildRemoteFileState(docPath, content, new Date().toISOString());
         } else {
           const { content } = await client.documents.get(config.vaultId, docPath);
-          const dir = path.dirname(localFile);
+          assertSyncRoot(config);
+          const mutationTarget = resolveWithinSyncRoot(config.localPath, docPath);
+          const dir = path.dirname(mutationTarget);
           if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
           }
-          fs.writeFileSync(localFile, content, 'utf-8');
+          assertSyncRoot(config);
+          fs.writeFileSync(resolveWithinSyncRoot(config.localPath, docPath), content, 'utf-8');
 
           state.local[docPath] = {
             path: docPath,
@@ -658,7 +732,7 @@ Sync modes:
       const out = createOutput(flags);
       try {
         const logFile = _opts.logFile as string | undefined;
-        const { pid, lingerWarning } = startDaemon(logFile);
+        const { pid, lingerWarning } = await startDaemon(logFile);
         out.success('Daemon started', { pid, status: 'running' });
         if (lingerWarning) {
           out.warn(`Warning: ${lingerWarning}`);
@@ -668,13 +742,25 @@ Sync modes:
       }
     });
 
+  addGlobalFlags(daemon.command('run')
+    .description('Run the sync daemon in the foreground (for systemd/launchd)'))
+    .action(async (_opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      try {
+        await runDaemonForeground();
+      } catch (err) {
+        handleError(out, err, 'Daemon failed');
+      }
+    });
+
   addGlobalFlags(daemon.command('stop')
     .description('Stop the background sync daemon'))
     .action(async (_opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       try {
-        const stopped = stopDaemon();
+        const stopped = await stopDaemon();
         if (stopped) {
           out.success('Daemon stopped', { status: 'stopped' });
         } else {

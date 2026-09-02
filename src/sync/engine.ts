@@ -10,6 +10,8 @@ import { updateLastSync } from './config.js';
 import { resolveIgnorePatterns, shouldIgnore } from './ignore.js';
 import { computePullDiff, computePushDiff, type SyncDiff, type SyncDiffEntry } from './diff.js';
 import { atomicWriteFileSync, sweepOrphanedTempFiles } from './atomic-write.js';
+import { assertSyncRoot } from './root-marker.js';
+import { resolveWithinSyncRoot } from './safe-path.js';
 
 export { sweepOrphanedTempFiles };
 
@@ -30,6 +32,8 @@ export interface SyncResult {
   filesDeleted: number;
   bytesTransferred: number;
   errors: Array<{ path: string; error: string }>;
+  /** True when one or more requested transfers/deletions failed. */
+  failed: boolean;
 }
 
 /**
@@ -219,12 +223,14 @@ async function executeSyncOperation(
   concurrency: number = DEFAULT_TRANSFER_CONCURRENCY,
   onThrottle?: ThrottleCallback,
 ): Promise<SyncResult> {
+  assertSyncRoot(config);
   const result: SyncResult = {
     filesUploaded: 0,
     filesDownloaded: 0,
     filesDeleted: 0,
     bytesTransferred: 0,
     errors: [],
+    failed: false,
   };
 
   const state = loadSyncState(config.id);
@@ -325,6 +331,8 @@ async function executeSyncOperation(
     totalBytes: diff.totalBytes,
   });
 
+  result.failed = result.errors.length > 0;
+
   return result;
 }
 
@@ -344,8 +352,10 @@ export async function executePull(
     deletes: diff.deletes,
     transferCounterKey: 'filesDownloaded',
     async transferFile(entry, cfg, throttleCallback) {
-      const localFile = path.join(cfg.localPath, entry.path);
-      const localDir = path.dirname(localFile);
+      // TODO(plan-review): send the diff's remote revision with If-Match once
+      // the document mutation API exposes conditional PUT/DELETE semantics.
+      assertSyncRoot(cfg);
+      const localFile = resolveWithinSyncRoot(cfg.localPath, entry.path);
 
       // Only use a conditional GET when (a) we have the remote hash AND (b)
       // the local file already exists.  For 'create' entries the local file
@@ -373,14 +383,20 @@ export async function executePull(
       // 200 response — result has `content` (handle both shapes of the union).
       const content = (result as { content: string }).content;
 
-      if (!fs.existsSync(localDir)) {
-        fs.mkdirSync(localDir, { recursive: true });
+      assertSyncRoot(cfg);
+      const mutationTarget = resolveWithinSyncRoot(cfg.localPath, entry.path);
+      const mutationDir = path.dirname(mutationTarget);
+      if (!fs.existsSync(mutationDir)) {
+        fs.mkdirSync(mutationDir, { recursive: true });
       }
-      atomicWriteFileSync(localFile, content, 'utf-8');
+      atomicWriteFileSync(mutationTarget, content, 'utf-8');
       return content;
     },
     async deleteFile(entry, cfg) {
-      const localFile = path.join(cfg.localPath, entry.path);
+      // TODO(plan-review): protect the preflight-to-delete window with an
+      // If-Match contract supplied by the server and SDK.
+      assertSyncRoot(cfg);
+      const localFile = resolveWithinSyncRoot(cfg.localPath, entry.path);
       if (fs.existsSync(localFile)) {
         fs.unlinkSync(localFile);
       }
@@ -404,18 +420,24 @@ export async function executePush(
     deletes: diff.deletes,
     transferCounterKey: 'filesUploaded',
     async transferFile(entry, cfg, throttleCallback) {
-      const localFile = path.join(cfg.localPath, entry.path);
+      assertSyncRoot(cfg);
+      const localFile = resolveWithinSyncRoot(cfg.localPath, entry.path);
       const content = fs.readFileSync(localFile, 'utf-8');
-      await retryWithBackoff(() =>
-        client.documents.put(cfg.vaultId, entry.path, content),
+      await retryWithBackoff(() => {
+        assertSyncRoot(cfg);
+        return client.documents.put(cfg.vaultId, entry.path, content);
+      },
         throttleCallback ? () => throttleCallback(entry.path) : undefined,
       );
       return content;
     },
     async deleteFile(entry, cfg) {
-      await retryWithBackoff(() =>
-        client.documents.delete(cfg.vaultId, entry.path),
-      );
+      assertSyncRoot(cfg);
+      resolveWithinSyncRoot(cfg.localPath, entry.path);
+      await retryWithBackoff(() => {
+        assertSyncRoot(cfg);
+        return client.documents.delete(cfg.vaultId, entry.path);
+      });
     },
   }, onProgress, concurrency, onThrottle);
 }

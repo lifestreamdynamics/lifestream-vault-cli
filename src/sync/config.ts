@@ -7,6 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import type { SyncConfig, CreateSyncOptions } from './types.js';
+import { prepareSyncRoot, removeOwnedSyncRootMarker, writeSyncRootMarker } from './root-marker.js';
 
 const CONFIG_DIR = path.join(os.homedir(), '.lsvault');
 const SYNCS_FILE = path.join(CONFIG_DIR, 'syncs.json');
@@ -57,7 +58,10 @@ export function getSyncConfigByVaultId(vaultId: string): SyncConfig | undefined 
  * Create a new sync configuration.
  * Returns the created config with a generated ID.
  */
-export function createSyncConfig(opts: CreateSyncOptions): SyncConfig {
+export function createSyncConfig(
+  opts: CreateSyncOptions,
+  rootOptions: { markRoot?: boolean; createDir?: boolean } = {},
+): SyncConfig {
   const configs = loadSyncConfigs();
 
   // Check for duplicate vault+path combinations
@@ -80,10 +84,22 @@ export function createSyncConfig(opts: CreateSyncOptions): SyncConfig {
     lastSyncAt: new Date(0).toISOString(),
     syncInterval: opts.syncInterval,
     autoSync: opts.autoSync ?? false,
+    ...(rootOptions.markRoot ? { rootMarkerVersion: 1 as const } : {}),
   };
 
-  configs.push(config);
-  saveSyncConfigs(configs);
+  let markerWritten = false;
+  if (rootOptions.markRoot) {
+    prepareSyncRoot(config.localPath, { createDir: rootOptions.createDir, requireUnmarked: true });
+    writeSyncRootMarker(config);
+    markerWritten = true;
+  }
+  try {
+    configs.push(config);
+    saveSyncConfigs(configs);
+  } catch (err) {
+    if (markerWritten) removeOwnedSyncRootMarker(config);
+    throw err;
+  }
   return config;
 }
 
@@ -95,9 +111,30 @@ export function deleteSyncConfig(id: string): boolean {
   const configs = loadSyncConfigs();
   const index = configs.findIndex(c => c.id === id);
   if (index === -1) return false;
-  configs.splice(index, 1);
+  const [removed] = configs.splice(index, 1);
   saveSyncConfigs(configs);
+  removeOwnedSyncRootMarker(removed);
   return true;
+}
+
+/** Trust an existing legacy sync root by creating its marker and upgrading the config. */
+export function trustSyncRoot(id: string): SyncConfig {
+  const configs = loadSyncConfigs();
+  const config = configs.find(c => c.id === id);
+  if (!config) throw new Error(`Sync config not found: ${id}`);
+  if (config.rootMarkerVersion === 1) {
+    throw new Error(`Sync root is already trusted: ${id}`);
+  }
+  prepareSyncRoot(config.localPath);
+  writeSyncRootMarker(config);
+  config.rootMarkerVersion = 1;
+  try {
+    saveSyncConfigs(configs);
+  } catch (err) {
+    removeOwnedSyncRootMarker(config);
+    throw err;
+  }
+  return config;
 }
 
 /**

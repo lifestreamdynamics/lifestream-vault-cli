@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'node:fs';
 
 vi.mock('node:fs');
+vi.mock('./root-marker.js', () => ({ assertSyncRoot: vi.fn() }));
 const mockedFs = vi.mocked(fs);
 
 // Mock chokidar
 const mockWatcher = {
   on: vi.fn().mockReturnThis(),
+  once: vi.fn().mockReturnThis(),
   close: vi.fn().mockResolvedValue(undefined),
 };
 vi.mock('chokidar', () => ({
@@ -48,15 +50,17 @@ vi.mock('./conflict.js', () => ({
 
 // Import mocked modules after vi.mock so we can configure them per test
 import { loadSyncState, saveSyncState, hashFileContent } from './state.js';
-import { detectConflict } from './conflict.js';
+import { detectConflict, resolveConflict } from './conflict.js';
 
 const mockLoadSyncState = vi.mocked(loadSyncState);
 const mockSaveSyncState = vi.mocked(saveSyncState);
 const mockHashFileContent = vi.mocked(hashFileContent);
 const mockDetectConflict = vi.mocked(detectConflict);
+const mockResolveConflict = vi.mocked(resolveConflict);
 
 import { createWatcher } from './watcher.js';
 import { watch } from 'chokidar';
+import { assertSyncRoot } from './root-marker.js';
 import type { SyncConfig } from './types.js';
 
 function makeConfig(overrides: Partial<SyncConfig> = {}): SyncConfig {
@@ -90,10 +94,19 @@ async function triggerChange(absPath: string): Promise<void> {
   await new Promise(r => setTimeout(r, 50));
 }
 
+async function triggerUnlink(absPath: string): Promise<void> {
+  const call = mockWatcher.on.mock.calls.find((args: unknown[]) => args[0] === 'unlink');
+  const handler = call?.[1] as ((absPath: string) => void) | undefined;
+  if (!handler) throw new Error('No "unlink" handler registered on watcher');
+  handler(absPath);
+  await new Promise(r => setTimeout(r, 50));
+}
+
 describe('sync watcher', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWatcher.on.mockReturnThis();
+    mockWatcher.once.mockReturnThis();
     // Reset loadSyncState to default empty state
     mockLoadSyncState.mockReturnValue({
       syncId: 'sync-1',
@@ -103,6 +116,7 @@ describe('sync watcher', () => {
     });
     mockHashFileContent.mockImplementation((content: string) => `hash-${content.slice(0, 8)}`);
     mockDetectConflict.mockReturnValue(false);
+    mockResolveConflict.mockReturnValue('local');
   });
 
   it('should create a chokidar watcher', () => {
@@ -131,6 +145,59 @@ describe('sync watcher', () => {
     expect(events).toContain('change');
     expect(events).toContain('unlink');
     expect(events).toContain('error');
+    expect(mockWatcher.once).toHaveBeenCalledWith('ready', expect.any(Function));
+  });
+
+  it('resolves readiness only after chokidar emits ready', async () => {
+    const { ready } = createWatcher({} as any, makeConfig(), { ignorePatterns: [] });
+    let settled = false;
+    void ready.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    const readyHandler = mockWatcher.once.mock.calls.find((args: unknown[]) => args[0] === 'ready')?.[1] as (() => void);
+    readyHandler();
+    await expect(ready).resolves.toBeUndefined();
+  });
+
+  it('rejects readiness when chokidar errors before ready', async () => {
+    const onError = vi.fn();
+    const { ready } = createWatcher({} as any, makeConfig(), { ignorePatterns: [], onError });
+    const errorHandler = mockWatcher.on.mock.calls.find((args: unknown[]) => args[0] === 'error')?.[1] as ((err: Error) => void);
+    errorHandler(new Error('watch setup failed'));
+
+    await expect(ready).rejects.toThrow('watch setup failed');
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'watch setup failed' }));
+  });
+
+  it('suppresses a poller-originated local write from being uploaded again', async () => {
+    const put = vi.fn();
+    const { markLocalWrite } = createWatcher({ documents: { put } } as any, makeConfig(), {
+      ignorePatterns: [], debounceMs: 0,
+    });
+    markLocalWrite('notes/pulled.md');
+
+    await triggerChange('/home/user/vault/notes/pulled.md');
+
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('serializes operations that share the sync-state file', async () => {
+    const { serialize } = createWatcher({} as any, makeConfig(), { ignorePatterns: [] });
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    const first = serialize(async () => {
+      order.push('first:start');
+      await new Promise<void>(resolve => { releaseFirst = resolve; });
+      order.push('first:end');
+    });
+    const second = serialize(async () => { order.push('second'); });
+
+    await Promise.resolve();
+    expect(order).toEqual(['first:start']);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(order).toEqual(['first:start', 'first:end', 'second']);
   });
 
   it('should stop watcher and clear pending changes', async () => {
@@ -142,6 +209,46 @@ describe('sync watcher', () => {
     await stop();
 
     expect(mockWatcher.close).toHaveBeenCalled();
+  });
+
+  it('drains a slow upload before shutdown completes', async () => {
+    const content = '# pending upload';
+    mockedFs.readFileSync.mockReturnValue(content as any);
+    let releaseUpload!: () => void;
+    const put = vi.fn(() => new Promise<void>(resolve => { releaseUpload = resolve; }));
+    const { stop } = createWatcher({ documents: { put } } as any, makeConfig({ mode: 'push' }), {
+      ignorePatterns: [], debounceMs: 0, shutdownTimeoutMs: 1_000,
+    });
+
+    const changeHandler = mockWatcher.on.mock.calls.find(
+      (args: unknown[]) => args[0] === 'change',
+    )?.[1] as (absPath: string) => void;
+    changeHandler('/home/user/vault/notes/pending.md');
+    await vi.waitFor(() => expect(put).toHaveBeenCalledOnce());
+
+    let stopped = false;
+    const stopping = stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseUpload();
+    await stopping;
+    expect(mockSaveSyncState).toHaveBeenCalled();
+  });
+
+  it('rejects shutdown when an upload exceeds the bounded drain deadline', async () => {
+    mockedFs.readFileSync.mockReturnValue('# stalled upload' as any);
+    const put = vi.fn(() => new Promise<void>(() => undefined));
+    const { stop } = createWatcher({ documents: { put } } as any, makeConfig({ mode: 'push' }), {
+      ignorePatterns: [], debounceMs: 0, shutdownTimeoutMs: 5,
+    });
+    const changeHandler = mockWatcher.on.mock.calls.find(
+      (args: unknown[]) => args[0] === 'change',
+    )?.[1] as (absPath: string) => void;
+    changeHandler('/home/user/vault/notes/stalled.md');
+    await vi.waitFor(() => expect(put).toHaveBeenCalledOnce());
+
+    await expect(stop()).rejects.toThrow('Watcher shutdown drain timed out after 5ms');
   });
 
   it('should call onLog callback', () => {
@@ -168,6 +275,22 @@ describe('sync watcher', () => {
         awaitWriteFinish: { stabilityThreshold: 1000 },
       }),
     );
+  });
+
+  it('does not delete remotely when the root becomes invalid', async () => {
+    const deleteRemote = vi.fn();
+    const onError = vi.fn();
+    vi.mocked(assertSyncRoot)
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => { throw new Error('Sync root marker is missing'); });
+    createWatcher({ documents: { delete: deleteRemote } } as any, makeConfig({ mode: 'push' }), {
+      ignorePatterns: [], debounceMs: 0, onError,
+    });
+
+    await triggerUnlink('/home/user/vault/notes/deleted.md');
+
+    expect(deleteRemote).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/marker is missing/) }));
   });
 
   // -----------------------------------------------------------------------
@@ -212,6 +335,62 @@ describe('sync watcher', () => {
     );
     // 304 → no conflict → push proceeds
     expect(mockPut).toHaveBeenCalledWith('vault-1', 'notes/test.md', localContent);
+  });
+
+  it('conflict-check: server failure aborts instead of overwriting remote state', async () => {
+    mockLoadSyncState.mockReturnValue({
+      syncId: 'sync-1',
+      local: {},
+      remote: {
+        'notes/test.md': { path: 'notes/test.md', hash: 'known', mtime: '2026-01-01T00:00:00.000Z', size: 10 },
+      },
+      updatedAt: '',
+    });
+    mockedFs.readFileSync.mockReturnValue('# local edit' as any);
+    const get = vi.fn().mockRejectedValue(Object.assign(new Error('server unavailable'), { statusCode: 500 }));
+    const put = vi.fn();
+    const onError = vi.fn();
+    createWatcher({ documents: { get, put } } as any, makeConfig({ mode: 'sync' }), {
+      ignorePatterns: [], debounceMs: 0, onError,
+    });
+
+    await triggerChange('/home/user/vault/notes/test.md');
+
+    expect(put).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'server unavailable' }));
+  });
+
+  it('local delete with a concurrent remote edit restores the remote version under remote policy', async () => {
+    const remoteContent = '# concurrent remote edit';
+    mockLoadSyncState.mockReturnValue({
+      syncId: 'sync-1',
+      local: {
+        'notes/deleted.md': { path: 'notes/deleted.md', hash: 'old', mtime: '2026-01-01T00:00:00.000Z', size: 10 },
+      },
+      remote: {
+        'notes/deleted.md': { path: 'notes/deleted.md', hash: 'old', mtime: '2026-01-01T00:00:00.000Z', size: 10 },
+      },
+      updatedAt: '',
+    });
+    mockResolveConflict.mockReturnValue('remote');
+    mockedFs.existsSync.mockReturnValue(false);
+    const get = vi.fn().mockResolvedValue({
+      notModified: false,
+      content: remoteContent,
+      document: { updatedAt: '2026-06-01T00:00:00.000Z' },
+    });
+    const deleteRemote = vi.fn();
+    createWatcher({ documents: { get, delete: deleteRemote } } as any, makeConfig({ mode: 'sync', onConflict: 'remote' }), {
+      ignorePatterns: [], debounceMs: 0,
+    });
+
+    await triggerUnlink('/home/user/vault/notes/deleted.md');
+
+    expect(get).toHaveBeenCalledWith('vault-1', 'notes/deleted.md', { ifNoneMatch: '"old"' });
+    expect(deleteRemote).not.toHaveBeenCalled();
+    expect(mockedFs.writeFileSync).toHaveBeenCalledWith(expect.stringContaining('.tmp.'), remoteContent, 'utf-8');
+    expect(mockedFs.renameSync).toHaveBeenCalledWith(expect.stringContaining('.tmp.'), '/home/user/vault/notes/deleted.md');
+    expect(mockSaveSyncState).toHaveBeenCalled();
   });
 
   it('conflict-check: 200 + matching hash — push proceeds (list/cache mismatch)', async () => {

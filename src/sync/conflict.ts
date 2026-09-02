@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { FileState, ConflictStrategy } from './types.js';
+import { resolveWithinSyncRoot } from './safe-path.js';
 
 export interface ConflictInfo {
   /** Document path (relative) */
@@ -69,11 +70,12 @@ export function createConflictFile(
   content: string,
   source: 'local' | 'remote',
 ): string {
+  resolveWithinSyncRoot(localPath, docPath);
   const ext = path.extname(docPath);
   const base = docPath.slice(0, -ext.length);
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const conflictPath = `${base}.conflicted.${source}.${timestamp}${ext}`;
-  const absPath = path.join(localPath, conflictPath);
+  const absPath = resolveWithinSyncRoot(localPath, conflictPath);
   const dir = path.dirname(absPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });

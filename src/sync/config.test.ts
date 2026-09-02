@@ -13,6 +13,7 @@ import {
   createSyncConfig,
   deleteSyncConfig,
   updateLastSync,
+  trustSyncRoot,
 } from './config.js';
 import type { SyncConfig } from './types.js';
 
@@ -172,6 +173,50 @@ describe('sync config', () => {
       mockedFs.existsSync.mockReturnValue(false);
       createSyncConfig({ vaultId: 'vault-1', localPath: '/tmp/test' });
       expect(mockedFs.writeFileSync).toHaveBeenCalled();
+    });
+
+    it('writes the root marker before persisting a marked configuration', () => {
+      mockedFs.existsSync.mockImplementation(target => {
+        const value = String(target);
+        return value === '/home/user/vault' || value.endsWith('syncs.json');
+      });
+      mockedFs.readFileSync.mockReturnValue('[]');
+      mockedFs.statSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+
+      const config = createSyncConfig(
+        { vaultId: 'vault-1', localPath: '/home/user/vault' },
+        { markRoot: true },
+      );
+
+      expect(config.rootMarkerVersion).toBe(1);
+      const writes = mockedFs.writeFileSync.mock.calls;
+      expect(String(writes[0][0])).toContain('.lsvault-sync-root');
+      expect(writes[0][2]).toEqual(expect.objectContaining({ flag: 'wx', mode: 0o600 }));
+      expect(String(writes[1][0])).toContain('syncs.json');
+      expect(String(writes[1][1])).toContain('"rootMarkerVersion": 1');
+    });
+  });
+
+  describe('trustSyncRoot', () => {
+    it('marks and upgrades a legacy configuration', () => {
+      const legacy = makeSyncConfig({ rootMarkerVersion: undefined });
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue(JSON.stringify([legacy]));
+      mockedFs.statSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+
+      const trusted = trustSyncRoot(legacy.id);
+
+      expect(trusted.rootMarkerVersion).toBe(1);
+      expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('.lsvault-sync-root'),
+        expect.stringContaining('"syncId": "sync-1"'),
+        expect.objectContaining({ flag: 'wx', mode: 0o600 }),
+      );
+      expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('syncs.json'),
+        expect.stringContaining('"rootMarkerVersion": 1'),
+        { mode: 0o600 },
+      );
     });
   });
 

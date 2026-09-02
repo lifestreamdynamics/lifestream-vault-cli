@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'node:fs';
 
 vi.mock('node:fs');
+vi.mock('./root-marker.js', () => ({ assertSyncRoot: vi.fn(), SYNC_ROOT_MARKER: '.lsvault-sync-root' }));
 const mockedFs = vi.mocked(fs);
 
 // Mock config/state modules
@@ -60,6 +61,7 @@ function makeConfig(overrides: Partial<SyncConfig> = {}): SyncConfig {
 describe('sync engine', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedFs.lstatSync.mockImplementation(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); });
   });
 
   describe('scanLocalFiles', () => {
@@ -497,6 +499,25 @@ describe('sync engine', () => {
       expect(result.errors[0].error).toContain('quota exceeded');
     });
 
+    it('rejects traversal downloads before network or filesystem access', async () => {
+      const diff = {
+        uploads: [],
+        downloads: [
+          { path: '../outside.md', action: 'create' as const, direction: 'download' as const, sizeBytes: 10, reason: 'remote' },
+        ],
+        deletes: [],
+        totalBytes: 10,
+      };
+      const get = vi.fn();
+
+      const result = await executePull({ documents: { get } } as any, makeConfig(), diff);
+
+      expect(result.filesDownloaded).toBe(0);
+      expect(result.errors[0].error).toMatch(/Unsafe/);
+      expect(get).not.toHaveBeenCalled();
+      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+    });
+
     it('should delete local files on remote deletion', async () => {
       const config = makeConfig();
       const diff = {
@@ -723,6 +744,7 @@ describe('sync engine', () => {
 
       expect(result.filesUploaded).toBe(1);
       expect(result.errors).toHaveLength(0);
+      expect(result.failed).toBe(false);
       expect(mockClient.documents.put).toHaveBeenCalledWith('vault-1', 'local.md', '# Local content');
       expect(saveSyncState).toHaveBeenCalled();
       expect(updateLastSync).toHaveBeenCalledWith('sync-1');
@@ -779,6 +801,7 @@ describe('sync engine', () => {
       expect(result.filesUploaded).toBe(0);
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0].path).toBe('a.md');
+      expect(result.failed).toBe(true);
     });
   });
 

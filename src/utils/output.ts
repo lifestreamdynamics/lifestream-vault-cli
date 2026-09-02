@@ -282,7 +282,10 @@ export function handleError(out: Output, err: unknown, spinnerMessage?: string):
   if (spinnerMessage) {
     out.failSpinner(spinnerMessage);
   }
-  const message = err instanceof Error ? err.message : String(err);
+  let message = err instanceof Error ? err.message : String(err);
+  if ((err instanceof Error && err.name === 'TimeoutError') || /\b(?:timed?\s*out|request timeout)\b/i.test(message)) {
+    message += '\nCheck connectivity or increase LSVAULT_HTTP_TIMEOUT_MS (1000-300000 milliseconds).';
+  }
   out.error(message);
   process.exitCode = 1;
 }
