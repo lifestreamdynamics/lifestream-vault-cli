@@ -12,6 +12,7 @@ import { computePullDiff, computePushDiff, type SyncDiff, type SyncDiffEntry } f
 import { atomicWriteFileSync, sweepOrphanedTempFiles } from './atomic-write.js';
 import { assertSyncRoot } from './root-marker.js';
 import { resolveWithinSyncRoot } from './safe-path.js';
+import { createConflictFile } from './conflict.js';
 
 export { sweepOrphanedTempFiles };
 
@@ -387,7 +388,12 @@ export async function executePull(
   onProgress?: ProgressCallback,
   concurrency?: number,
   onThrottle?: ThrottleCallback,
+  /** Notified when a locally-modified file was preserved instead of deleted. */
+  onConflict?: (docPath: string, conflictFile: string) => void,
 ): Promise<SyncResult> {
+  // Last-known local state, read once: deleteFile below compares against it to
+  // tell "unchanged since last sync" from "the user edited this".
+  const pullState = loadSyncState(config.id);
   return executeSyncOperation(config, diff, {
     transfers: diff.downloads,
     deletes: diff.deletes,
@@ -438,9 +444,21 @@ export async function executePull(
       // If-Match contract supplied by the server and SDK.
       assertSyncRoot(cfg);
       const localFile = resolveWithinSyncRoot(cfg.localPath, entry.path);
-      if (fs.existsSync(localFile)) {
-        fs.unlinkSync(localFile);
+      if (!fs.existsSync(localFile)) return;
+
+      // The diff emits this delete purely because the document vanished from
+      // the remote — it never compares the local file against last-known state.
+      // If the user edited it locally since the last sync, unlinking here
+      // destroys the only copy. Preserve it as a conflict file first, the same
+      // way the remote poller does for this exact case.
+      const lastLocalHash = pullState.local[entry.path]?.hash;
+      const localContent = fs.readFileSync(localFile, 'utf-8');
+      if (lastLocalHash !== undefined && hashFileContent(localContent) !== lastLocalHash) {
+        const conflictFile = createConflictFile(cfg.localPath, entry.path, localContent, 'local');
+        onConflict?.(entry.path, conflictFile);
       }
+
+      fs.unlinkSync(localFile);
     },
   }, onProgress, concurrency, onThrottle);
 }

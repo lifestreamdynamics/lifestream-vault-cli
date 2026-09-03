@@ -7,6 +7,10 @@ const mockedFs = vi.mocked(fs);
 import { assertSyncRoot } from './root-marker.js';
 
 // Mock config/state modules
+vi.mock('./conflict.js', () => ({
+  createConflictFile: vi.fn(() => 'notes.conflicted.local.1970-01-01.md'),
+}));
+
 vi.mock('./state.js', () => ({
   loadSyncState: vi.fn(() => ({
     syncId: 'sync-1',
@@ -43,6 +47,8 @@ import {
 } from './engine.js';
 import { computePullDiff, computePushDiff } from './diff.js';
 import { loadSyncState, saveSyncState } from './state.js';
+import { createConflictFile } from './conflict.js';
+const mockedCreateConflictFile = vi.mocked(createConflictFile);
 import { updateLastSync } from './config.js';
 import type { SyncConfig, SyncState, FileState } from './types.js';
 
@@ -518,6 +524,67 @@ describe('sync engine', () => {
       expect(result.errors[0].error).toMatch(/Unsafe/);
       expect(get).not.toHaveBeenCalled();
       expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it('preserves a locally-modified file as a conflict copy before deleting it', async () => {
+      // The pull diff emits this delete purely because the document vanished
+      // remotely; it never compares the local file against last-known state.
+      // Without a guard, a local edit the user has not pushed is destroyed.
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [],
+        deletes: [
+          { path: 'notes.md', action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Deleted remotely' },
+        ],
+        totalBytes: 0,
+      };
+
+      vi.mocked(loadSyncState).mockReturnValueOnce({
+        syncId: 'sync-1',
+        // Last sync saw this content; the file on disk now differs.
+        local: { 'notes.md': { path: 'notes.md', hash: 'hash-OLD', mtime: '', size: 3 } },
+        remote: {},
+        updatedAt: '1970-01-01T00:00:00.000Z',
+      } as never);
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('MY UNSAVED EDIT' as never);
+
+      const onConflict = vi.fn();
+      const result = await executePull({} as any, config, diff, undefined, undefined, undefined, onConflict);
+
+      expect(mockedCreateConflictFile).toHaveBeenCalledWith(
+        config.localPath, 'notes.md', 'MY UNSAVED EDIT', 'local',
+      );
+      expect(onConflict).toHaveBeenCalledWith('notes.md', expect.any(String));
+      expect(result.filesDeleted).toBe(1);
+      expect(mockedFs.unlinkSync).toHaveBeenCalled();
+    });
+
+    it('deletes without a conflict copy when the local file is unchanged since last sync', async () => {
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [],
+        deletes: [
+          { path: 'notes.md', action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Deleted remotely' },
+        ],
+        totalBytes: 0,
+      };
+
+      vi.mocked(loadSyncState).mockReturnValueOnce({
+        syncId: 'sync-1',
+        local: { 'notes.md': { path: 'notes.md', hash: 'hash-UNCHANGED', mtime: '', size: 9 } },
+        remote: {},
+        updatedAt: '1970-01-01T00:00:00.000Z',
+      } as never);
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('UNCHANGED' as never);
+
+      await executePull({} as any, config, diff);
+
+      expect(mockedCreateConflictFile).not.toHaveBeenCalled();
+      expect(mockedFs.unlinkSync).toHaveBeenCalled();
     });
 
     it('should delete local files on remote deletion', async () => {
