@@ -1015,6 +1015,87 @@ describe('sync engine', () => {
     });
   });
 
+  describe('executePush conditional writes', () => {
+    it('sends the diff-observed remote hash as If-Match on an update', async () => {
+      const diff = {
+        uploads: [
+          { path: 'local.md', action: 'update' as const, direction: 'upload' as const, sizeBytes: 10, reason: 'Changed', remoteHash: 'remote-hash-at-diff-time' },
+        ],
+        deletes: [],
+        downloads: [],
+        totalBytes: 10,
+      };
+      const put = vi.fn().mockResolvedValue({});
+      mockedFs.readFileSync.mockReturnValue('# Local content' as any);
+
+      await executePush({ documents: { put } } as any, makeConfig(), diff);
+
+      expect(put).toHaveBeenCalledWith('vault-1', 'local.md', '# Local content', {
+        ifMatch: 'remote-hash-at-diff-time',
+      });
+    });
+
+    it('sends no precondition for a create, which has no remote counterpart', async () => {
+      const diff = {
+        uploads: [
+          { path: 'new.md', action: 'create' as const, direction: 'upload' as const, sizeBytes: 10, reason: 'New' },
+        ],
+        deletes: [],
+        downloads: [],
+        totalBytes: 10,
+      };
+      const put = vi.fn().mockResolvedValue({});
+      mockedFs.readFileSync.mockReturnValue('# New' as any);
+
+      await executePush({ documents: { put } } as any, makeConfig(), diff);
+
+      expect(put).toHaveBeenCalledWith('vault-1', 'new.md', '# New');
+    });
+
+    it('reports a 412 as a non-retryable conflict instead of retrying the write', async () => {
+      const diff = {
+        uploads: [
+          { path: 'raced.md', action: 'update' as const, direction: 'upload' as const, sizeBytes: 10, reason: 'Changed', remoteHash: 'stale' },
+        ],
+        deletes: [],
+        downloads: [],
+        totalBytes: 10,
+      };
+      const put = vi.fn().mockRejectedValue(
+        Object.assign(new Error('Precondition failed'), { statusCode: 412 }),
+      );
+      mockedFs.readFileSync.mockReturnValue('# Local content' as any);
+
+      const result = await executePush({ documents: { put } } as any, makeConfig(), diff);
+
+      // Retrying a precondition failure either keeps failing or, if forced past it,
+      // performs the very overwrite the precondition prevents.
+      expect(put).toHaveBeenCalledTimes(1);
+      expect(result.filesUploaded).toBe(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].retryable).toBe(false);
+      expect(result.errors[0].error).toContain('changed on the server');
+    });
+
+    it('guards the remote delete with the same precondition', async () => {
+      const diff = {
+        uploads: [],
+        downloads: [],
+        deletes: [
+          { path: 'gone.md', action: 'delete' as const, direction: 'upload' as const, sizeBytes: 0, reason: 'Deleted locally', remoteHash: 'remote-hash-at-diff-time' },
+        ],
+        totalBytes: 0,
+      };
+      const del = vi.fn().mockResolvedValue(undefined);
+
+      await executePush({ documents: { delete: del } } as any, makeConfig(), diff);
+
+      expect(del).toHaveBeenCalledWith('vault-1', 'gone.md', {
+        ifMatch: 'remote-hash-at-diff-time',
+      });
+    });
+  });
+
   describe('executePull root safety', () => {
     it('an untrusted root prevents the local delete', async () => {
       vi.mocked(assertSyncRoot)

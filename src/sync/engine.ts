@@ -408,8 +408,6 @@ export async function executePull(
     deletes: diff.deletes,
     transferCounterKey: 'filesDownloaded',
     async transferFile(entry, cfg, throttleCallback) {
-      // TODO(plan-review): send the diff's remote revision with If-Match once
-      // the document mutation API exposes conditional PUT/DELETE semantics.
       assertSyncRoot(cfg);
       const localFile = resolveWithinSyncRoot(cfg.localPath, entry.path);
 
@@ -449,8 +447,6 @@ export async function executePull(
       return content;
     },
     async deleteFile(entry, cfg) {
-      // TODO(plan-review): protect the preflight-to-delete window with an
-      // If-Match contract supplied by the server and SDK.
       assertSyncRoot(cfg);
       const localFile = resolveWithinSyncRoot(cfg.localPath, entry.path);
       if (!fs.existsSync(localFile)) return;
@@ -495,10 +491,20 @@ export async function executePush(
       // mismatched marker is a permanent condition, not a transient request
       // failure, and must not be re-probed with backoff.
       assertSyncRoot(cfg);
-      await retryWithBackoff(
-        () => client.documents.put(cfg.vaultId, entry.path, content),
-        throttleCallback ? () => throttleCallback(entry.path) : undefined,
-      );
+      // Close the diff-to-write window with a conditional PUT: apply only if the
+      // remote is still at the hash the diff observed. Without it, a remote edit
+      // landing between the comparison and this call was silently overwritten.
+      // `remoteHash` is undefined for a create, where there is nothing to guard.
+      try {
+        await retryWithBackoff(
+          () => entry.remoteHash !== undefined
+            ? client.documents.put(cfg.vaultId, entry.path, content, { ifMatch: entry.remoteHash })
+            : client.documents.put(cfg.vaultId, entry.path, content),
+          throttleCallback ? () => throttleCallback(entry.path) : undefined,
+        );
+      } catch (err) {
+        throw rewritePreconditionFailure(err, entry.path, 'upload');
+      }
       return content;
     },
     async deleteFile(entry, cfg) {
@@ -506,8 +512,14 @@ export async function executePush(
       resolveWithinSyncRoot(cfg.localPath, entry.path);
       assertSyncRoot(cfg);
       try {
-        await retryWithBackoff(() => client.documents.delete(cfg.vaultId, entry.path));
+        // Same precondition on the delete: the preflight-to-delete window is
+        // exactly where a concurrent remote edit would otherwise be destroyed.
+        await retryWithBackoff(() => entry.remoteHash !== undefined
+          ? client.documents.delete(cfg.vaultId, entry.path, { ifMatch: entry.remoteHash })
+          : client.documents.delete(cfg.vaultId, entry.path));
       } catch (err) {
+        const precondition = rewritePreconditionFailure(err, entry.path, 'delete');
+        if (precondition !== err) throw precondition;
         if (getStatusCode(err) === 403) {
           throw new SyncPermissionError(
             `Remote delete of ${entry.path} was forbidden (403). Deleting documents in a team vault requires the admin role; `
@@ -518,6 +530,27 @@ export async function executePush(
       }
     },
   }, onProgress, concurrency, onThrottle);
+}
+
+/**
+ * Turn a 412 from a conditional write into an operator-facing message.
+ *
+ * A precondition failure means the remote changed after the diff observed it, so the
+ * local view is stale. Retrying is exactly wrong — it either keeps failing or, if
+ * forced past the precondition, performs the silent overwrite the precondition
+ * exists to prevent. Left as a status-carrying error so isRetryableSyncError
+ * classifies it as non-retryable.
+ */
+function rewritePreconditionFailure(err: unknown, docPath: string, operation: 'upload' | 'delete'): unknown {
+  if (getStatusCode(err) !== 412) return err;
+  const verb = operation === 'upload' ? 'Remote update' : 'Remote delete';
+  return Object.assign(
+    new Error(
+      `${verb} of ${docPath} was refused: the document changed on the server since this sync compared it. `
+      + 'Run `lsvault sync pull` to reconcile, then retry.',
+    ),
+    { statusCode: 412, name: 'SyncPreconditionError' },
+  );
 }
 
 /** A permanent authorization failure surfaced with an operator-facing message. */
