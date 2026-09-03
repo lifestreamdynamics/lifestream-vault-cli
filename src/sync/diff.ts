@@ -163,6 +163,11 @@ export function computePushDiff(
         direction: 'upload',
         sizeBytes: local.size,
         reason: 'Local file updated',
+        // The remote hash observed while diffing. executePush sends it as an
+        // If-Match precondition so a remote edit landing between this comparison
+        // and the write is refused rather than silently overwritten. A 'create'
+        // entry has no remote counterpart and correctly carries no hash.
+        remoteHash: remote.hash,
       });
     } else if (!lastLocal && local.hash !== remote.hash) {
       // First sync, files differ — local wins on push
@@ -172,6 +177,7 @@ export function computePushDiff(
         direction: 'upload',
         sizeBytes: local.size,
         reason: 'Content differs (first sync, push prefers local)',
+        remoteHash: remote.hash,
       });
     }
   }
@@ -185,6 +191,8 @@ export function computePushDiff(
         direction: 'upload',
         sizeBytes: 0,
         reason: 'Deleted locally',
+        // Guards the preflight-to-delete window; see the upload branches above.
+        remoteHash: remoteFiles[docPath].hash,
       });
     }
   }

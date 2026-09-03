@@ -184,6 +184,11 @@ export function createRemotePoller(
                 if (canPush) {
                   assertSyncRoot(config);
                   await client.documents.put(config.vaultId, change.path, localContent);
+              // This poll just wrote to the remote, so the list ETag it was handed
+              // describes the pre-write state — same reasoning as the delete-conflict
+              // branch below.
+              state.remoteListEtag = undefined;
+              listEtagInvalidated = true;
                   log(`Conflict: ${change.path} — used local, saved remote as ${conflictFile}`);
                 } else {
                   log(`Conflict: ${change.path} — kept local edit (pull-only, remote not updated), saved remote as ${conflictFile}`);

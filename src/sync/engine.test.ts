@@ -1016,6 +1016,59 @@ describe('sync engine', () => {
   });
 
   describe('executePush conditional writes', () => {
+    // These tests drive the REAL computePushDiff into executePush. Hand-building a
+    // diff entry with remoteHash set is what let the precondition ship as dead code:
+    // computePushDiff never populated the field, so executePush always took its
+    // unconditional branch while fixture-based tests passed.
+    it('sends a precondition derived from a real push diff, not a hand-built entry', async () => {
+      const localFiles = {
+        'notes/changed.md': { path: 'notes/changed.md', hash: 'local-new', mtime: 'm', size: 10 },
+      };
+      const remoteFiles = {
+        'notes/changed.md': { path: 'notes/changed.md', hash: 'remote-observed', mtime: 'm', size: 10 },
+      };
+      const lastState = {
+        syncId: 'sync-1',
+        local: { 'notes/changed.md': { path: 'notes/changed.md', hash: 'local-old', mtime: 'm', size: 10 } },
+        remote: { 'notes/changed.md': { path: 'notes/changed.md', hash: 'remote-observed', mtime: 'm', size: 10 } },
+        updatedAt: '',
+      } as any;
+
+      const diff = computePushDiff(localFiles as any, remoteFiles as any, lastState);
+      expect(diff.uploads).toHaveLength(1);
+
+      const put = vi.fn().mockResolvedValue({});
+      mockedFs.readFileSync.mockReturnValue('# Local content' as any);
+
+      await executePush({ documents: { put } } as any, makeConfig(), diff);
+
+      expect(put).toHaveBeenCalledWith('vault-1', 'notes/changed.md', '# Local content', {
+        ifMatch: 'remote-observed',
+      });
+    });
+
+    it('sends a precondition on a delete derived from a real push diff', async () => {
+      const lastState = {
+        syncId: 'sync-1',
+        local: { 'notes/gone.md': { path: 'notes/gone.md', hash: 'h', mtime: 'm', size: 5 } },
+        remote: { 'notes/gone.md': { path: 'notes/gone.md', hash: 'remote-observed', mtime: 'm', size: 5 } },
+        updatedAt: '',
+      } as any;
+
+      const diff = computePushDiff(
+        {} as any,
+        { 'notes/gone.md': { path: 'notes/gone.md', hash: 'remote-observed', mtime: 'm', size: 5 } } as any,
+        lastState,
+      );
+      expect(diff.deletes).toHaveLength(1);
+
+      const del = vi.fn().mockResolvedValue(undefined);
+
+      await executePush({ documents: { delete: del } } as any, makeConfig(), diff);
+
+      expect(del).toHaveBeenCalledWith('vault-1', 'notes/gone.md', { ifMatch: 'remote-observed' });
+    });
+
     it('sends the diff-observed remote hash as If-Match on an update', async () => {
       const diff = {
         uploads: [

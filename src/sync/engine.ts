@@ -549,7 +549,7 @@ function rewritePreconditionFailure(err: unknown, docPath: string, operation: 'u
       `${verb} of ${docPath} was refused: the document changed on the server since this sync compared it. `
       + 'Run `lsvault sync pull` to reconcile, then retry.',
     ),
-    { statusCode: 412, name: 'SyncPreconditionError' },
+    { statusCode: 412, name: 'SyncPreconditionError', cause: err },
   );
 }
 
