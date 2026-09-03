@@ -199,16 +199,22 @@ export function createWatcher(
       const lastLocal = state.local[docPath];
       const lastRemote = state.remote[docPath];
 
-      // Check remote for conflicts in bidirectional mode
-      if (config.mode === 'sync' && lastRemote) {
+      // Check remote for conflicts in bidirectional mode.
+      // This used to be gated on `lastRemote` being present, which skipped the check in
+      // exactly the case where the remote is least known: no recorded shared state at
+      // all. The PUT then went out blind and could overwrite a document created on the
+      // server since the last sync. With no baseline we send an unconditional GET and
+      // treat any existing remote content as needing reconciliation - detectConflict
+      // already returns true for a differing hash with no last-known state.
+      if (config.mode === 'sync') {
         try {
           const result = await client.documents.get(config.vaultId, docPath, {
-            ifNoneMatch: `"${lastRemote.hash}"`,
+            ...(lastRemote ? { ifNoneMatch: `"${lastRemote.hash}"` } : {}),
           });
           if (!result.notModified) {
             // Server returned the body — check if hash differs from our last-known state.
             const remoteHash = hashFileContent(result.content);
-            if (remoteHash !== lastRemote.hash) {
+            if (!lastRemote || remoteHash !== lastRemote.hash) {
               const conflictResult = await handleConflict({
                 docPath, localContent: content, localHash,
                 lastLocal, lastRemote,
@@ -277,10 +283,13 @@ export function createWatcher(
         const state = loadSyncState(config.id);
         const lastRemote = state.remote[docPath];
         let remoteAlreadyMissing = false;
-        if (config.mode === 'sync' && lastRemote) {
+        // As on the write path, the preflight must run even with no recorded shared
+        // state — otherwise a local delete of a file we never synced issues an
+        // unconditional remote DELETE against content we have never seen.
+        if (config.mode === 'sync') {
           try {
             const result = await client.documents.get(config.vaultId, docPath, {
-              ifNoneMatch: `"${lastRemote.hash}"`,
+              ...(lastRemote ? { ifNoneMatch: `"${lastRemote.hash}"` } : {}),
             });
             if (!result.notModified) {
               // The remote changed after the last shared state while the local
@@ -289,7 +298,7 @@ export function createWatcher(
               // the SDK, so this preflight is the strongest available guard.
               const remoteContent = result.content;
               const remoteHash = hashFileContent(remoteContent);
-              if (remoteHash !== lastRemote.hash) {
+              if (!lastRemote || remoteHash !== lastRemote.hash) {
                 const localDeletionState = {
                   path: docPath,
                   hash: '',

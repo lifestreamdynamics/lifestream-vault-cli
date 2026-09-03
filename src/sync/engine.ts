@@ -258,12 +258,19 @@ async function executeSyncOperation(
   // caller can see the run was incomplete.
   let stopSubmitting = false;
   let stopReason = '';
+  // Set by ANY failed transfer, not just quota/throttle. The delete list was computed
+  // from a diff snapshot; once a transfer in that same run has failed we no longer know
+  // the snapshot still holds, and acting on its deletes can remove a file whose remote
+  // counterpart we were never able to read. Transfers continue (a single transient
+  // failure should not abort the whole pull), but deletes are held back.
+  let transferFailed = false;
+  let deleteHoldReason = '';
 
   function recordSkipped(entry: SyncDiffEntry): void {
     result.filesSkipped++;
     result.errors.push({
       path: entry.path,
-      error: `Skipped: not attempted after ${stopReason || 'an earlier failure'}`,
+      error: `Skipped: not attempted after ${stopReason || deleteHoldReason || 'an earlier failure'}`,
       retryable: true,
     });
   }
@@ -299,6 +306,8 @@ async function executeSyncOperation(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       result.errors.push({ path: entry.path, error: message, retryable: isRetryableSyncError(err) });
+      transferFailed = true;
+      deleteHoldReason = `a failed transfer (${entry.path})`;
       if (isQuotaError(message)) {
         stopSubmitting = true;
         stopReason = 'a quota error';
@@ -330,7 +339,7 @@ async function executeSyncOperation(
 
   for (const entry of handlers.deletes) {
     current++;
-    if (stopSubmitting) {
+    if (stopSubmitting || transferFailed) {
       recordSkipped(entry);
       continue;
     }

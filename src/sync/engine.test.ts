@@ -507,6 +507,64 @@ describe('sync engine', () => {
       expect(result.errors[0].error).toContain('quota exceeded');
     });
 
+    it('holds back deletes when any download in the same run failed', async () => {
+      // The delete list comes from a diff snapshot. Once a transfer in the same run
+      // has failed, that snapshot is no longer known to hold, so acting on its deletes
+      // can remove a file whose remote counterpart was never successfully read.
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [
+          { path: 'fail.md', action: 'create' as const, direction: 'download' as const, sizeBytes: 10, reason: 'New' },
+        ],
+        deletes: [
+          { path: 'gone.md', action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Removed remotely' },
+        ],
+        totalBytes: 10,
+      };
+
+      const mockClient = {
+        documents: {
+          // An ordinary transient failure — not quota, not a 429.
+          get: vi.fn().mockRejectedValue(new Error('socket hang up')),
+        },
+      } as any;
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const result = await executePull(mockClient, config, diff);
+
+      expect(result.filesDeleted).toBe(0);
+      expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+      expect(result.errors.map(e => e.path)).toContain('gone.md');
+      expect(result.errors.find(e => e.path === 'gone.md')?.error).toContain('fail.md');
+    });
+
+    it('still applies deletes when every download succeeded', async () => {
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [
+          { path: 'ok.md', action: 'create' as const, direction: 'download' as const, sizeBytes: 10, reason: 'New' },
+        ],
+        deletes: [
+          { path: 'gone.md', action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Removed remotely' },
+        ],
+        totalBytes: 10,
+      };
+
+      const mockClient = {
+        documents: {
+          get: vi.fn().mockResolvedValue({ content: '# ok', document: { path: 'ok.md' } }),
+        },
+      } as any;
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const result = await executePull(mockClient, config, diff);
+
+      expect(result.filesDownloaded).toBe(1);
+      expect(result.filesDeleted).toBe(1);
+    });
+
     it('rejects traversal downloads before network or filesystem access', async () => {
       const diff = {
         uploads: [],

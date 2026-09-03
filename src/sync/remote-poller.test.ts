@@ -680,6 +680,90 @@ describe('remote-poller', () => {
     expect(savedState.remoteListEtag).toBeUndefined();
   });
 
+  describe('per-document error isolation', () => {
+    it('keeps the progress of documents that succeeded when one fails', async () => {
+      const config = makeConfig();
+      mockLoadSyncState.mockReturnValue(makeState({}));
+      mockedFs.existsSync.mockReturnValue(false);
+      const client = makeClient();
+      client._syncList.mockResolvedValue({
+        vaultUnchanged: false,
+        changes: [
+          { path: 'notes/good.md', fileModifiedAt: '2026-06-01T00:00:00.000Z' },
+          { path: 'notes/bad.md', fileModifiedAt: '2026-06-01T00:00:00.000Z' },
+        ],
+        removed: [],
+        unchanged: [],
+        listEtag: 'W/"batch"',
+      });
+      client._get.mockImplementation(async (_vaultId: string, docPath: string) => {
+        if (docPath === 'notes/bad.md') throw new Error('500 Internal Server Error');
+        return { content: '# good', document: { path: docPath, updatedAt: '2026-06-01T00:00:00.000Z' } };
+      });
+
+      const poller = createRemotePoller(client as any, config, {
+        ignorePatterns: [], intervalMs: 60_000,
+      });
+      await poller.stop();
+
+      const savedState = mockSaveSyncState.mock.calls.at(-1)?.[0] as SyncState;
+      // The good document's progress is committed rather than discarded...
+      expect(savedState.remote['notes/good.md']).toBeDefined();
+      // ...and the list ETag is held back so the next poll re-offers the failed one
+      // instead of being told nothing changed.
+      expect(savedState.remoteListEtag).toBeUndefined();
+    });
+
+    it('commits the list ETag once every document in the batch applied', async () => {
+      const config = makeConfig();
+      mockLoadSyncState.mockReturnValue(makeState({}));
+      mockedFs.existsSync.mockReturnValue(false);
+      const client = makeClient();
+      client._syncList.mockResolvedValue({
+        vaultUnchanged: false,
+        changes: [{ path: 'notes/good.md', fileModifiedAt: '2026-06-01T00:00:00.000Z' }],
+        removed: [],
+        unchanged: [],
+        listEtag: 'W/"batch"',
+      });
+      client._get.mockResolvedValue({
+        content: '# good',
+        document: { path: 'notes/good.md', updatedAt: '2026-06-01T00:00:00.000Z' },
+      });
+
+      const poller = createRemotePoller(client as any, config, {
+        ignorePatterns: [], intervalMs: 60_000,
+      });
+      await poller.stop();
+
+      const savedState = mockSaveSyncState.mock.calls.at(-1)?.[0] as SyncState;
+      expect(savedState.remoteListEtag).toBe('W/"batch"');
+    });
+
+    it('still aborts the whole poll on a path-containment failure', async () => {
+      const config = makeConfig();
+      mockLoadSyncState.mockReturnValue(makeState({}));
+      const onError = vi.fn();
+      const client = makeClient();
+      client._syncList.mockResolvedValue({
+        vaultUnchanged: false,
+        changes: [{ path: '../outside.md', fileModifiedAt: '2026-06-01T00:00:00.000Z' }],
+        removed: [],
+        unchanged: [],
+        listEtag: 'W/"evil"',
+      });
+
+      const poller = createRemotePoller(client as any, config, {
+        ignorePatterns: [], intervalMs: 60_000, onError,
+      });
+      await poller.stop();
+
+      // Isolation must not downgrade a traversal rejection into a skipped path.
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({ name: 'SyncPathError' }));
+      expect(client._get).not.toHaveBeenCalled();
+    });
+  });
+
   describe('pull-only mode never writes to the remote', () => {
     it('keeps the local edit and backs up the remote on a changed-doc conflict, without PUT', async () => {
       const config = makeConfig({ mode: 'pull', onConflict: 'local' });

@@ -5,6 +5,7 @@
  * an intentionally empty directory and propagated as mass remote deletion.
  */
 import fs from 'node:fs';
+import { SyncPathError } from './sync-errors.js';
 import path from 'node:path';
 import type { SyncConfig } from './types.js';
 
@@ -133,14 +134,14 @@ export function writeSyncRootMarker(config: Pick<SyncConfig, 'id' | 'vaultId' | 
 /** Fail closed unless the configured root and its identity marker are valid. */
 export function assertSyncRoot(config: SyncConfig): void {
   if (config.rootMarkerVersion !== SYNC_ROOT_MARKER_VERSION) {
-    throw new Error(
+    throw new SyncPathError(
       `Sync ${config.id} has an untrusted legacy root. Run \`lsvault sync trust-root ${config.id}\` after verifying ${config.localPath}.`,
     );
   }
   assertUsableDirectory(config.localPath);
   const marker = readMarker(config.localPath);
   if (marker.syncId !== config.id || marker.vaultId !== config.vaultId) {
-    throw new Error(
+    throw new SyncPathError(
       `Sync root marker mismatch at ${config.localPath}: expected sync ${config.id} for vault ${config.vaultId}.`,
     );
   }

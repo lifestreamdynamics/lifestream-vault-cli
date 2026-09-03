@@ -475,6 +475,56 @@ describe('sync watcher', () => {
     expect(mockPut).toHaveBeenCalledWith('vault-1', 'notes/test.md', localContent);
   });
 
+  it('conflict-check: preflights even with no recorded remote state', async () => {
+    // The preflight used to be gated on a recorded lastRemote, so precisely the case
+    // where the remote is least known — no shared state at all — got no check and the
+    // PUT went out blind.
+    mockLoadSyncState.mockReturnValue({ syncId: 'sync-1', local: {}, remote: {}, updatedAt: '' });
+    mockedFs.readFileSync.mockReturnValue('# local edit' as any);
+    mockHashFileContent.mockImplementation((c: string) => `hash-${c.slice(0, 8)}`);
+
+    // Must be the structured SDK error: an untyped 404-ish error leaves the remote
+    // state unknown and correctly aborts the PUT.
+    const get = vi.fn().mockRejectedValue(new NotFoundError('Document', 'notes/test.md'));
+    const put = vi.fn().mockResolvedValue({});
+    const client = { documents: { get, put } } as any;
+
+    createWatcher(client, makeConfig({ mode: 'sync' }), { ignorePatterns: [], debounceMs: 0 });
+    await triggerChange('/home/user/vault/notes/test.md');
+
+    // Unconditional GET: no baseline hash to send.
+    expect(get).toHaveBeenCalledWith('vault-1', 'notes/test.md', {});
+    // A confirmed 404 means nothing to clobber, so the create proceeds.
+    expect(put).toHaveBeenCalledWith('vault-1', 'notes/test.md', '# local edit');
+  });
+
+  it('conflict-check: does not blind-write over remote content it has no record of', async () => {
+    mockLoadSyncState.mockReturnValue({ syncId: 'sync-1', local: {}, remote: {}, updatedAt: '' });
+    mockedFs.readFileSync.mockReturnValue('# local edit' as any);
+    mockHashFileContent.mockImplementation((c: string) => `hash-${c.slice(0, 8)}`);
+
+    // A document was created on the server since this client last synced.
+    const get = vi.fn().mockResolvedValue({
+      notModified: false,
+      content: '# created on the server',
+      document: { path: 'notes/test.md', updatedAt: '2026-06-01T00:00:00.000Z' },
+    });
+    const put = vi.fn().mockResolvedValue({});
+    const client = { documents: { get, put } } as any;
+    // No shared baseline + differing hashes is a conflict (see detectConflict).
+    mockDetectConflict.mockReturnValue(true);
+
+    createWatcher(client, makeConfig({ mode: 'sync', onConflict: 'local' }), {
+      ignorePatterns: [], debounceMs: 0,
+    });
+    await triggerChange('/home/user/vault/notes/test.md');
+
+    expect(get).toHaveBeenCalledWith('vault-1', 'notes/test.md', {});
+    // The remote content must be preserved as a conflict copy rather than silently
+    // replaced by the local file.
+    expect(vi.mocked(createConflictFile)).toHaveBeenCalled();
+  });
+
   it('conflict-check: server failure aborts instead of overwriting remote state', async () => {
     mockLoadSyncState.mockReturnValue({
       syncId: 'sync-1',

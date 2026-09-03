@@ -14,7 +14,7 @@ import { isThrottleError } from './engine.js';
 import { atomicWriteFileSync } from './atomic-write.js';
 import { assertSyncRoot } from './root-marker.js';
 import type { SyncOperationSerializer } from './watcher.js';
-import { resolveWithinSyncRoot } from './safe-path.js';
+import { resolveWithinSyncRoot, SyncPathError } from './safe-path.js';
 import { awaitWithTimeout, defaultShutdownTimeoutMs } from './shutdown.js';
 
 export const DEFAULT_POLL_INTERVAL_MS = 30_000;
@@ -101,203 +101,240 @@ export function createRemotePoller(
       // Steady-state: server confirmed nothing changed — skip all per-doc work.
       if (sync.vaultUnchanged) return;
 
-      // Persist the new list ETag so the next poll can 304.
-      state.remoteListEtag = sync.listEtag;
-      stateMutated = true;
+      // Paths that failed this pass. Held back rather than thrown, so one
+      // permanently-unsyncable document cannot discard every other document's
+      // progress and wedge the vault forever.
+      const failedPaths: string[] = [];
+      // Set when this poll writes to the remote, which invalidates the list ETag the
+      // server returned for the pre-write state.
+      let listEtagInvalidated = false;
 
       // Process added/changed documents.
       for (const change of sync.changes) {
         if (shouldIgnore(change.path, ignorePatterns)) continue;
-        const localFile = resolveWithinSyncRoot(config.localPath, change.path);
+        try {
+          const localFile = resolveWithinSyncRoot(config.localPath, change.path);
 
-        const lastRemote = state.remote[change.path];
+          const lastRemote = state.remote[change.path];
 
-        let content: string;
-        let remoteHash: string;
+          let content: string;
+          let remoteHash: string;
 
-        if (lastRemote) {
-          // Conditional GET — server can still 304 us if our hash is current
-          // (rare: syncList classified this as 'changed' but the GET hash matches
-          // our last-known hash — possible race between list and get).
-          assertSyncRoot(config);
-          const result = await client.documents.get(config.vaultId, change.path, {
-            ifNoneMatch: `"${lastRemote.hash}"`,
-          });
-          if (result.notModified) {
-            // Server confirmed our copy is current despite differing list hash.
-            // Update mtime only; no file write needed.
-            if (lastRemote.mtime !== change.fileModifiedAt) {
-              state.remote[change.path] = { ...lastRemote, mtime: change.fileModifiedAt };
-              stateMutated = true;
-            }
-            continue;
-          }
-          content = result.content;
-          remoteHash = hashFileContent(content);
-        } else {
-          // First-time entry: unconditional GET.
-          assertSyncRoot(config);
-          const fetched = await client.documents.get(config.vaultId, change.path);
-          content = fetched.content;
-          remoteHash = hashFileContent(content);
-        }
-
-        const localExists = fs.existsSync(localFile);
-
-        if (localExists) {
-          const localContent = fs.readFileSync(localFile, 'utf-8');
-          const localHash = hashFileContent(localContent);
-
-          if (localHash === remoteHash) {
-            // Content is already the same — just update state
-            state.local[change.path] = { path: change.path, hash: localHash, mtime: new Date().toISOString(), size: Buffer.byteLength(localContent) };
-            state.remote[change.path] = buildRemoteFileState(change.path, content, change.fileModifiedAt);
-            stateMutated = true;
-            continue;
-          }
-
-          // Check for conflict
-          const lastLocal = state.local[change.path];
-          const localState = { path: change.path, hash: localHash, mtime: fs.statSync(localFile).mtime.toISOString(), size: Buffer.byteLength(localContent) };
-          const remoteState = { path: change.path, hash: remoteHash, mtime: change.fileModifiedAt, size: Buffer.byteLength(content) };
-
-          if (detectConflict(localState, remoteState, lastLocal, lastRemote)) {
-            const resolution = resolveConflict(config.onConflict, localState, remoteState);
-            let conflictFile: string | null = null;
-
-            if (resolution === 'remote') {
-              assertSyncRoot(config);
-              conflictFile = createConflictFile(config.localPath, change.path, localContent, 'local');
-              assertSyncRoot(config);
-              const mutationTarget = resolveWithinSyncRoot(config.localPath, change.path);
-              onLocalWrite?.(change.path);
-              atomicWriteFileSync(mutationTarget, content, 'utf-8');
-              log(`Conflict: ${change.path} — used remote, saved local as ${conflictFile}`);
-            } else {
-              assertSyncRoot(config);
-              conflictFile = createConflictFile(config.localPath, change.path, content, 'remote');
-              if (canPush) {
-                assertSyncRoot(config);
-                await client.documents.put(config.vaultId, change.path, localContent);
-                log(`Conflict: ${change.path} — used local, saved remote as ${conflictFile}`);
-              } else {
-                log(`Conflict: ${change.path} — kept local edit (pull-only, remote not updated), saved remote as ${conflictFile}`);
+          if (lastRemote) {
+            // Conditional GET — server can still 304 us if our hash is current
+            // (rare: syncList classified this as 'changed' but the GET hash matches
+            // our last-known hash — possible race between list and get).
+            assertSyncRoot(config);
+            const result = await client.documents.get(config.vaultId, change.path, {
+              ifNoneMatch: `"${lastRemote.hash}"`,
+            });
+            if (result.notModified) {
+              // Server confirmed our copy is current despite differing list hash.
+              // Update mtime only; no file write needed.
+              if (lastRemote.mtime !== change.fileModifiedAt) {
+                state.remote[change.path] = { ...lastRemote, mtime: change.fileModifiedAt };
+                stateMutated = true;
               }
+              continue;
+            }
+            content = result.content;
+            remoteHash = hashFileContent(content);
+          } else {
+            // First-time entry: unconditional GET.
+            assertSyncRoot(config);
+            const fetched = await client.documents.get(config.vaultId, change.path);
+            content = fetched.content;
+            remoteHash = hashFileContent(content);
+          }
+
+          const localExists = fs.existsSync(localFile);
+
+          if (localExists) {
+            const localContent = fs.readFileSync(localFile, 'utf-8');
+            const localHash = hashFileContent(localContent);
+
+            if (localHash === remoteHash) {
+              // Content is already the same — just update state
+              state.local[change.path] = { path: change.path, hash: localHash, mtime: new Date().toISOString(), size: Buffer.byteLength(localContent) };
+              state.remote[change.path] = buildRemoteFileState(change.path, content, change.fileModifiedAt);
+              stateMutated = true;
+              continue;
             }
 
-            onConflictLog?.(formatConflictLog(change.path, resolution, conflictFile));
+            // Check for conflict
+            const lastLocal = state.local[change.path];
+            const localState = { path: change.path, hash: localHash, mtime: fs.statSync(localFile).mtime.toISOString(), size: Buffer.byteLength(localContent) };
+            const remoteState = { path: change.path, hash: remoteHash, mtime: change.fileModifiedAt, size: Buffer.byteLength(content) };
 
-            state.local[change.path] = resolution === 'remote' ? remoteState : localState;
-            // In pull-only mode the remote was not rewritten, so record the
-            // server's actual content as the last-known remote state; the next
-            // poll then sees it as unchanged instead of re-raising the conflict.
-            state.remote[change.path] = resolution === 'remote' || !canPush
-              ? buildRemoteFileState(change.path, content, change.fileModifiedAt)
-              : buildRemoteFileState(change.path, localContent, new Date().toISOString());
-            stateMutated = true;
-            changes++;
-            continue;
+            if (detectConflict(localState, remoteState, lastLocal, lastRemote)) {
+              const resolution = resolveConflict(config.onConflict, localState, remoteState);
+              let conflictFile: string | null = null;
+
+              if (resolution === 'remote') {
+                assertSyncRoot(config);
+                conflictFile = createConflictFile(config.localPath, change.path, localContent, 'local');
+                assertSyncRoot(config);
+                const mutationTarget = resolveWithinSyncRoot(config.localPath, change.path);
+                onLocalWrite?.(change.path);
+                atomicWriteFileSync(mutationTarget, content, 'utf-8');
+                log(`Conflict: ${change.path} — used remote, saved local as ${conflictFile}`);
+              } else {
+                assertSyncRoot(config);
+                conflictFile = createConflictFile(config.localPath, change.path, content, 'remote');
+                if (canPush) {
+                  assertSyncRoot(config);
+                  await client.documents.put(config.vaultId, change.path, localContent);
+                  log(`Conflict: ${change.path} — used local, saved remote as ${conflictFile}`);
+                } else {
+                  log(`Conflict: ${change.path} — kept local edit (pull-only, remote not updated), saved remote as ${conflictFile}`);
+                }
+              }
+
+              onConflictLog?.(formatConflictLog(change.path, resolution, conflictFile));
+
+              state.local[change.path] = resolution === 'remote' ? remoteState : localState;
+              // In pull-only mode the remote was not rewritten, so record the
+              // server's actual content as the last-known remote state; the next
+              // poll then sees it as unchanged instead of re-raising the conflict.
+              state.remote[change.path] = resolution === 'remote' || !canPush
+                ? buildRemoteFileState(change.path, content, change.fileModifiedAt)
+                : buildRemoteFileState(change.path, localContent, new Date().toISOString());
+              stateMutated = true;
+              changes++;
+              continue;
+            }
           }
-        }
 
-        // No conflict — download the file atomically
-        assertSyncRoot(config);
-        const mutationTarget = resolveWithinSyncRoot(config.localPath, change.path);
-        const dir = path.dirname(mutationTarget);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
-        onLocalWrite?.(change.path);
-        atomicWriteFileSync(mutationTarget, content, 'utf-8');
-        log(`Pulled: ${change.path}`);
-        changes++;
+          // No conflict — download the file atomically
+          assertSyncRoot(config);
+          const mutationTarget = resolveWithinSyncRoot(config.localPath, change.path);
+          const dir = path.dirname(mutationTarget);
+          if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+          }
+          onLocalWrite?.(change.path);
+          atomicWriteFileSync(mutationTarget, content, 'utf-8');
+          log(`Pulled: ${change.path}`);
+          changes++;
 
-        state.local[change.path] = {
-          path: change.path,
-          hash: remoteHash,
-          mtime: new Date().toISOString(),
-          size: Buffer.byteLength(content),
-        };
-        state.remote[change.path] = buildRemoteFileState(change.path, content, change.fileModifiedAt);
-        stateMutated = true;
+          state.local[change.path] = {
+            path: change.path,
+            hash: remoteHash,
+            mtime: new Date().toISOString(),
+            size: Buffer.byteLength(content),
+          };
+          state.remote[change.path] = buildRemoteFileState(change.path, content, change.fileModifiedAt);
+          stateMutated = true;
+        } catch (err) {
+          // A throttle applies to the whole poll, not one document — let it out so the
+          // outer handler can back off instead of marking every path as failed.
+          if (isThrottleError(err)) throw err;
+          // A containment failure is never "just this document" — let it abort the
+          // poll and reach onError rather than being recorded as a skipped path.
+          if (err instanceof SyncPathError) throw err;
+          failedPaths.push(change.path);
+          log(`Failed to pull ${change.path}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
 
       // Process remote deletions.
       for (const removedPath of sync.removed) {
         if (shouldIgnore(removedPath, ignorePatterns)) continue;
-        assertSyncRoot(config);
-        const localFile = resolveWithinSyncRoot(config.localPath, removedPath);
-        if (fs.existsSync(localFile)) {
-          const localContent = fs.readFileSync(localFile, 'utf-8');
-          const localHash = hashFileContent(localContent);
-          const lastLocal = state.local[removedPath];
-          const localChanged = !lastLocal || localHash !== lastLocal.hash;
+        try {
+          assertSyncRoot(config);
+          const localFile = resolveWithinSyncRoot(config.localPath, removedPath);
+          if (fs.existsSync(localFile)) {
+            const localContent = fs.readFileSync(localFile, 'utf-8');
+            const localHash = hashFileContent(localContent);
+            const lastLocal = state.local[removedPath];
+            const localChanged = !lastLocal || localHash !== lastLocal.hash;
 
-          if (localChanged) {
-            // A remote tombstone and a local edit are a real conflict. Treat
-            // deletion as the remote side's latest state and preserve the
-            // losing content before applying the configured policy.
-            const localMtime = fs.statSync(localFile).mtime.toISOString();
-            const localState = {
-              path: removedPath,
-              hash: localHash,
-              mtime: localMtime,
-              size: Buffer.byteLength(localContent),
-            };
-            const remoteDeletionState = {
-              path: removedPath,
-              hash: '',
-              mtime: new Date().toISOString(),
-              size: 0,
-            };
-            const resolution = resolveConflict(config.onConflict, localState, remoteDeletionState);
-            let conflictFile: string | null = null;
+            if (localChanged) {
+              // A remote tombstone and a local edit are a real conflict. Treat
+              // deletion as the remote side's latest state and preserve the
+              // losing content before applying the configured policy.
+              const localMtime = fs.statSync(localFile).mtime.toISOString();
+              const localState = {
+                path: removedPath,
+                hash: localHash,
+                mtime: localMtime,
+                size: Buffer.byteLength(localContent),
+              };
+              const remoteDeletionState = {
+                path: removedPath,
+                hash: '',
+                mtime: new Date().toISOString(),
+                size: 0,
+              };
+              const resolution = resolveConflict(config.onConflict, localState, remoteDeletionState);
+              let conflictFile: string | null = null;
 
-            if (resolution === 'local' && !canPush) {
-              // Pull-only: keep the local edit on disk but do not resurrect
-              // the remote document. It is no longer tracked on either side.
-              delete state.local[removedPath];
-              delete state.remote[removedPath];
-              log(`Conflict: ${removedPath} — remote deleted; kept local edit (pull-only, not re-uploaded)`);
-            } else if (resolution === 'local') {
-              assertSyncRoot(config);
-              await client.documents.put(config.vaultId, removedPath, localContent);
-              state.local[removedPath] = localState;
-              state.remote[removedPath] = buildRemoteFileState(
-                removedPath,
-                localContent,
-                new Date().toISOString(),
-              );
-              // The PUT invalidates the list ETag returned by this poll.
-              state.remoteListEtag = undefined;
-              log(`Conflict: ${removedPath} — restored local edit to remote`);
-            } else {
-              assertSyncRoot(config);
-              conflictFile = createConflictFile(config.localPath, removedPath, localContent, 'local');
-              assertSyncRoot(config);
-              const mutationTarget = resolveWithinSyncRoot(config.localPath, removedPath);
-              onLocalWrite?.(removedPath);
-              fs.unlinkSync(mutationTarget);
-              delete state.local[removedPath];
-              delete state.remote[removedPath];
-              log(`Conflict: ${removedPath} — accepted remote deletion, saved local as ${conflictFile}`);
+              if (resolution === 'local' && !canPush) {
+                // Pull-only: keep the local edit on disk but do not resurrect
+                // the remote document. It is no longer tracked on either side.
+                delete state.local[removedPath];
+                delete state.remote[removedPath];
+                log(`Conflict: ${removedPath} — remote deleted; kept local edit (pull-only, not re-uploaded)`);
+              } else if (resolution === 'local') {
+                assertSyncRoot(config);
+                await client.documents.put(config.vaultId, removedPath, localContent);
+                state.local[removedPath] = localState;
+                state.remote[removedPath] = buildRemoteFileState(
+                  removedPath,
+                  localContent,
+                  new Date().toISOString(),
+                );
+                // The PUT invalidates the list ETag returned by this poll.
+                state.remoteListEtag = undefined;
+                listEtagInvalidated = true;
+                log(`Conflict: ${removedPath} — restored local edit to remote`);
+              } else {
+                assertSyncRoot(config);
+                conflictFile = createConflictFile(config.localPath, removedPath, localContent, 'local');
+                assertSyncRoot(config);
+                const mutationTarget = resolveWithinSyncRoot(config.localPath, removedPath);
+                onLocalWrite?.(removedPath);
+                fs.unlinkSync(mutationTarget);
+                delete state.local[removedPath];
+                delete state.remote[removedPath];
+                log(`Conflict: ${removedPath} — accepted remote deletion, saved local as ${conflictFile}`);
+              }
+              onConflictLog?.(formatConflictLog(removedPath, resolution, conflictFile));
+              stateMutated = true;
+              changes++;
+              continue;
             }
-            onConflictLog?.(formatConflictLog(removedPath, resolution, conflictFile));
-            stateMutated = true;
-            changes++;
-            continue;
-          }
 
-          onLocalWrite?.(removedPath);
-          fs.unlinkSync(resolveWithinSyncRoot(config.localPath, removedPath));
-          log(`Deleted local: ${removedPath} (removed from remote)`);
-          changes++;
+            onLocalWrite?.(removedPath);
+            fs.unlinkSync(resolveWithinSyncRoot(config.localPath, removedPath));
+            log(`Deleted local: ${removedPath} (removed from remote)`);
+            changes++;
+          }
+          delete state.local[removedPath];
+          delete state.remote[removedPath];
+          stateMutated = true;
+        } catch (err) {
+          if (isThrottleError(err)) throw err;
+          if (err instanceof SyncPathError) throw err;
+          failedPaths.push(removedPath);
+          log(`Failed to apply remote deletion of ${removedPath}: ${err instanceof Error ? err.message : String(err)}`);
         }
-        delete state.local[removedPath];
-        delete state.remote[removedPath];
-        stateMutated = true;
       }
 
+      // Only advance the list ETag once every path in this batch has been applied.
+      // Committing it while a document still failed would make the next poll 304 and
+      // silently drop that document from the change feed for good.
+      if (failedPaths.length === 0 && !listEtagInvalidated) {
+        state.remoteListEtag = sync.listEtag;
+        stateMutated = true;
+      } else if (failedPaths.length > 0) {
+        log(
+          `Holding list ETag: ${failedPaths.length} path(s) failed this poll and will be retried (${failedPaths.slice(0, 5).join(', ')})`,
+        );
+      }
+
+      // Save even on a partial failure so the documents that did succeed are not
+      // re-downloaded on every subsequent poll.
       if (changes > 0 || stateMutated) {
         saveSyncState(state);
         if (changes > 0) {

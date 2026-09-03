@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { SYNC_ROOT_MARKER } from './root-marker.js';
+import { SyncPathError } from './sync-errors.js';
 
 /**
  * Canonical form used to compare a path segment against the reserved marker.
@@ -17,23 +18,23 @@ const CANONICAL_MARKER = canonicalSegment(SYNC_ROOT_MARKER);
 /** Resolve a canonical remote document path without permitting root escape. */
 export function resolveWithinSyncRoot(localPath: string, docPath: string): string {
   if (!docPath || docPath.includes('\0') || docPath.includes('\\')) {
-    throw new Error(`Unsafe sync document path: ${JSON.stringify(docPath)}`);
+    throw new SyncPathError(`Unsafe sync document path: ${JSON.stringify(docPath)}`);
   }
   if (path.posix.isAbsolute(docPath) || path.win32.isAbsolute(docPath)) {
-    throw new Error(`Unsafe absolute sync document path: ${docPath}`);
+    throw new SyncPathError(`Unsafe absolute sync document path: ${docPath}`);
   }
   const segments = docPath.split('/');
   if (segments.some(segment => segment === '' || segment === '.' || segment === '..')) {
-    throw new Error(`Unsafe sync document path traversal: ${docPath}`);
+    throw new SyncPathError(`Unsafe sync document path traversal: ${docPath}`);
   }
   if (segments.some(segment => canonicalSegment(segment) === CANONICAL_MARKER)) {
-    throw new Error(`Sync document path targets reserved root marker: ${docPath}`);
+    throw new SyncPathError(`Sync document path targets reserved root marker: ${docPath}`);
   }
 
   const root = path.resolve(localPath);
   const resolved = path.resolve(root, ...segments);
   if (resolved === root || !resolved.startsWith(root + path.sep)) {
-    throw new Error(`Sync document path escapes root: ${docPath}`);
+    throw new SyncPathError(`Sync document path escapes root: ${docPath}`);
   }
 
   // Lexical containment is insufficient: an existing directory or target
@@ -56,8 +57,10 @@ export function resolveWithinSyncRoot(localPath: string, docPath: string): strin
       throw error;
     }
     if (isLink) {
-      throw new Error(`Sync document path contains a symbolic link: ${docPath}`);
+      throw new SyncPathError(`Sync document path contains a symbolic link: ${docPath}`);
     }
   }
   return resolved;
 }
+
+export { SyncPathError } from './sync-errors.js';
