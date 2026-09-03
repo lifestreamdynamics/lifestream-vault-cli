@@ -4,6 +4,7 @@ import fs from 'node:fs';
 vi.mock('node:fs');
 vi.mock('./root-marker.js', () => ({ assertSyncRoot: vi.fn(), SYNC_ROOT_MARKER: '.lsvault-sync-root' }));
 const mockedFs = vi.mocked(fs);
+import { assertSyncRoot } from './root-marker.js';
 
 // Mock config/state modules
 vi.mock('./state.js', () => ({
@@ -38,6 +39,7 @@ import {
   executePull,
   executePush,
   sweepOrphanedTempFiles,
+  isRetryableSyncError,
 } from './engine.js';
 import { computePullDiff, computePushDiff } from './diff.js';
 import { loadSyncState, saveSyncState } from './state.js';
@@ -799,9 +801,112 @@ describe('sync engine', () => {
       const result = await executePush(mockClient, config, diff, undefined, 1);
 
       expect(result.filesUploaded).toBe(0);
-      expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].path).toBe('a.md');
+      expect(mockClient.documents.put).toHaveBeenCalledTimes(1);
+      // The quota failure itself plus the two uploads that were never attempted.
+      expect(result.errors).toHaveLength(3);
+      expect(result.errors[0]).toEqual({ path: 'a.md', error: 'storage limit exceeded', retryable: false });
+      expect(result.errors.slice(1)).toEqual([
+        { path: 'b.md', error: expect.stringMatching(/Skipped.*quota/), retryable: true },
+        { path: 'c.md', error: expect.stringMatching(/Skipped.*quota/), retryable: true },
+      ]);
+      expect(result.filesSkipped).toBe(2);
       expect(result.failed).toBe(true);
+    });
+
+    it('does not run remote deletes after submission stopped, and records them as skipped', async () => {
+      const diff = {
+        uploads: [
+          { path: 'a.md', action: 'create' as const, direction: 'upload' as const, sizeBytes: 50, reason: 'New' },
+        ],
+        downloads: [],
+        deletes: [
+          { path: 'gone.md', action: 'delete' as const, direction: 'upload' as const, sizeBytes: 0, reason: 'Deleted locally' },
+        ],
+        totalBytes: 50,
+      };
+      const mockClient = {
+        documents: {
+          put: vi.fn().mockRejectedValue(Object.assign(new Error('Rate limit exceeded'), { statusCode: 429 })),
+          delete: vi.fn(),
+        },
+      } as any;
+      mockedFs.readFileSync.mockReturnValue('content');
+
+      const result = await executePush(mockClient, makeConfig(), diff, undefined, 1);
+
+      expect(mockClient.documents.delete).not.toHaveBeenCalled();
+      expect(result.filesDeleted).toBe(0);
+      expect(result.filesSkipped).toBe(1);
+      expect(result.errors.map(e => e.path)).toEqual(['a.md', 'gone.md']);
+      expect(result.errors[1].error).toMatch(/Skipped.*rate limit/);
+    });
+
+    it('does not retry a permanent 4xx rejection', async () => {
+      const diff = {
+        uploads: [{ path: 'a.md', action: 'create' as const, direction: 'upload' as const, sizeBytes: 5, reason: 'New' }],
+        downloads: [], deletes: [], totalBytes: 5,
+      };
+      const put = vi.fn().mockRejectedValue(Object.assign(new Error('Conflict'), { statusCode: 409 }));
+      mockedFs.readFileSync.mockReturnValue('content');
+
+      const result = await executePush({ documents: { put } } as any, makeConfig(), diff);
+
+      expect(put).toHaveBeenCalledTimes(1);
+      expect(result.errors[0]).toEqual(expect.objectContaining({ path: 'a.md', retryable: false }));
+    });
+
+    it('explains an admin-only 403 on a team-vault delete', async () => {
+      const diff = {
+        uploads: [], downloads: [],
+        deletes: [{ path: 'team/doc.md', action: 'delete' as const, direction: 'upload' as const, sizeBytes: 0, reason: 'Deleted locally' }],
+        totalBytes: 0,
+      };
+      const del = vi.fn().mockRejectedValue(Object.assign(new Error('Permission denied'), { statusCode: 403 }));
+
+      const result = await executePush({ documents: { delete: del } } as any, makeConfig(), diff);
+
+      expect(del).toHaveBeenCalledTimes(1);
+      expect(result.errors[0].error).toMatch(/forbidden \(403\).*admin role.*not propagated/);
+      expect(result.errors[0].retryable).toBe(false);
+      expect(result.failed).toBe(true);
+    });
+
+    it('an untrusted root prevents the remote delete', async () => {
+      vi.mocked(assertSyncRoot)
+        .mockImplementationOnce(() => undefined)              // executeSyncOperation entry
+        .mockImplementationOnce(() => { throw new Error('Sync root marker is missing'); }); // deleteFile
+      const diff = {
+        uploads: [], downloads: [],
+        deletes: [{ path: 'old.md', action: 'delete' as const, direction: 'upload' as const, sizeBytes: 0, reason: 'Deleted locally' }],
+        totalBytes: 0,
+      };
+      const del = vi.fn();
+
+      const result = await executePush({ documents: { delete: del } } as any, makeConfig(), diff);
+
+      expect(del).not.toHaveBeenCalled();
+      expect(result.filesDeleted).toBe(0);
+      expect(result.errors[0].error).toMatch(/marker is missing/);
+    });
+  });
+
+  describe('executePull root safety', () => {
+    it('an untrusted root prevents the local delete', async () => {
+      vi.mocked(assertSyncRoot)
+        .mockImplementationOnce(() => undefined)
+        .mockImplementationOnce(() => { throw new Error('Sync root marker is missing'); });
+      const diff = {
+        uploads: [], downloads: [],
+        deletes: [{ path: 'old.md', action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Deleted remotely' }],
+        totalBytes: 0,
+      };
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const result = await executePull({} as any, makeConfig(), diff);
+
+      expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+      expect(result.filesDeleted).toBe(0);
+      expect(result.errors[0].error).toMatch(/marker is missing/);
     });
   });
 
@@ -958,5 +1063,25 @@ describe('isThrottleError', () => {
     expect(isThrottleError('Unauthorized')).toBe(false);
     expect(isThrottleError('')).toBe(false);
     expect(isThrottleError({ statusCode: 403 })).toBe(false);
+  });
+});
+
+describe('isRetryableSyncError', () => {
+  it('treats every HTTP status as already handled (4xx permanent, 5xx/429 retried by the SDK)', () => {
+    for (const statusCode of [400, 401, 403, 404, 409, 429, 500, 502, 503]) {
+      expect(isRetryableSyncError(Object.assign(new Error(`HTTP ${statusCode}`), { statusCode }))).toBe(false);
+    }
+    expect(isRetryableSyncError({ status: 500 })).toBe(false);
+  });
+
+  it('treats quota and permission messages without a status as permanent', () => {
+    expect(isRetryableSyncError(new Error('storage limit exceeded'))).toBe(false);
+    expect(isRetryableSyncError(new Error('Permission denied'))).toBe(false);
+    expect(isRetryableSyncError(new Error('HTTP 429 Too Many Requests'))).toBe(false);
+  });
+
+  it('retries only status-less network failures', () => {
+    expect(isRetryableSyncError(new Error('ECONNRESET'))).toBe(true);
+    expect(isRetryableSyncError(new Error('Network request failed'))).toBe(true);
   });
 });

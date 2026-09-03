@@ -1,7 +1,7 @@
 import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import { loadConfig, loadConfigAsync, getCredentialManager } from './config.js';
 
-export const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
+const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
 
 /** Resolve the SDK request timeout from the environment (1-300 seconds). */
 export function getHttpTimeoutMs(envValue = process.env.LSVAULT_HTTP_TIMEOUT_MS): number {

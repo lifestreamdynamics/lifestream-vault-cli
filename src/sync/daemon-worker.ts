@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSyncConfigs } from './config.js';
 import { resolveIgnorePatterns } from './ignore.js';
-import { createWatcher } from './watcher.js';
+import { createWatcher, type SyncOperationSerializer } from './watcher.js';
 import { createRemotePoller } from './remote-poller.js';
 import { removeDaemonState, removePid, writeDaemonState } from './daemon.js';
 import { getClientAsync } from '../client.js';
@@ -28,6 +28,10 @@ let fatalShutdownStarted = false;
 
 function log(msg: string): void {
   process.stdout.write(`[${new Date().toISOString()}] ${msg}\n`);
+}
+
+function describe(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 async function reconcile(client: Awaited<ReturnType<typeof getClientAsync>>, config: SyncConfig): Promise<void> {
@@ -58,8 +62,13 @@ async function reconcile(client: Awaited<ReturnType<typeof getClientAsync>>, con
       pushed = result.filesUploaded;
       deleted += result.filesDeleted;
       for (const err of result.errors) log(`  Push error: ${err.path}: ${err.error}`);
-      pushFailed = result.failed;
-      pushChangedRemote = !result.failed && (result.filesUploaded + result.filesDeleted > 0);
+      // Only a retryable failure (network, exhausted rate limit, skipped
+      // work) blocks the pull phase: the next reconciliation will retry it and
+      // a stale pull plan could otherwise delete the only surviving copy. A
+      // permanent rejection (403 on an admin-only delete, a 4xx) would recur
+      // forever and must not freeze pulls for the whole root.
+      pushFailed = result.errors.some(err => err.retryable);
+      pushChangedRemote = result.filesUploaded + result.filesDeleted > 0;
     }
   }
   if (config.mode === 'pull' || config.mode === 'sync') {
@@ -100,10 +109,19 @@ async function reconcile(client: Awaited<ReturnType<typeof getClientAsync>>, con
   log(`Reconciled ${config.id.slice(0, 8)}: ${parts.length ? parts.join(', ') : 'up to date'}`);
 }
 
-/** Start every valid auto-sync and return after at least one watcher is ready. */
+/**
+ * Start every valid auto-sync. Resolves once readiness has been reported.
+ *
+ * Ordering matters for supervisors: signal handlers go in first so a stop
+ * request during a slow start is honoured; every watcher must be listening
+ * before `ready` is written; the initial reconciliation runs *after* that,
+ * through each root's serializer, so a large first sync cannot make a
+ * systemd/launchd readiness watchdog time out and kill a healthy worker.
+ */
 export async function runDaemonWorker(options: { installSignalHandlers?: boolean; identityNonce?: string } = {}): Promise<void> {
   daemonIdentityNonce = options.identityNonce ?? process.env.LSVAULT_DAEMON_IDENTITY;
   log('Daemon starting...');
+  if (options.installSignalHandlers !== false) installSignalHandlers();
   const configs = loadSyncConfigs().filter(c => c.autoSync);
   if (configs.length === 0) throw new Error('No auto-sync configurations found. Daemon has nothing to do.');
   log(`Found ${configs.length} auto-sync configuration(s)`);
@@ -114,7 +132,7 @@ export async function runDaemonWorker(options: { installSignalHandlers?: boolean
       assertSyncRoot(config);
       validConfigs.push(config);
     } catch (err) {
-      log(`Skipping sync ${config.id.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`);
+      log(`Skipping sync ${config.id.slice(0, 8)}: ${describe(err)}`);
     }
   }
   if (validConfigs.length === 0) throw new Error('No auto-sync configurations have a valid, trusted sync root.');
@@ -124,42 +142,37 @@ export async function runDaemonWorker(options: { installSignalHandlers?: boolean
       assertSyncRoot(config);
       const swept = sweepOrphanedTempFiles(config.localPath);
       if (swept > 0) log(`Swept ${swept} orphaned temp file(s) from ${config.localPath}`);
-    } catch { /* a later root assertion will fail closed */ }
-  }
-
-  const client = await getClientAsync();
-  for (const config of validConfigs) {
-    try {
-      await reconcile(client, config);
     } catch (err) {
-      log(`Reconciliation failed for ${config.id.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`);
+      // The root is re-asserted before every later mutation, so this only
+      // needs to be visible, not fatal.
+      log(`Temp-file sweep skipped for ${config.id.slice(0, 8)}: ${describe(err)}`);
     }
   }
 
+  const client = await getClientAsync();
+  const serializers = new Map<string, SyncOperationSerializer>();
+
   for (const config of validConfigs) {
+    let created: ReturnType<typeof createWatcher> | undefined;
     try {
       assertSyncRoot(config);
       const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
-      const { watcher, ready, markLocalWrite, serialize, stop: stopWatcher } = createWatcher(client, config, {
+      created = createWatcher(client, config, {
         ignorePatterns,
         onLog: log,
         onConflictLog: msg => log(`CONFLICT: ${msg}`),
         onError: err => log(`ERROR [${config.id.slice(0, 8)}]: ${err.message}`),
       });
+      const { watcher, ready, markLocalWrite, serialize, stop: stopWatcher } = created;
       // Do not report daemon readiness until the local watcher is actually
       // listening. A pre-ready Chokidar error is treated as a failed sync and
       // is skipped without masking healthy configurations.
-      try {
-        await ready;
-      } catch (err) {
-        await stopWatcher().catch(() => undefined);
-        throw err;
-      }
+      await ready;
       let stopPoller: (() => Promise<void>) | undefined;
       if (config.mode === 'sync' || config.mode === 'pull') {
         const poller = createRemotePoller(client, config, {
           ignorePatterns,
-          intervalMs: parseSyncInterval(config.syncInterval) || 30_000,
+          intervalMs: parseSyncInterval(config.syncInterval) ?? undefined,
           onLog: log,
           onConflictLog: msg => log(`CONFLICT: ${msg}`),
           onError: err => log(`ERROR [${config.id.slice(0, 8)}]: ${err.message}`),
@@ -169,19 +182,34 @@ export async function runDaemonWorker(options: { installSignalHandlers?: boolean
         stopPoller = poller.stop;
       }
       managed.push({ syncId: config.id, watcher, stopWatcher, stopPoller });
+      serializers.set(config.id, serialize);
       log(`Started sync: ${config.id.slice(0, 8)} (${config.localPath})`);
     } catch (err) {
-      log(`Failed to start sync ${config.id.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`);
+      // Anything that fails after the watcher was constructed must release
+      // its OS handles, or the failed root keeps a live watcher forever.
+      if (created) await created.stop().catch(stopErr => log(`Watcher cleanup failed for ${config.id.slice(0, 8)}: ${describe(stopErr)}`));
+      log(`Failed to start sync ${config.id.slice(0, 8)}: ${describe(err)}`);
     }
   }
 
   if (managed.length === 0) throw new Error('No syncs could be started.');
-  if (options.installSignalHandlers !== false) installSignalHandlers();
   writeDaemonState({
     status: 'ready', pid: process.pid, identityNonce: daemonIdentityNonce, timestamp: new Date().toISOString(),
     startedSyncs: managed.length, skippedSyncs: configs.length - managed.length,
   });
   log(`Daemon running with ${managed.length} sync(s)`);
+
+  // Initial reconciliation, after readiness. Each root's serializer orders it
+  // ahead of any poller/watcher work that has already queued up behind it.
+  for (const config of validConfigs) {
+    const serialize = serializers.get(config.id);
+    if (!serialize) continue;
+    try {
+      await serialize(() => reconcile(client, config));
+    } catch (err) {
+      log(`Reconciliation failed for ${config.id.slice(0, 8)}: ${describe(err)}`);
+    }
+  }
 }
 
 async function performShutdown(): Promise<void> {
@@ -195,7 +223,7 @@ async function performShutdown(): Promise<void> {
     ]);
     const errors = results
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      .map(result => result.reason instanceof Error ? result.reason.message : String(result.reason));
+      .map(result => describe(result.reason));
     if (errors.length === 0) {
       log(`Stopped sync: ${sync.syncId.slice(0, 8)}`);
     } else {
@@ -207,8 +235,12 @@ async function performShutdown(): Promise<void> {
   if (failures.length > 0) {
     throw new Error(`Daemon shutdown did not drain cleanly: ${failures.join('; ')}`);
   }
-  removePid(daemonIdentityNonce);
-  removeDaemonState(daemonIdentityNonce);
+  if (daemonIdentityNonce) {
+    removePid(daemonIdentityNonce);
+    removeDaemonState(daemonIdentityNonce);
+  } else {
+    log('No daemon identity nonce; leaving PID/state files for the controller to reconcile.');
+  }
   log('Daemon stopped.');
 }
 
@@ -225,7 +257,7 @@ function installSignalHandlers(): void {
     shutdownDaemonWorker().then(
       () => process.exit(fatalShutdownStarted ? 1 : 0),
       err => {
-        log(`FATAL: ${err instanceof Error ? err.message : String(err)}`);
+        log(`FATAL: ${describe(err)}`);
         process.exit(1);
       },
     );
@@ -244,13 +276,14 @@ export function handleFatalRuntimeError(kind: string, reason: unknown): void {
   void shutdownDaemonWorker().then(
     () => process.exit(1),
     err => {
-      log(`FATAL SHUTDOWN ERROR: ${err instanceof Error ? err.message : String(err)}`);
+      log(`FATAL SHUTDOWN ERROR: ${describe(err)}`);
       process.exit(1);
     },
   );
 }
 
-export function parseSyncInterval(interval?: string): number | null {
+/** Parse `30s` / `5m` / `1h` (bare digits are milliseconds); null when absent or malformed. */
+function parseSyncInterval(interval?: string): number | null {
   if (!interval) return null;
   const match = interval.match(/^(\d+)(s|m|h)?$/);
   if (!match) return null;
@@ -268,11 +301,11 @@ const isDirectWorker = process.argv[1]
   : false;
 if (isDirectWorker) {
   runDaemonWorker().catch(err => {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = describe(err);
     log(`FATAL: ${message}`);
     const identityNonce = process.env.LSVAULT_DAEMON_IDENTITY;
     writeDaemonState({ status: 'failed', pid: process.pid, identityNonce, timestamp: new Date().toISOString(), error: message });
-    removePid(identityNonce);
+    if (identityNonce) removePid(identityNonce);
     process.exit(1);
   });
 }

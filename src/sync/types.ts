@@ -1,9 +1,21 @@
 /**
  * Type definitions for the sync engine.
  */
+import type { SYNC_ROOT_MARKER_VERSION } from './root-marker.js';
 
-export type SyncMode = 'pull' | 'push' | 'sync';
-export type ConflictStrategy = 'newer' | 'local' | 'remote' | 'ask';
+export const SYNC_MODES = ['pull', 'push', 'sync'] as const;
+export type SyncMode = (typeof SYNC_MODES)[number];
+
+export const CONFLICT_STRATEGIES = ['newer', 'local', 'remote', 'ask'] as const;
+export type ConflictStrategy = (typeof CONFLICT_STRATEGIES)[number];
+
+export function isSyncMode(value: unknown): value is SyncMode {
+  return typeof value === 'string' && (SYNC_MODES as readonly string[]).includes(value);
+}
+
+export function isConflictStrategy(value: unknown): value is ConflictStrategy {
+  return typeof value === 'string' && (CONFLICT_STRATEGIES as readonly string[]).includes(value);
+}
 
 /**
  * Persisted configuration for a single vault sync.
@@ -29,7 +41,7 @@ export interface SyncConfig {
   /** Whether auto-sync is enabled */
   autoSync: boolean;
   /** Version of the local sync-root marker this configuration trusts. */
-  rootMarkerVersion?: 1;
+  rootMarkerVersion?: typeof SYNC_ROOT_MARKER_VERSION;
 }
 
 /**

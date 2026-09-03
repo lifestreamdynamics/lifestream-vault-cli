@@ -82,15 +82,30 @@ function readMarker(localPath: string): SyncRootMarker {
     throw new Error(`Sync root marker must be a regular file: ${target}`);
   }
 
+  // Read outside the parse guard so an I/O failure (EACCES, EIO) is reported
+  // as such rather than as a corrupt marker.
+  let raw: string;
   try {
-    const value = JSON.parse(fs.readFileSync(target, 'utf-8')) as Partial<SyncRootMarker>;
-    if (value.version !== SYNC_ROOT_MARKER_VERSION || typeof value.syncId !== 'string' || typeof value.vaultId !== 'string') {
-      throw new Error('invalid marker fields');
-    }
-    return value as SyncRootMarker;
+    raw = fs.readFileSync(target, 'utf-8');
+  } catch (err) {
+    throw new Error(`Cannot read sync root marker ${target}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  let value: Partial<SyncRootMarker>;
+  try {
+    value = JSON.parse(raw) as Partial<SyncRootMarker>;
   } catch (err) {
     throw new Error(`Invalid sync root marker ${target}: ${err instanceof Error ? err.message : String(err)}`);
   }
+  if (value === null || typeof value !== 'object' || typeof value.syncId !== 'string' || typeof value.vaultId !== 'string') {
+    throw new Error(`Invalid sync root marker ${target}: invalid marker fields`);
+  }
+  if (value.version !== SYNC_ROOT_MARKER_VERSION) {
+    throw new Error(
+      `Unsupported sync root marker version at ${target}: expected ${SYNC_ROOT_MARKER_VERSION}, found ${String(value.version)}.`,
+    );
+  }
+  return value as SyncRootMarker;
 }
 
 /** Create the authoritative marker. Existing markers are never overwritten. */

@@ -36,6 +36,8 @@ import {
   readPid,
   writePid,
   removePid,
+  removeDaemonState,
+  STATE_FILE,
   isProcessRunning,
   getDaemonStatus,
   rotateLogIfNeeded,
@@ -50,6 +52,7 @@ describe('sync daemon', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockLoadSyncConfigs.mockReturnValue([]);
+    vi.mocked(execFileSync).mockImplementation((() => 'Mon Sep  1 00:00:00 2026\n') as typeof execFileSync);
   });
 
   describe('readPid', () => {
@@ -75,6 +78,14 @@ describe('sync daemon', () => {
       mockedFs.readFileSync.mockReturnValue('not-a-number');
       expect(readPid()).toBeNull();
     });
+
+    it('rejects a non-positive PID in a versioned record', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue(pidIdentity({ pid: 0 }));
+      expect(readPid()).toBeNull();
+      mockedFs.readFileSync.mockReturnValue(pidIdentity({ pid: -1 }));
+      expect(readPid()).toBeNull();
+    });
   });
 
   describe('writePid', () => {
@@ -88,7 +99,7 @@ describe('sync daemon', () => {
       expect(identity).toEqual(expect.objectContaining({ pid: 12345, processStartId: 'linux:777' }));
       expect(mockedFs.mkdirSync).toHaveBeenCalledWith(
         expect.stringContaining('daemon'),
-        { recursive: true },
+        { recursive: true, mode: 0o700 },
       );
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
         PID_FILE,
@@ -116,16 +127,39 @@ describe('sync daemon', () => {
   });
 
   describe('removePid', () => {
-    it('should remove PID file when it exists', () => {
+    it('removes the PID file when the nonce matches the stored identity', () => {
       mockedFs.existsSync.mockReturnValue(true);
-      removePid();
+      mockedFs.readFileSync.mockReturnValue(pidIdentity());
+      removePid('nonce-1234567890abcdef');
       expect(mockedFs.unlinkSync).toHaveBeenCalledWith(PID_FILE);
+    });
+
+    it('fails closed: a different nonce, an empty nonce, or a legacy record is never removed', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue(pidIdentity());
+      removePid('some-other-nonce');
+      removePid('');
+      mockedFs.readFileSync.mockReturnValue('12345\n');
+      removePid('nonce-1234567890abcdef');
+      expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
     });
 
     it('should do nothing when no PID file', () => {
       mockedFs.existsSync.mockReturnValue(false);
-      removePid();
+      removePid('nonce-1234567890abcdef');
       expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('removeDaemonState', () => {
+    it('removes only a state file carrying the same nonce', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue(JSON.stringify({ status: 'ready', pid: 12345, identityNonce: 'nonce-a', timestamp: '', startedSyncs: 1, skippedSyncs: 0 }));
+      removeDaemonState('nonce-b');
+      removeDaemonState('');
+      expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+      removeDaemonState('nonce-a');
+      expect(mockedFs.unlinkSync).toHaveBeenCalledWith(STATE_FILE);
     });
   });
 
@@ -171,6 +205,46 @@ describe('sync daemon', () => {
         expect(kill).not.toHaveBeenCalledWith(12345, 'SIGTERM');
       } finally {
         kill.mockRestore();
+      }
+    });
+
+    it('keeps the PID file and reports "unknown" when the start-marker probe itself fails', () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockImplementation(target => {
+        if (String(target) === PID_FILE) return pidIdentity({ processStartId: 'darwin:Mon Sep  1 00:00:00 2026' });
+        return '';
+      });
+      // `ps` binary missing: the probe failed, the process was NOT shown to be gone.
+      vi.mocked(execFileSync).mockImplementation(() => { throw Object.assign(new Error('spawnSync ps ENOENT'), { code: 'ENOENT' }); });
+      const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      try {
+        const status = getDaemonStatus();
+        expect(status).toEqual(expect.objectContaining({ running: false, state: 'unknown', pid: 12345 }));
+        expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+      } finally {
+        kill.mockRestore();
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      }
+    });
+
+    it('treats a non-zero `ps` exit as "process gone" and removes the stale record', () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockImplementation(target => {
+        if (String(target) === PID_FILE) return pidIdentity({ processStartId: 'darwin:Mon Sep  1 00:00:00 2026' });
+        return '';
+      });
+      vi.mocked(execFileSync).mockImplementation(() => { throw Object.assign(new Error('Command failed: ps'), { status: 1 }); });
+      const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      try {
+        expect(getDaemonStatus()).toEqual(expect.objectContaining({ running: false, state: 'stopped', pid: null }));
+        expect(mockedFs.unlinkSync).toHaveBeenCalledWith(PID_FILE);
+      } finally {
+        kill.mockRestore();
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
       }
     });
 
@@ -268,6 +342,26 @@ describe('sync daemon', () => {
       }
     });
 
+    it('refuses to signal a live PID whose identity probe failed, and keeps its files', async () => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockImplementation(target => {
+        if (String(target) === PID_FILE) return pidIdentity({ processStartId: 'darwin:Mon Sep  1 00:00:00 2026' });
+        return '';
+      });
+      vi.mocked(execFileSync).mockImplementation(() => { throw Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }); });
+      const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      try {
+        await expect(stopDaemon()).rejects.toThrow(/cannot be verified/);
+        expect(kill).not.toHaveBeenCalledWith(12345, 'SIGTERM');
+        expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+      } finally {
+        kill.mockRestore();
+        Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      }
+    });
+
     it('treats a reused PID as stale and never signals the replacement process', async () => {
       mockedFs.existsSync.mockReturnValue(true);
       mockedFs.readFileSync.mockImplementation(target => {
@@ -325,6 +419,13 @@ describe('sync daemon', () => {
       const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
       try {
         await expect(startDaemon()).resolves.toEqual(expect.objectContaining({ pid: 12345 }));
+        // Worker path is resolved with fileURLToPath (an absolute filesystem path, not a URL pathname).
+        const [execPath, args] = vi.mocked(spawn).mock.calls[0] as unknown as [string, string[]];
+        expect(execPath).toBe(process.execPath);
+        expect(args[0]).toMatch(/[\\/]daemon-worker\.js$/);
+        expect(args[0]).not.toMatch(/^file:/);
+        expect(mockedFs.openSync).toHaveBeenCalledWith(LOG_FILE, 'a', 0o600);
+        expect(mockedFs.mkdirSync).toHaveBeenCalledWith(expect.stringContaining('daemon'), { recursive: true, mode: 0o700 });
       } finally {
         kill.mockRestore();
       }

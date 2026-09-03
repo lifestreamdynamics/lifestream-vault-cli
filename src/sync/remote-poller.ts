@@ -14,8 +14,20 @@ import { isThrottleError } from './engine.js';
 import { atomicWriteFileSync } from './atomic-write.js';
 import { assertSyncRoot } from './root-marker.js';
 import type { SyncOperationSerializer } from './watcher.js';
-import { getHttpTimeoutMs } from '../client.js';
 import { resolveWithinSyncRoot } from './safe-path.js';
+import { awaitWithTimeout, defaultShutdownTimeoutMs } from './shutdown.js';
+
+export const DEFAULT_POLL_INTERVAL_MS = 30_000;
+/** Below this the poller would hammer the list endpoint faster than one HTTP round trip. */
+export const MIN_POLL_INTERVAL_MS = 1_000;
+/** One day: anything longer is almost certainly a unit mistake (e.g. seconds passed as ms). */
+export const MAX_POLL_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+
+/** Clamp a caller-supplied poll interval into a sane range; non-finite values fall back to the default. */
+export function clampPollIntervalMs(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return DEFAULT_POLL_INTERVAL_MS;
+  return Math.min(MAX_POLL_INTERVAL_MS, Math.max(MIN_POLL_INTERVAL_MS, Math.floor(value)));
+}
 
 export interface PollerOptions {
   /** Patterns to ignore */
@@ -47,19 +59,25 @@ export function createRemotePoller(
 ): { stop: () => Promise<void> } {
   const {
     ignorePatterns,
-    intervalMs = 30000,
     onLog,
     onConflictLog,
     onError,
     onLocalWrite,
     serialize,
-    shutdownTimeoutMs = getHttpTimeoutMs() + 5_000,
+    shutdownTimeoutMs = defaultShutdownTimeoutMs(),
   } = options;
+  const intervalMs = clampPollIntervalMs(options.intervalMs);
+  // Pull-only configurations are one-way: the poller must never write to the
+  // remote, even to "win" a conflict for a locally edited file.
+  const canPush = config.mode !== 'pull';
 
   const log = (msg: string) => onLog?.(`[poll:${config.id.slice(0, 8)}] ${msg}`);
+  if (options.intervalMs !== undefined && options.intervalMs !== intervalMs) {
+    log(`Poll interval ${String(options.intervalMs)}ms is out of range; using ${intervalMs}ms`);
+  }
   let timer: ReturnType<typeof setInterval> | null = null;
-  let polling = false;
   let stopping = false;
+  /** The poll currently running, or null. Only ever set by poll() itself. */
   let activePoll: Promise<void> | null = null;
 
   async function pollOnce(): Promise<void> {
@@ -158,15 +176,22 @@ export function createRemotePoller(
             } else {
               assertSyncRoot(config);
               conflictFile = createConflictFile(config.localPath, change.path, content, 'remote');
-              assertSyncRoot(config);
-              await client.documents.put(config.vaultId, change.path, localContent);
-              log(`Conflict: ${change.path} — used local, saved remote as ${conflictFile}`);
+              if (canPush) {
+                assertSyncRoot(config);
+                await client.documents.put(config.vaultId, change.path, localContent);
+                log(`Conflict: ${change.path} — used local, saved remote as ${conflictFile}`);
+              } else {
+                log(`Conflict: ${change.path} — kept local edit (pull-only, remote not updated), saved remote as ${conflictFile}`);
+              }
             }
 
             onConflictLog?.(formatConflictLog(change.path, resolution, conflictFile));
 
             state.local[change.path] = resolution === 'remote' ? remoteState : localState;
-            state.remote[change.path] = resolution === 'remote'
+            // In pull-only mode the remote was not rewritten, so record the
+            // server's actual content as the last-known remote state; the next
+            // poll then sees it as unchanged instead of re-raising the conflict.
+            state.remote[change.path] = resolution === 'remote' || !canPush
               ? buildRemoteFileState(change.path, content, change.fileModifiedAt)
               : buildRemoteFileState(change.path, localContent, new Date().toISOString());
             stateMutated = true;
@@ -228,7 +253,13 @@ export function createRemotePoller(
             const resolution = resolveConflict(config.onConflict, localState, remoteDeletionState);
             let conflictFile: string | null = null;
 
-            if (resolution === 'local') {
+            if (resolution === 'local' && !canPush) {
+              // Pull-only: keep the local edit on disk but do not resurrect
+              // the remote document. It is no longer tracked on either side.
+              delete state.local[removedPath];
+              delete state.remote[removedPath];
+              log(`Conflict: ${removedPath} — remote deleted; kept local edit (pull-only, not re-uploaded)`);
+            } else if (resolution === 'local') {
               assertSyncRoot(config);
               await client.documents.put(config.vaultId, removedPath, localContent);
               state.local[removedPath] = localState;
@@ -288,28 +319,19 @@ export function createRemotePoller(
     }
   }
 
-  async function poll(): Promise<void> {
-    if (polling || stopping) return; // Skip if previous poll is running or shutdown began
-    polling = true;
-    try {
-      if (serialize) {
-        await serialize(pollOnce);
-      } else {
-        await pollOnce();
-      }
-    } finally {
-      polling = false;
-    }
-  }
-
+  /**
+   * Start a poll unless one is already in flight or shutdown began. The
+   * in-flight promise is tracked here and only here, so a skipped tick can
+   * never replace the promise stop() must wait on.
+   */
   function startPoll(): void {
-    const running = poll();
-    activePoll = running;
-    running
+    if (activePoll || stopping) return;
+    const running = (serialize ? serialize(pollOnce) : pollOnce())
       .catch(err => onError?.(err instanceof Error ? err : new Error(String(err))))
       .finally(() => {
         if (activePoll === running) activePoll = null;
       });
+    activePoll = running;
   }
 
   // Initial poll
@@ -331,18 +353,7 @@ export function createRemotePoller(
       }
       const running = activePoll;
       if (running) {
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        const completed = await Promise.race([
-          running.then(() => true),
-          new Promise<false>(resolve => {
-            timeout = setTimeout(() => resolve(false), shutdownTimeoutMs);
-            timeout.unref?.();
-          }),
-        ]);
-        if (timeout) clearTimeout(timeout);
-        if (!completed) {
-          throw new Error(`Poller shutdown drain timed out after ${shutdownTimeoutMs}ms`);
-        }
+        await awaitWithTimeout(running, shutdownTimeoutMs, 'Poller shutdown drain');
       }
       log('Stopped polling');
     },

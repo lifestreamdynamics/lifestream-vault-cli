@@ -16,6 +16,11 @@ describe('resolveWithinSyncRoot', () => {
     'notes\\outside.md',
     '.lsvault-sync-root',
     'nested/.lsvault-sync-root',
+    '.LSVAULT-SYNC-ROOT',
+    'nested/.LsVault-Sync-Root',
+    '.lsvault-sync-root.',
+    '.lsvault-sync-root ',
+    '.lsvault-sync-root. .',
     'notes//double.md',
   ])('rejects unsafe path %s', unsafePath => {
     expect(() => resolveWithinSyncRoot('/vault', unsafePath)).toThrow();

@@ -22,6 +22,7 @@ const mockComputePullDiff = vi.fn((): Record<string, unknown> => ({ uploads: [],
 const mockExecutePush = vi.fn(async (): Promise<Record<string, unknown>> => ({ filesUploaded: 0, filesDownloaded: 0, filesDeleted: 0, bytesTransferred: 0, errors: [] }));
 const mockExecutePull = vi.fn(async (): Promise<Record<string, unknown>> => ({ filesUploaded: 0, filesDownloaded: 0, filesDeleted: 0, bytesTransferred: 0, errors: [] }));
 const mockLoadSyncState = vi.fn(() => ({ syncId: 'test', local: {}, remote: {}, updatedAt: new Date().toISOString() }));
+const mockSweepOrphanedTempFiles = vi.fn(() => 0);
 
 vi.mock('./config.js', () => ({ loadSyncConfigs: mockLoadSyncConfigs }));
 vi.mock('./ignore.js', () => ({ resolveIgnorePatterns: mockResolveIgnorePatterns }));
@@ -37,6 +38,7 @@ vi.mock('./engine.js', () => ({
   computePullDiff: mockComputePullDiff,
   executePush: mockExecutePush,
   executePull: mockExecutePull,
+  sweepOrphanedTempFiles: mockSweepOrphanedTempFiles,
 }));
 vi.mock('./state.js', () => ({ loadSyncState: mockLoadSyncState, saveSyncState: vi.fn() }));
 vi.mock('@lifestreamdynamics/vault-sdk', () => ({
@@ -125,7 +127,7 @@ describe('daemon-worker reconciliation', () => {
     });
     mockExecutePush.mockResolvedValue({
       filesUploaded: 0, filesDownloaded: 0, filesDeleted: 0, bytesTransferred: 0,
-      errors: [{ path: 'only-local.md', error: 'network unavailable' }], failed: true,
+      errors: [{ path: 'only-local.md', error: 'network unavailable', retryable: true }], failed: true,
     });
 
     const { runDaemonWorker } = await import('./daemon-worker.js');
@@ -133,6 +135,68 @@ describe('daemon-worker reconciliation', () => {
 
     expect(mockExecutePull).not.toHaveBeenCalled();
     expect(mockComputePullDiff).not.toHaveBeenCalled();
+  });
+
+  it('still pulls after a permanent (non-retryable) push rejection, from a fresh remote scan', async () => {
+    const config = makeConfig({ mode: 'sync' });
+    mockLoadSyncConfigs.mockReturnValue([config]);
+    mockComputePushDiff.mockReturnValue({
+      uploads: [], downloads: [],
+      deletes: [{ path: 'team-doc.md', action: 'delete', direction: 'upload', sizeBytes: 0, reason: 'Local deleted' }],
+      totalBytes: 0,
+    });
+    mockExecutePush.mockResolvedValue({
+      filesUploaded: 0, filesDownloaded: 0, filesDeleted: 0, filesSkipped: 0, bytesTransferred: 0,
+      errors: [{ path: 'team-doc.md', error: 'Remote delete was forbidden (403)', retryable: false }], failed: true,
+    });
+
+    const { runDaemonWorker } = await import('./daemon-worker.js');
+    await runDaemonWorker({ installSignalHandlers: false });
+
+    // A 403 would recur on every reconciliation; it must not freeze pulls.
+    expect(mockComputePullDiff).toHaveBeenCalled();
+  });
+
+  it('reports readiness before the initial reconciliation touches the network', async () => {
+    const config = makeConfig({ mode: 'push' });
+    mockLoadSyncConfigs.mockReturnValue([config]);
+
+    const { runDaemonWorker } = await import('./daemon-worker.js');
+    await runDaemonWorker({ installSignalHandlers: false });
+
+    expect(mockWriteDaemonState).toHaveBeenCalledWith(expect.objectContaining({ status: 'ready' }));
+    expect(mockScanRemoteFiles).toHaveBeenCalled();
+    const readyOrder = mockWriteDaemonState.mock.invocationCallOrder[0];
+    const reconcileOrder = mockScanRemoteFiles.mock.invocationCallOrder[0];
+    expect(readyOrder).toBeLessThan(reconcileOrder);
+  });
+
+  it('logs a failed temp-file sweep instead of swallowing it', async () => {
+    mockLoadSyncConfigs.mockReturnValue([makeConfig({ mode: 'push' })]);
+    mockSweepOrphanedTempFiles.mockImplementationOnce(() => { throw new Error('EACCES sweep'); });
+
+    const { runDaemonWorker } = await import('./daemon-worker.js');
+    await runDaemonWorker({ installSignalHandlers: false });
+
+    const lines = mockStdoutWrite.mock.calls.map(call => String(call[0]));
+    expect(lines.some(line => line.includes('Temp-file sweep skipped') && line.includes('EACCES sweep'))).toBe(true);
+    expect(mockCreateWatcher).toHaveBeenCalled();
+  });
+
+  it('stops a started watcher when the rest of its sync fails to start', async () => {
+    mockLoadSyncConfigs.mockReturnValue([makeConfig({ mode: 'sync' })]);
+    const stopWatcher = vi.fn().mockResolvedValue(undefined);
+    mockCreateWatcher.mockReturnValueOnce({
+      watcher: { close: vi.fn() }, ready: Promise.resolve(), stop: stopWatcher,
+      markLocalWrite: vi.fn(), serialize: async <T>(operation: () => Promise<T>) => operation(),
+    });
+    mockCreateRemotePoller.mockImplementationOnce(() => { throw new Error('poller exploded'); });
+
+    const { runDaemonWorker } = await import('./daemon-worker.js');
+    await expect(runDaemonWorker({ installSignalHandlers: false })).rejects.toThrow('No syncs could be started');
+
+    expect(stopWatcher).toHaveBeenCalledOnce();
+    expect(mockWriteDaemonState).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'ready' }));
   });
 
   it('re-scans remote state after a successful push before planning pull work', async () => {
@@ -250,7 +314,7 @@ describe('daemon-worker reconciliation', () => {
     mockCreateRemotePoller.mockReturnValueOnce({ stop: stopPoller });
 
     const { runDaemonWorker, shutdownDaemonWorker } = await import('./daemon-worker.js');
-    await runDaemonWorker({ installSignalHandlers: false });
+    await runDaemonWorker({ installSignalHandlers: false, identityNonce: 'nonce-test' });
     const shuttingDown = shutdownDaemonWorker();
     await vi.waitFor(() => {
       expect(stopWatcher).toHaveBeenCalledOnce();
@@ -261,7 +325,22 @@ describe('daemon-worker reconciliation', () => {
     releaseWatcher();
     releasePoller();
     await shuttingDown;
-    expect(mockRemovePid).toHaveBeenCalledOnce();
+    expect(mockRemovePid).toHaveBeenCalledExactlyOnceWith('nonce-test');
+  });
+
+  it('never removes ownership files without its identity nonce', async () => {
+    const config = makeConfig({ mode: 'push' });
+    mockLoadSyncConfigs.mockReturnValue([config]);
+    const previousIdentity = process.env.LSVAULT_DAEMON_IDENTITY;
+    delete process.env.LSVAULT_DAEMON_IDENTITY;
+    try {
+      const { runDaemonWorker, shutdownDaemonWorker } = await import('./daemon-worker.js');
+      await runDaemonWorker({ installSignalHandlers: false });
+      await shutdownDaemonWorker();
+    } finally {
+      if (previousIdentity !== undefined) process.env.LSVAULT_DAEMON_IDENTITY = previousIdentity;
+    }
+    expect(mockRemovePid).not.toHaveBeenCalled();
   });
 
   it('rejects an unclean drain and retains daemon ownership files', async () => {
@@ -291,7 +370,7 @@ describe('daemon-worker reconciliation', () => {
       markLocalWrite: vi.fn(), serialize: async <T>(operation: () => Promise<T>) => operation(),
     });
     const { runDaemonWorker, handleFatalRuntimeError } = await import('./daemon-worker.js');
-    await runDaemonWorker({ installSignalHandlers: false });
+    await runDaemonWorker({ installSignalHandlers: false, identityNonce: 'nonce-test' });
 
     handleFatalRuntimeError('UNCAUGHT ERROR', new Error('fatal crash'));
     await vi.waitFor(() => expect(stopWatcher).toHaveBeenCalledOnce());

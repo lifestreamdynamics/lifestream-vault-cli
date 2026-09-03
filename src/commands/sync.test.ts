@@ -53,7 +53,7 @@ vi.mock('../sync/config.js', () => ({
   getSyncConfig: vi.fn((id: string) => {
     return mockConfigs.find(c => c.id === id) ?? null;
   }),
-  trustSyncRoot: vi.fn(),
+  trustSyncRoot: vi.fn((id: string) => ({ ...(mockConfigs.find(c => c.id === id) ?? {}), rootMarkerVersion: 1 })),
 }));
 
 vi.mock('../sync/root-marker.js', () => ({
@@ -107,7 +107,7 @@ vi.mock('../client.js', () => ({
   getClientAsync: vi.fn(async () => sdkMock),
 }));
 
-import { createSyncConfig, deleteSyncConfig, loadSyncConfigs } from '../sync/config.js';
+import { createSyncConfig, deleteSyncConfig, loadSyncConfigs, trustSyncRoot } from '../sync/config.js';
 import { deleteSyncState } from '../sync/state.js';
 import { scanLocalFiles, scanRemoteFiles, computePullDiff, computePushDiff, executePull, executePush } from '../sync/engine.js';
 import { assertSyncRoot, prepareSyncRoot } from '../sync/root-marker.js';
@@ -191,6 +191,93 @@ describe('sync commands', () => {
       await program.parseAsync(['node', 'cli', 'sync', 'init', 'bad-vault', '/tmp/test']);
 
       expect(outputSpy.stderr.some(l => l.includes('Not found'))).toBe(true);
+    });
+
+    it('rejects an unknown --mode before touching the filesystem or API', async () => {
+      await program.parseAsync(['node', 'cli', 'sync', 'init', 'vault-1', '/tmp/test-vault', '--mode', 'mirror']);
+
+      expect(prepareSyncRoot).not.toHaveBeenCalled();
+      expect(sdkMock.vaults.get).not.toHaveBeenCalled();
+      expect(outputSpy.stderr.join('')).toMatch(/--mode must be one of pull, push, sync/);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('rejects an unknown --on-conflict strategy', async () => {
+      await program.parseAsync(['node', 'cli', 'sync', 'init', 'vault-1', '/tmp/test-vault', '--on-conflict', 'merge']);
+
+      expect(sdkMock.vaults.get).not.toHaveBeenCalled();
+      expect(outputSpy.stderr.join('')).toMatch(/--on-conflict must be one of newer, local, remote, ask/);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('removes a directory it created when initialization fails afterwards', async () => {
+      const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'lsvault-init-'));
+      const target = path.join(parent, 'new-root');
+      vi.mocked(prepareSyncRoot).mockImplementationOnce((dir: string) => { fs.mkdirSync(dir, { recursive: true }); });
+      sdkMock.vaults.get.mockRejectedValue(new Error('Not found'));
+      try {
+        await program.parseAsync(['node', 'cli', 'sync', 'init', 'vault-1', target, '--create-dir']);
+
+        expect(fs.existsSync(target)).toBe(false);
+        expect(process.exitCode).toBe(1);
+      } finally {
+        fs.rmSync(parent, { recursive: true, force: true });
+      }
+    });
+
+    it('leaves a pre-existing directory alone when initialization fails', async () => {
+      const existing = fs.mkdtempSync(path.join(os.tmpdir(), 'lsvault-init-existing-'));
+      sdkMock.vaults.get.mockRejectedValue(new Error('Not found'));
+      try {
+        await program.parseAsync(['node', 'cli', 'sync', 'init', 'vault-1', existing, '--create-dir']);
+        expect(fs.existsSync(existing)).toBe(true);
+      } finally {
+        fs.rmSync(existing, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('sync trust-root', () => {
+    beforeEach(() => {
+      mockConfigs.push({
+        id: 'legacy-sync', vaultId: 'vault-1', localPath: '/tmp/legacy-root', mode: 'sync',
+        onConflict: 'newer', ignore: [], lastSyncAt: '', autoSync: false,
+      });
+      vi.mocked(scanLocalFiles).mockReturnValue({
+        'a.md': { path: 'a.md', hash: 'h', mtime: '', size: 1 },
+        'b.md': { path: 'b.md', hash: 'h', mtime: '', size: 1 },
+      });
+    });
+
+    it('shows the root path and file count, then trusts with --yes', async () => {
+      await program.parseAsync(['node', 'cli', 'sync', 'trust-root', 'legacy-sync', '--yes']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('/tmp/legacy-root');
+      expect(stderr).toMatch(/Markdown files that will be tracked: 2/);
+      expect(trustSyncRoot).toHaveBeenCalledWith('legacy-sync');
+    });
+
+    it('refuses to prompt without a TTY and does not trust the root', async () => {
+      const originalIsTTY = process.stdin.isTTY;
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      try {
+        await program.parseAsync(['node', 'cli', 'sync', 'trust-root', 'legacy-sync']);
+      } finally {
+        Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+      }
+
+      expect(trustSyncRoot).not.toHaveBeenCalled();
+      expect(outputSpy.stderr.join('')).toMatch(/--yes/);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('reports an unknown sync id without prompting', async () => {
+      await program.parseAsync(['node', 'cli', 'sync', 'trust-root', 'nope', '--yes']);
+
+      expect(trustSyncRoot).not.toHaveBeenCalled();
+      expect(outputSpy.stderr.join('')).toContain('Sync configuration not found: nope');
+      expect(process.exitCode).toBe(1);
     });
   });
 
@@ -662,9 +749,33 @@ describe('sync commands', () => {
         const parsed = JSON.parse(jsonLine!);
         // The error is recorded in the result so the operator knows about it
         expect(parsed.errors).toBe(1);
-        // But it is still a partial result, not a thrown exception (exit code may be non-zero
-        // depending on failSpinner behaviour; the important thing is JSON is emitted)
         expect(parsed.downloaded).toBe(0);
+        // A partial result is still a failed run for scripts and cron.
+        expect(process.exitCode).toBe(1);
+      });
+    });
+
+    describe('sync push — partial failure exit code', () => {
+      it('exits nonzero when a push completes with errors', async () => {
+        mockConfigs.push({
+          id: 'push-err', vaultId: 'vault-1', localPath: '/tmp/test',
+          mode: 'push', onConflict: 'newer', ignore: [],
+          lastSyncAt: '1970-01-01T00:00:00.000Z', autoSync: false,
+        });
+        vi.mocked(scanLocalFiles).mockReturnValue({ 'doc.md': { path: 'doc.md', hash: 'h1', mtime: '', size: 50 } });
+        vi.mocked(computePushDiff).mockReturnValue({
+          uploads: [{ path: 'doc.md', action: 'create' as const, direction: 'push' as const, sizeBytes: 50, reason: 'new' }],
+          deletes: [], downloads: [], totalBytes: 50,
+        });
+        vi.mocked(executePush).mockResolvedValueOnce({
+          filesDownloaded: 0, filesDeleted: 0, filesUploaded: 0, filesSkipped: 0, bytesTransferred: 0,
+          errors: [{ path: 'doc.md', error: 'Remote delete was forbidden (403)', retryable: false }], failed: true,
+        });
+
+        await program.parseAsync(['node', 'cli', 'sync', 'push', 'push-err', '--output', 'json']);
+
+        expect(process.exitCode).toBe(1);
+        expect(outputSpy.stderr.join('')).toContain('forbidden (403)');
       });
     });
   });

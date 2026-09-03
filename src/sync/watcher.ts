@@ -3,17 +3,18 @@
  * Uses chokidar to detect file changes and triggers sync operations.
  */
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { watch, type FSWatcher } from 'chokidar';
-import type { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
-import type { SyncConfig } from './types.js';
+import { NotFoundError, type LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
+import type { SyncConfig, FileState, SyncState } from './types.js';
 import { shouldIgnore } from './ignore.js';
 import { hashFileContent, loadSyncState, saveSyncState, buildRemoteFileState } from './state.js';
 import { updateLastSync } from './config.js';
 import { resolveConflict, detectConflict, createConflictFile, formatConflictLog } from './conflict.js';
 import fs from 'node:fs';
 import { assertSyncRoot } from './root-marker.js';
-import { getHttpTimeoutMs } from '../client.js';
+import { resolveWithinSyncRoot } from './safe-path.js';
+import { atomicWriteFileSync } from './atomic-write.js';
+import { awaitWithTimeout, defaultShutdownTimeoutMs } from './shutdown.js';
 
 export interface WatcherOptions {
   /** Patterns to ignore */
@@ -33,11 +34,13 @@ export interface WatcherOptions {
 /** Serializes watcher and poller operations that share one sync-state file. */
 export type SyncOperationSerializer = <T>(operation: () => Promise<T>) => Promise<T>;
 
-function isNotFoundError(error: unknown): boolean {
-  return typeof error === 'object'
-    && error !== null
-    && 'statusCode' in error
-    && (error as { statusCode?: unknown }).statusCode === 404;
+/**
+ * Only a structured SDK 404 proves the remote document is absent. A bare
+ * object carrying `statusCode: 404` (or any other failure) leaves the remote
+ * state unknown and must abort the mutation.
+ */
+export function isNotFoundError(error: unknown): boolean {
+  return error instanceof NotFoundError;
 }
 
 /** TTL set to prevent sync loops — files written by sync are ignored for 5s */
@@ -92,7 +95,7 @@ export function createWatcher(
     onConflictLog,
     onError,
     debounceMs = 500,
-    shutdownTimeoutMs = getHttpTimeoutMs() + 5_000,
+    shutdownTimeoutMs = defaultShutdownTimeoutMs(),
   } = options;
   const recentlyWritten = new RecentlyWrittenSet();
   const pendingChanges = new Map<string, NodeJS.Timeout>();
@@ -115,24 +118,33 @@ export function createWatcher(
     return rel.split(path.sep).join('/');
   }
 
+  /** Write remote content over the local file through the containment check. */
+  function writeLocal(docPath: string, content: string): void {
+    assertSyncRoot(config);
+    const target = resolveWithinSyncRoot(config.localPath, docPath);
+    const dir = path.dirname(target);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    recentlyWritten.add(docPath);
+    atomicWriteFileSync(target, content, 'utf-8');
+  }
+
   /**
    * Handles a detected conflict between local and remote versions of a file.
    * Creates a backup of the losing side and applies the winning resolution.
    * Returns the resolution chosen, or 'skip' if no actual conflict was detected.
    */
   async function handleConflict(params: {
-    absPath: string;
     docPath: string;
     localContent: string;
     localHash: string;
-    lastLocal: import('./types.js').FileState | undefined;
-    lastRemote: import('./types.js').FileState | undefined;
+    lastLocal: FileState | undefined;
+    lastRemote: FileState | undefined;
     remoteContent: string;
     remoteHash: string;
     remoteUpdatedAt: string;
-    state: import('./types.js').SyncState;
+    state: SyncState;
   }): Promise<'local' | 'remote' | 'skip'> {
-    const { absPath, docPath, localContent, localHash, lastLocal, lastRemote, remoteContent, remoteHash, remoteUpdatedAt, state } = params;
+    const { docPath, localContent, localHash, lastLocal, lastRemote, remoteContent, remoteHash, remoteUpdatedAt, state } = params;
 
     const localState = { path: docPath, hash: localHash, mtime: new Date().toISOString(), size: Buffer.byteLength(localContent) };
     const remoteState = { path: docPath, hash: remoteHash, mtime: remoteUpdatedAt, size: Buffer.byteLength(remoteContent) };
@@ -153,11 +165,7 @@ export function createWatcher(
     } else {
       assertSyncRoot(config);
       conflictFile = createConflictFile(config.localPath, docPath, localContent, 'local');
-      assertSyncRoot(config);
-      recentlyWritten.add(docPath);
-      const tmpFile = absPath + '.tmp.' + randomBytes(4).toString('hex');
-      fs.writeFileSync(tmpFile, remoteContent, 'utf-8');
-      fs.renameSync(tmpFile, absPath);
+      writeLocal(docPath, remoteContent);
       log(`Conflict: ${docPath} — used remote, saved local as ${conflictFile}`);
     }
 
@@ -184,7 +192,8 @@ export function createWatcher(
 
     try {
       assertSyncRoot(config);
-      const content = fs.readFileSync(absPath, 'utf-8');
+      const localFile = resolveWithinSyncRoot(config.localPath, docPath);
+      const content = fs.readFileSync(localFile, 'utf-8');
       const localHash = hashFileContent(content);
       const state = loadSyncState(config.id);
       const lastLocal = state.local[docPath];
@@ -201,12 +210,31 @@ export function createWatcher(
             const remoteHash = hashFileContent(result.content);
             if (remoteHash !== lastRemote.hash) {
               const conflictResult = await handleConflict({
-                absPath, docPath, localContent: content, localHash,
+                docPath, localContent: content, localHash,
                 lastLocal, lastRemote,
                 remoteContent: result.content, remoteHash,
                 remoteUpdatedAt: result.document.updatedAt, state,
               });
               if (conflictResult !== 'skip') return;
+
+              // The remote moved since the last shared state and no conflict
+              // was detected, which means the local bytes did not actually
+              // diverge from the last sync (or both sides already match).
+              // Pushing here would overwrite the newer remote edit with a
+              // stale local copy, so adopt the remote version instead.
+              if (remoteHash === localHash) {
+                log(`Remote already matches ${docPath}; recorded shared state`);
+              } else {
+                writeLocal(docPath, result.content);
+                log(`Adopted remote: ${docPath} (remote changed, local unchanged since last sync)`);
+              }
+              state.local[docPath] = {
+                path: docPath, hash: remoteHash, mtime: new Date().toISOString(), size: Buffer.byteLength(result.content),
+              };
+              state.remote[docPath] = buildRemoteFileState(docPath, result.content, result.document.updatedAt);
+              saveSyncState(state);
+              updateLastSync(config.id);
+              return;
             }
             // 200 + matching hash: rare list/cache mismatch — fall through to push.
           }
@@ -244,6 +272,7 @@ export function createWatcher(
     try {
       if (config.mode === 'push' || config.mode === 'sync') {
         assertSyncRoot(config);
+        resolveWithinSyncRoot(config.localPath, docPath);
 
         const state = loadSyncState(config.id);
         const lastRemote = state.remote[docPath];
@@ -277,13 +306,7 @@ export function createWatcher(
                 let conflictFile: string | null = null;
 
                 if (resolution === 'remote') {
-                  assertSyncRoot(config);
-                  recentlyWritten.add(docPath);
-                  const dir = path.dirname(absPath);
-                  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-                  const tmpFile = absPath + '.tmp.' + randomBytes(4).toString('hex');
-                  fs.writeFileSync(tmpFile, remoteContent, 'utf-8');
-                  fs.renameSync(tmpFile, absPath);
+                  writeLocal(docPath, remoteContent);
                   state.local[docPath] = remoteState;
                   state.remote[docPath] = remoteState;
                   saveSyncState(state);
@@ -326,6 +349,11 @@ export function createWatcher(
   const watcher = watch(config.localPath, {
     ignoreInitial: true,
     persistent: true,
+    // A symlinked directory inside the root would otherwise be walked and its
+    // targets reported as documents "inside" the root. Containment is also
+    // enforced per path by resolveWithinSyncRoot; this keeps chokidar from
+    // even generating events for linked trees.
+    followSymlinks: false,
     awaitWriteFinish: { stabilityThreshold: debounceMs },
     ignored: (filePath: string) => {
       const rel = path.relative(config.localPath, filePath);
@@ -356,35 +384,19 @@ export function createWatcher(
     resolveReady();
   });
 
-  watcher.on('add', (absPath: string) => {
+  const schedule = (absPath: string, handler: (absPath: string) => Promise<void>): void => {
     if (stopping) return;
     clearTimeout(pendingChanges.get(absPath));
     pendingChanges.set(absPath, setTimeout(() => {
       pendingChanges.delete(absPath);
       if (stopping) return;
-      serialize(() => handleFileChange(absPath)).catch(err => onError?.(err instanceof Error ? err : new Error(String(err))));
+      serialize(() => handler(absPath)).catch(err => onError?.(err instanceof Error ? err : new Error(String(err))));
     }, debounceMs));
-  });
+  };
 
-  watcher.on('change', (absPath: string) => {
-    if (stopping) return;
-    clearTimeout(pendingChanges.get(absPath));
-    pendingChanges.set(absPath, setTimeout(() => {
-      pendingChanges.delete(absPath);
-      if (stopping) return;
-      serialize(() => handleFileChange(absPath)).catch(err => onError?.(err instanceof Error ? err : new Error(String(err))));
-    }, debounceMs));
-  });
-
-  watcher.on('unlink', (absPath: string) => {
-    if (stopping) return;
-    clearTimeout(pendingChanges.get(absPath));
-    pendingChanges.set(absPath, setTimeout(() => {
-      pendingChanges.delete(absPath);
-      if (stopping) return;
-      serialize(() => handleFileDelete(absPath)).catch(err => onError?.(err instanceof Error ? err : new Error(String(err))));
-    }, debounceMs));
-  });
+  watcher.on('add', (absPath: string) => schedule(absPath, handleFileChange));
+  watcher.on('change', (absPath: string) => schedule(absPath, handleFileChange));
+  watcher.on('unlink', (absPath: string) => schedule(absPath, handleFileDelete));
 
   watcher.on('error', (err: unknown) => {
     const error = err instanceof Error ? err : new Error(String(err));
@@ -410,18 +422,7 @@ export function createWatcher(
       pendingChanges.clear();
       recentlyWritten.clear();
       const drain = Promise.all([watcher.close(), operationTail]).then(() => undefined);
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      const completed = await Promise.race([
-        drain.then(() => true),
-        new Promise<false>(resolve => {
-          timeout = setTimeout(() => resolve(false), shutdownTimeoutMs);
-          timeout.unref?.();
-        }),
-      ]);
-      if (timeout) clearTimeout(timeout);
-      if (!completed) {
-        throw new Error(`Watcher shutdown drain timed out after ${shutdownTimeoutMs}ms`);
-      }
+      await awaitWithTimeout(drain, shutdownTimeoutMs, 'Watcher shutdown drain');
       log('Stopped watching');
     },
   };

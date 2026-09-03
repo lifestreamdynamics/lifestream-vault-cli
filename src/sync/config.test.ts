@@ -33,7 +33,7 @@ function makeSyncConfig(overrides: Partial<SyncConfig> = {}): SyncConfig {
 
 describe('sync config', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   describe('loadSyncConfigs', () => {
@@ -42,16 +42,16 @@ describe('sync config', () => {
       expect(loadSyncConfigs()).toEqual([]);
     });
 
-    it('should return empty array for corrupt file', () => {
+    it('throws for a corrupt file instead of silently reporting no syncs', () => {
       mockedFs.existsSync.mockReturnValue(true);
       mockedFs.readFileSync.mockReturnValue('not-json');
-      expect(loadSyncConfigs()).toEqual([]);
+      expect(() => loadSyncConfigs()).toThrow(/syncs\.json is not valid JSON/);
     });
 
-    it('should return empty array for non-array JSON', () => {
+    it('throws for non-array JSON', () => {
       mockedFs.existsSync.mockReturnValue(true);
       mockedFs.readFileSync.mockReturnValue('{"foo": "bar"}');
-      expect(loadSyncConfigs()).toEqual([]);
+      expect(() => loadSyncConfigs()).toThrow(/must contain a JSON array/);
     });
 
     it('should return parsed configs', () => {
@@ -72,15 +72,26 @@ describe('sync config', () => {
       );
     });
 
-    it('should write JSON to file', () => {
+    it('writes JSON to a temp file and renames it over syncs.json (mode 0600)', () => {
       mockedFs.existsSync.mockReturnValue(true);
       const configs = [makeSyncConfig()];
       saveSyncConfigs(configs);
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
-        expect.stringContaining('syncs.json'),
+        expect.stringMatching(/syncs\.json\.tmp\.[0-9a-f]{8}$/),
         expect.stringContaining('"vaultId": "vault-1"'),
-        { mode: 0o600 },
+        { encoding: 'utf-8', mode: 0o600 },
       );
+      expect(mockedFs.renameSync).toHaveBeenCalledWith(
+        expect.stringMatching(/syncs\.json\.tmp\.[0-9a-f]{8}$/),
+        expect.stringMatching(/syncs\.json$/),
+      );
+    });
+
+    it('removes the temp file and rethrows when the rename fails', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.renameSync.mockImplementation(() => { throw new Error('EXDEV'); });
+      expect(() => saveSyncConfigs([])).toThrow('EXDEV');
+      expect(mockedFs.unlinkSync).toHaveBeenCalledWith(expect.stringMatching(/syncs\.json\.tmp\./));
     });
   });
 
@@ -195,6 +206,45 @@ describe('sync config', () => {
       expect(String(writes[1][0])).toContain('syncs.json');
       expect(String(writes[1][1])).toContain('"rootMarkerVersion": 1');
     });
+
+    it('refuses to mark a directory that already carries a marker', () => {
+      mockedFs.existsSync.mockImplementation(target => {
+        const value = String(target);
+        return value === '/home/user/vault' || value.endsWith('.lsvault-sync-root') || value.endsWith('syncs.json');
+      });
+      mockedFs.readFileSync.mockReturnValue('[]');
+      mockedFs.statSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+
+      expect(() => createSyncConfig(
+        { vaultId: 'vault-1', localPath: '/home/user/vault' },
+        { markRoot: true },
+      )).toThrow(/already contains \.lsvault-sync-root/);
+      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it('rolls the marker back when persisting the configuration fails', () => {
+      mockedFs.existsSync.mockImplementation(target => {
+        const value = String(target);
+        return value === '/home/user/vault' || value.endsWith('syncs.json');
+      });
+      mockedFs.statSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+      mockedFs.lstatSync.mockReturnValue({ isFile: () => true, isSymbolicLink: () => false } as fs.Stats);
+      let markerContent = '';
+      mockedFs.readFileSync.mockImplementation(target => {
+        if (String(target).endsWith('.lsvault-sync-root')) return markerContent;
+        return '[]';
+      });
+      mockedFs.writeFileSync.mockImplementation((target, content) => {
+        if (String(target).endsWith('.lsvault-sync-root')) { markerContent = String(content); return; }
+        throw new Error('disk full');
+      });
+
+      expect(() => createSyncConfig(
+        { vaultId: 'vault-1', localPath: '/home/user/vault' },
+        { markRoot: true },
+      )).toThrow('disk full');
+      expect(mockedFs.unlinkSync).toHaveBeenCalledWith(expect.stringMatching(/\.lsvault-sync-root$/));
+    });
   });
 
   describe('trustSyncRoot', () => {
@@ -213,10 +263,59 @@ describe('sync config', () => {
         expect.objectContaining({ flag: 'wx', mode: 0o600 }),
       );
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
-        expect.stringContaining('syncs.json'),
+        expect.stringMatching(/syncs\.json\.tmp\./),
         expect.stringContaining('"rootMarkerVersion": 1'),
-        { mode: 0o600 },
+        { encoding: 'utf-8', mode: 0o600 },
       );
+    });
+
+    it('rejects an already-trusted configuration without touching the marker', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue(JSON.stringify([makeSyncConfig({ rootMarkerVersion: 1 })]));
+
+      expect(() => trustSyncRoot('sync-1')).toThrow(/already trusted/);
+      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unknown sync id', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('[]');
+
+      expect(() => trustSyncRoot('missing')).toThrow('Sync config not found: missing');
+    });
+
+    it('refuses a root that already carries a marker (conflict)', () => {
+      const legacy = makeSyncConfig({ rootMarkerVersion: undefined });
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue(JSON.stringify([legacy]));
+      mockedFs.statSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+      mockedFs.writeFileSync.mockImplementation((_target, _content, options) => {
+        if (typeof options === 'object' && options !== null && 'flag' in options && options.flag === 'wx') {
+          throw Object.assign(new Error('exists'), { code: 'EEXIST' });
+        }
+      });
+
+      expect(() => trustSyncRoot(legacy.id)).toThrow(/refusing to overwrite/);
+      expect(mockedFs.renameSync).not.toHaveBeenCalled();
+    });
+
+    it('rolls the marker back when the config write fails', () => {
+      const legacy = makeSyncConfig({ rootMarkerVersion: undefined });
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.statSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+      mockedFs.lstatSync.mockReturnValue({ isFile: () => true, isSymbolicLink: () => false } as fs.Stats);
+      let markerContent = '';
+      mockedFs.readFileSync.mockImplementation(target => {
+        if (String(target).endsWith('.lsvault-sync-root')) return markerContent;
+        return JSON.stringify([legacy]);
+      });
+      mockedFs.writeFileSync.mockImplementation((target, content) => {
+        if (String(target).endsWith('.lsvault-sync-root')) { markerContent = String(content); return; }
+        throw new Error('disk full');
+      });
+
+      expect(() => trustSyncRoot(legacy.id)).toThrow('disk full');
+      expect(mockedFs.unlinkSync).toHaveBeenCalledWith(expect.stringMatching(/\.lsvault-sync-root$/));
     });
   });
 

@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   assertSyncRoot,
   prepareSyncRoot,
+  removeOwnedSyncRootMarker,
   SYNC_ROOT_MARKER,
   writeSyncRootMarker,
 } from './root-marker.js';
@@ -67,5 +68,51 @@ describe('sync root marker', () => {
     const root = tempDir();
     writeSyncRootMarker(config(root));
     expect(() => writeSyncRootMarker(config(root, { id: 'other' }))).toThrow(/refusing to overwrite/);
+  });
+
+  it('requireUnmarked rejects a directory that already carries a marker', () => {
+    const root = tempDir();
+    writeSyncRootMarker(config(root));
+    expect(() => prepareSyncRoot(root, { requireUnmarked: true })).toThrow(/already contains/);
+    expect(() => prepareSyncRoot(root)).not.toThrow();
+  });
+
+  it('rejects a marker with an unsupported version', () => {
+    const root = tempDir();
+    fs.writeFileSync(path.join(root, SYNC_ROOT_MARKER), JSON.stringify({ version: 2, syncId: 'sync-1', vaultId: 'vault-1' }));
+    expect(() => assertSyncRoot(config(root))).toThrow(/Unsupported sync root marker version.*expected 1, found 2/);
+  });
+
+  it('rejects malformed marker content distinctly from a read failure', () => {
+    const root = tempDir();
+    fs.writeFileSync(path.join(root, SYNC_ROOT_MARKER), '{not json');
+    expect(() => assertSyncRoot(config(root))).toThrow(/Invalid sync root marker/);
+    fs.writeFileSync(path.join(root, SYNC_ROOT_MARKER), JSON.stringify({ version: 1 }));
+    expect(() => assertSyncRoot(config(root))).toThrow(/invalid marker fields/);
+  });
+
+  it('rejects a marker that is a symlink, even to a valid marker file', () => {
+    const root = tempDir();
+    const elsewhere = tempDir();
+    const realMarker = path.join(elsewhere, 'marker.json');
+    fs.writeFileSync(realMarker, JSON.stringify({ version: 1, syncId: 'sync-1', vaultId: 'vault-1' }));
+    fs.symlinkSync(realMarker, path.join(root, SYNC_ROOT_MARKER));
+    expect(() => assertSyncRoot(config(root))).toThrow(/must be a regular file/);
+  });
+
+  it('removeOwnedSyncRootMarker removes only the marker that belongs to the config', () => {
+    const root = tempDir();
+    writeSyncRootMarker(config(root));
+
+    removeOwnedSyncRootMarker(config(root, { id: 'someone-else' }));
+    expect(fs.existsSync(path.join(root, SYNC_ROOT_MARKER))).toBe(true);
+    removeOwnedSyncRootMarker(config(root, { vaultId: 'other-vault' }));
+    expect(fs.existsSync(path.join(root, SYNC_ROOT_MARKER))).toBe(true);
+
+    removeOwnedSyncRootMarker(config(root));
+    expect(fs.existsSync(path.join(root, SYNC_ROOT_MARKER))).toBe(false);
+
+    // Missing root / missing marker: silent no-op.
+    expect(() => removeOwnedSyncRootMarker(config(path.join(root, 'gone')))).not.toThrow();
   });
 });

@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
-import { loadConfig, loadConfigAsync, getCredentialManager } from '../config.js';
+import { loadConfigAsync, getCredentialManager } from '../config.js';
 import { getClientAsync, getHttpTimeoutMs } from '../client.js';
 import { migrateCredentials, hasPlaintextCredentials, checkAndPromptMigration } from '../lib/migration.js';
 import { promptPassword, promptMfaCode } from '../utils/prompt.js';

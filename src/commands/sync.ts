@@ -32,8 +32,18 @@ import { createWatcher } from '../sync/watcher.js';
 import { createRemotePoller } from '../sync/remote-poller.js';
 import { runDaemonForeground, startDaemon, stopDaemon, getDaemonStatus } from '../sync/daemon.js';
 import { assertSyncRoot, prepareSyncRoot } from '../sync/root-marker.js';
-import type { SyncMode, ConflictStrategy } from '../sync/types.js';
+import { isSyncMode, isConflictStrategy, SYNC_MODES, CONFLICT_STRATEGIES } from '../sync/types.js';
 import { resolveWithinSyncRoot } from '../sync/safe-path.js';
+
+/** Remove a directory that `sync init --create-dir` created but could not finish setting up. */
+function removeCreatedDir(dir: string): void {
+  try {
+    // Only an empty leaf is removed; anything the user put there stays.
+    fs.rmdirSync(dir);
+  } catch {
+    // Best effort: a non-empty or already-removed directory is left alone.
+  }
+}
 
 export function registerSyncCommands(program: Command): void {
   const sync = program.command('sync').description('Configure and manage vault sync');
@@ -63,19 +73,33 @@ Sync modes:
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Initializing sync...');
+      let createdDir: string | null = null;
       try {
+        const mode = _opts.mode ?? 'sync';
+        if (!isSyncMode(mode)) {
+          throw new Error(`--mode must be one of ${SYNC_MODES.join(', ')} (got ${String(mode)})`);
+        }
+        const onConflict = _opts.onConflict ?? 'newer';
+        if (!isConflictStrategy(onConflict)) {
+          throw new Error(`--on-conflict must be one of ${CONFLICT_STRATEGIES.join(', ')} (got ${String(onConflict)})`);
+        }
+
         const absPath = path.resolve(localPath);
+        const createDir = _opts.createDir === true;
+        const existedBefore = fs.existsSync(absPath);
         prepareSyncRoot(absPath, {
-          createDir: _opts.createDir === true,
+          createDir,
           requireUnmarked: true,
         });
+        if (createDir && !existedBefore) createdDir = absPath;
         const client = await getClientAsync();
         const vault = await client.vaults.get(vaultId);
 
-        const mode = (_opts.mode as SyncMode | undefined) ?? 'sync';
-        const onConflict = (_opts.onConflict as ConflictStrategy | undefined) ?? 'newer';
         if (!_opts.onConflict) {
-          out.warn('No --on-conflict strategy specified; defaulting to "newer" (keeps the file with the more recent modification time). Use --on-conflict local|remote|ask to override.');
+          out.warn('No --on-conflict strategy specified; defaulting to "newer" (keeps the file with the more recent modification time). Use --on-conflict local|remote to override.');
+        }
+        if (onConflict === 'ask') {
+          out.warn('--on-conflict ask never resolves conflicts automatically: conflicting files are reported and left for `lsvault sync resolve`.');
         }
         const ignore = _opts.ignore as string[] | undefined;
         const syncInterval = _opts.interval as string | undefined;
@@ -91,8 +115,9 @@ Sync modes:
           autoSync,
         }, {
           markRoot: true,
-          createDir: _opts.createDir === true,
+          createDir,
         });
+        createdDir = null;
 
         out.success(`Sync initialized for vault "${vault.name}"`, {
           id: config.id,
@@ -108,6 +133,7 @@ Sync modes:
           out.status(`Run ${chalk.cyan(`lsvault sync pull ${config.id}`)} or ${chalk.cyan(`lsvault sync push ${config.id}`)} to perform the first sync.`);
         }
       } catch (err) {
+        if (createdDir) removeCreatedDir(createdDir);
         handleError(out, err, 'Failed to initialize sync');
       }
     });
@@ -115,11 +141,33 @@ Sync modes:
   // sync trust-root <syncId>
   addGlobalFlags(sync.command('trust-root')
     .description('Trust and mark the local root of a legacy sync configuration')
-    .argument('<syncId>', 'Sync configuration ID'))
+    .argument('<syncId>', 'Sync configuration ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
     .action(async (syncId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       try {
+        const existing = getSyncConfig(syncId);
+        if (!existing) {
+          out.error(`Sync configuration not found: ${syncId}`);
+          process.exitCode = 1;
+          return;
+        }
+        // Trusting a root turns every later local deletion into a remote
+        // deletion, so show exactly what would be tracked before marking it.
+        const ignorePatterns = resolveIgnorePatterns(existing.ignore, existing.localPath);
+        const fileCount = Object.keys(scanLocalFiles(existing.localPath, ignorePatterns)).length;
+        out.status(`Sync root: ${existing.localPath}`);
+        out.status(`Vault:     ${existing.vaultId}`);
+        out.status(`Markdown files that will be tracked: ${fileCount}`);
+        const confirmed = await confirmAction(
+          `Trust this directory as the sync root for ${syncId}?`,
+          { yes: _opts.yes as boolean | undefined },
+        );
+        if (!confirmed) {
+          out.status('Trust cancelled.');
+          return;
+        }
         const config = trustSyncRoot(syncId);
         out.success('Sync root trusted', {
           id: config.id,
@@ -312,6 +360,7 @@ Sync modes:
           for (const err of result.errors) {
             out.error(`  ${err.path}: ${err.error}`);
           }
+          process.exitCode = 1;
         } else {
           out.succeedSpinner('Pull complete');
         }
@@ -428,6 +477,7 @@ Sync modes:
           for (const err of result.errors) {
             out.error(`  ${err.path}: ${err.error}`);
           }
+          process.exitCode = 1;
         } else {
           out.succeedSpinner('Push complete');
         }
@@ -782,11 +832,19 @@ Sync modes:
         if (flags.output === 'json') {
           out.record({
             running: status.running,
+            state: status.state,
             pid: status.pid,
             logFile: status.logFile,
             uptime: status.uptime,
             startedAt: status.startedAt,
           });
+          return;
+        }
+
+        if (status.state === 'unknown') {
+          out.status(chalk.yellow(`Daemon status unknown: PID ${status.pid} is alive but could not be verified on this platform.`));
+          out.status(`  Log file:   ${status.logFile}`);
+          process.exitCode = 1;
           return;
         }
 

@@ -24,7 +24,7 @@ function makeFileState(overrides: Partial<FileState> = {}): FileState {
 
 describe('sync conflict', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockedFs.lstatSync.mockImplementation(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); });
   });
   describe('detectConflict', () => {
@@ -57,9 +57,8 @@ describe('sync conflict', () => {
       const remote = makeFileState({ hash: 'same-new' });
       const lastLocal = makeFileState({ hash: 'original' });
       const lastRemote = makeFileState({ hash: 'original' });
-      // Both changed but to same hash — not a conflict by the algorithm
-      // (localChanged && remoteChanged is true, but the result doesn't check equality)
-      expect(detectConflict(local, remote, lastLocal, lastRemote)).toBe(true);
+      // Both sides independently arrived at identical bytes: nothing to resolve.
+      expect(detectConflict(local, remote, lastLocal, lastRemote)).toBe(false);
     });
 
     it('should detect conflict on first sync when hashes differ', () => {
@@ -96,8 +95,24 @@ describe('sync conflict', () => {
       expect(resolveConflict('newer', olderLocal, remote)).toBe('remote');
     });
 
-    it('should fall back to newer for ask strategy', () => {
-      expect(resolveConflict('ask', local, remote)).toBe('local');
+    it('rejects the ask strategy instead of silently picking a side', () => {
+      const originalIsTTY = process.stdin.isTTY;
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      try {
+        expect(() => resolveConflict('ask', local, remote)).toThrow(/does not resolve conflicts automatically.*no interactive terminal.*sync resolve/);
+      } finally {
+        Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+      }
+    });
+
+    it('rejects the ask strategy even on a TTY (no prompt is wired in)', () => {
+      const originalIsTTY = process.stdin.isTTY;
+      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+      try {
+        expect(() => resolveConflict('ask', local, remote)).toThrow(/does not resolve conflicts automatically/);
+      } finally {
+        Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+      }
     });
   });
 
@@ -116,8 +131,38 @@ describe('sync conflict', () => {
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
         expect.stringContaining('conflicted'),
         '# Conflicted content',
-        'utf-8',
+        { encoding: 'utf-8', flag: 'wx' },
       );
+    });
+
+    it('handles an extension-less document path without truncating it', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const result = createConflictFile('/home/user/vault', 'notes/README', 'content', 'local');
+
+      expect(result).toMatch(/^notes\/README\.conflicted\.local\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$/);
+    });
+
+    it('never overwrites an existing backup: appends a numeric suffix on EEXIST', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      let attempts = 0;
+      mockedFs.writeFileSync.mockImplementation(() => {
+        attempts++;
+        if (attempts <= 2) throw Object.assign(new Error('exists'), { code: 'EEXIST' });
+      });
+
+      const result = createConflictFile('/home/user/vault', 'notes/test.md', 'content', 'remote');
+
+      expect(attempts).toBe(3);
+      expect(result).toMatch(/^notes\/test\.conflicted\.remote\.[0-9T-]+-2\.md$/);
+      expect(String(mockedFs.writeFileSync.mock.calls[2][0])).toMatch(/-2\.md$/);
+    });
+
+    it('rethrows non-EEXIST write failures', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.writeFileSync.mockImplementation(() => { throw Object.assign(new Error('read-only fs'), { code: 'EROFS' }); });
+
+      expect(() => createConflictFile('/home/user/vault', 'notes/test.md', 'content', 'remote')).toThrow('read-only fs');
     });
 
     it('should create parent directory if needed', () => {

@@ -8,6 +8,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import type { SyncState, FileState } from './types.js';
+import { atomicWriteFileSync } from './atomic-write.js';
 
 const STATE_DIR = path.join(os.homedir(), '.lsvault', 'sync-state');
 
@@ -18,6 +19,11 @@ function stateFilePath(syncId: string): string {
 /**
  * Load sync state for a given sync configuration.
  * Returns a fresh empty state if no state file exists.
+ *
+ * A state file that exists but cannot be parsed throws. An empty state is not
+ * a safe substitute: it makes every remote file look new and every local file
+ * look untracked, so a subsequent push/pull diff would plan spurious
+ * transfers and, in the worst case, deletions.
  */
 export function loadSyncState(syncId: string): SyncState {
   const filePath = stateFilePath(syncId);
@@ -29,28 +35,32 @@ export function loadSyncState(syncId: string): SyncState {
       updatedAt: new Date(0).toISOString(),
     };
   }
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  let parsed: unknown;
   try {
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    return JSON.parse(raw) as SyncState;
-  } catch {
-    return {
-      syncId,
-      local: {},
-      remote: {},
-      updatedAt: new Date(0).toISOString(),
-    };
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Sync state file ${filePath} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
   }
+  if (
+    parsed === null || typeof parsed !== 'object'
+    || typeof (parsed as SyncState).local !== 'object' || (parsed as SyncState).local === null
+    || typeof (parsed as SyncState).remote !== 'object' || (parsed as SyncState).remote === null
+  ) {
+    throw new Error(`Sync state file ${filePath} is malformed (expected local/remote maps).`);
+  }
+  return parsed as SyncState;
 }
 
 /**
- * Save sync state to disk.
+ * Save sync state to disk (temp file + rename, mode 0600).
  */
 export function saveSyncState(state: SyncState): void {
   if (!fs.existsSync(STATE_DIR)) {
     fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
   }
   state.updatedAt = new Date().toISOString();
-  fs.writeFileSync(stateFilePath(state.syncId), JSON.stringify(state) + '\n', { mode: 0o600 });
+  atomicWriteFileSync(stateFilePath(state.syncId), JSON.stringify(state) + '\n', 'utf-8', { mode: 0o600 });
 }
 
 /**

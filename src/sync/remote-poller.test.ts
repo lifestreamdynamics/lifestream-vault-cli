@@ -67,7 +67,7 @@ const mockHashFileContent = vi.mocked(hashFileContent);
 const mockBuildRemoteFileState = vi.mocked(buildRemoteFileState);
 const mockUpdateLastSync = vi.mocked(updateLastSync);
 
-import { createRemotePoller } from './remote-poller.js';
+import { createRemotePoller, clampPollIntervalMs, DEFAULT_POLL_INTERVAL_MS, MIN_POLL_INTERVAL_MS, MAX_POLL_INTERVAL_MS } from './remote-poller.js';
 import { assertSyncRoot } from './root-marker.js';
 import type { SyncConfig, SyncState } from './types.js';
 
@@ -144,7 +144,7 @@ describe('remote-poller', () => {
     const onError = vi.fn();
     const poller = createRemotePoller(client as any, makeConfig(), { ignorePatterns: [], intervalMs: 60_000, onError });
     await new Promise(r => setTimeout(r, 25));
-    poller.stop();
+    await poller.stop();
     expect(client._syncList).not.toHaveBeenCalled();
     expect(client._get).not.toHaveBeenCalled();
     expect(client._put).not.toHaveBeenCalled();
@@ -166,7 +166,7 @@ describe('remote-poller', () => {
       ignorePatterns: [], intervalMs: 60_000, serialize, onLocalWrite,
     });
     await new Promise(r => setTimeout(r, 30));
-    poller.stop();
+    await poller.stop();
 
     expect(serialize).toHaveBeenCalledOnce();
     expect(onLocalWrite).toHaveBeenCalledWith('notes/pulled.md');
@@ -248,7 +248,7 @@ describe('remote-poller', () => {
       intervalMs: 60000,
     });
     await new Promise(r => setTimeout(r, 30));
-    poller.stop();
+    await poller.stop();
 
     expect(client._syncList).toHaveBeenCalledTimes(1);
     expect(client._syncList).toHaveBeenCalledWith(
@@ -304,7 +304,7 @@ describe('remote-poller', () => {
       intervalMs: 60000,
     });
     await new Promise(r => setTimeout(r, 30));
-    poller.stop();
+    await poller.stop();
 
     expect(client._syncList).toHaveBeenCalledTimes(1);
     expect(client._get).toHaveBeenCalledTimes(1);
@@ -357,7 +357,7 @@ describe('remote-poller', () => {
       onLog,
     });
     await new Promise(r => setTimeout(r, 30));
-    poller.stop();
+    await poller.stop();
 
     expect(client._get).toHaveBeenCalledTimes(1);
     // No file write should occur
@@ -422,7 +422,7 @@ describe('remote-poller', () => {
       onLog,
     });
     await new Promise(r => setTimeout(r, 30));
-    poller.stop();
+    await poller.stop();
 
     // File was written atomically via tmp + rename
     expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
@@ -469,7 +469,7 @@ describe('remote-poller', () => {
       intervalMs: 60000,
     });
     await new Promise(r => setTimeout(r, 30));
-    poller.stop();
+    await poller.stop();
 
     // No document GETs should be issued
     expect(client._get).not.toHaveBeenCalled();
@@ -520,7 +520,7 @@ describe('remote-poller', () => {
       onLog,
     });
     await new Promise(r => setTimeout(r, 30));
-    poller.stop();
+    await poller.stop();
 
     // Called without ifNoneMatch (unconditional 2-arg call)
     expect(client._get).toHaveBeenCalledTimes(1);
@@ -560,7 +560,7 @@ describe('remote-poller', () => {
       onError,
     });
     await new Promise(r => setTimeout(r, 30));
-    poller.stop();
+    await poller.stop();
 
     // onError must NOT be called for a throttle error
     expect(onError).not.toHaveBeenCalled();
@@ -591,7 +591,7 @@ describe('remote-poller', () => {
       onError,
     });
     await new Promise(r => setTimeout(r, 30));
-    poller.stop();
+    await poller.stop();
 
     // onError MUST be called for non-throttle errors
     expect(onError).toHaveBeenCalledOnce();
@@ -629,7 +629,7 @@ describe('remote-poller', () => {
       onLog,
     });
     await new Promise(r => setTimeout(r, 30));
-    poller.stop();
+    await poller.stop();
 
     expect(mockedFs.unlinkSync).toHaveBeenCalledWith(
       path.join(config.localPath, 'notes/deleted.md'),
@@ -678,5 +678,111 @@ describe('remote-poller', () => {
     expect(savedState.local['notes/edited.md'].hash).toBe('hash-new');
     expect(savedState.remote['notes/edited.md']).toBeDefined();
     expect(savedState.remoteListEtag).toBeUndefined();
+  });
+
+  describe('pull-only mode never writes to the remote', () => {
+    it('keeps the local edit and backs up the remote on a changed-doc conflict, without PUT', async () => {
+      const config = makeConfig({ mode: 'pull', onConflict: 'local' });
+      mockLoadSyncState.mockReturnValue(makeState({
+        local: { 'notes/doc.md': makeRemoteFileState('notes/doc.md', 'hash-old') },
+        remote: { 'notes/doc.md': makeRemoteFileState('notes/doc.md', 'hash-old') },
+      }));
+      const { detectConflict, resolveConflict, createConflictFile } = await import('./conflict.js');
+      vi.mocked(detectConflict).mockReturnValueOnce(true);
+      vi.mocked(resolveConflict).mockReturnValueOnce('local');
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('# local edit' as any);
+      const client = makeClient();
+      client._syncList.mockResolvedValue({
+        vaultUnchanged: false,
+        changes: [{ path: 'notes/doc.md', contentHash: 'hash-remote', fileModifiedAt: '2026-06-01T00:00:00.000Z', kind: 'changed' }],
+        removed: [], unchanged: [], listEtag: 'W/"x"',
+      });
+      client._get.mockResolvedValue({ notModified: false, content: '# remote edit', document: { updatedAt: '2026-06-01T00:00:00.000Z' } });
+
+      const poller = createRemotePoller(client as any, config, { ignorePatterns: [], intervalMs: 60_000 });
+      await poller.stop();
+
+      expect(client._put).not.toHaveBeenCalled();
+      expect(createConflictFile).toHaveBeenCalledWith(config.localPath, 'notes/doc.md', '# remote edit', 'remote');
+      // The local file was not overwritten by the remote version.
+      expect(mockedFs.renameSync).not.toHaveBeenCalled();
+      const savedState = mockSaveSyncState.mock.calls.at(-1)?.[0] as SyncState;
+      // Last-known remote is the server's real content, so the next poll does not re-raise the conflict.
+      expect(savedState.remote['notes/doc.md'].hash).toBe('sha256-# remote edit');
+    });
+
+    it('keeps a locally edited file when the remote deleted it, without re-uploading', async () => {
+      const config = makeConfig({ mode: 'pull', onConflict: 'local' });
+      mockLoadSyncState.mockReturnValue(makeState({
+        local: { 'notes/edited.md': makeRemoteFileState('notes/edited.md', 'hash-old') },
+        remote: { 'notes/edited.md': makeRemoteFileState('notes/edited.md', 'hash-old') },
+      }));
+      mockHashFileContent.mockImplementation(content => content === '# local edit' ? 'hash-new' : `sha256-${content.slice(0, 16)}`);
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('# local edit' as any);
+      const client = makeClient();
+      client._syncList.mockResolvedValue({
+        vaultUnchanged: false, changes: [], removed: ['notes/edited.md'], unchanged: [], listEtag: 'W/"deleted"',
+      });
+
+      const poller = createRemotePoller(client as any, config, { ignorePatterns: [], intervalMs: 60_000 });
+      await poller.stop();
+
+      expect(client._put).not.toHaveBeenCalled();
+      expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+      const savedState = mockSaveSyncState.mock.calls.at(-1)?.[0] as SyncState;
+      expect(savedState.local['notes/edited.md']).toBeUndefined();
+      expect(savedState.remote['notes/edited.md']).toBeUndefined();
+    });
+  });
+
+  describe('poll interval clamping', () => {
+    it('clamps out-of-range and non-finite intervals', () => {
+      expect(clampPollIntervalMs(undefined)).toBe(DEFAULT_POLL_INTERVAL_MS);
+      expect(clampPollIntervalMs(Number.NaN)).toBe(DEFAULT_POLL_INTERVAL_MS);
+      expect(clampPollIntervalMs(5)).toBe(MIN_POLL_INTERVAL_MS);
+      expect(clampPollIntervalMs(Number.POSITIVE_INFINITY)).toBe(DEFAULT_POLL_INTERVAL_MS);
+      expect(clampPollIntervalMs(MAX_POLL_INTERVAL_MS * 10)).toBe(MAX_POLL_INTERVAL_MS);
+      expect(clampPollIntervalMs(45_000)).toBe(45_000);
+    });
+
+    it('logs when a supplied interval was clamped', async () => {
+      const client = makeClient();
+      client._syncList.mockResolvedValue({ vaultUnchanged: true, changes: [], removed: [], unchanged: [], listEtag: 'e' });
+      const onLog = vi.fn();
+      const poller = createRemotePoller(client as any, makeConfig(), { ignorePatterns: [], intervalMs: 5, onLog });
+      await poller.stop();
+      const logs = onLog.mock.calls.map((c: any[]) => c[0] as string);
+      expect(logs.some(m => m.includes('out of range') && m.includes(`${MIN_POLL_INTERVAL_MS}ms`))).toBe(true);
+    });
+  });
+
+  it('stop() waits for the in-flight poll even after an interval tick was skipped', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const client = makeClient();
+      let releaseList!: (value: unknown) => void;
+      client._syncList.mockImplementation(() => new Promise(resolve => { releaseList = resolve; }));
+      const poller = createRemotePoller(client as any, makeConfig(), { ignorePatterns: [], intervalMs: 60_000, shutdownTimeoutMs: 1_000 });
+      await vi.waitFor(() => expect(client._syncList).toHaveBeenCalledOnce());
+
+      // A tick fires while the first poll is still running: it must be skipped
+      // without replacing the tracked in-flight promise.
+      vi.advanceTimersByTime(60_000);
+      expect(client._syncList).toHaveBeenCalledOnce();
+
+      let stopped = false;
+      const stopping = poller.stop().then(() => { stopped = true; });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+
+      releaseList({ vaultUnchanged: true, changes: [], removed: [], unchanged: [], listEtag: 'e' });
+      await stopping;
+      expect(stopped).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

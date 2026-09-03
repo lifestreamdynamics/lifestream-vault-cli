@@ -7,23 +7,35 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { loadSyncConfigs } from './config.js';
 import { getHttpTimeoutMs } from '../client.js';
+import { SHUTDOWN_DRAIN_GRACE_MS } from './shutdown.js';
 
 const DAEMON_DIR = path.join(os.homedir(), '.lsvault', 'daemon');
 const PID_FILE = path.join(DAEMON_DIR, 'daemon.pid');
 const LOG_FILE = path.join(DAEMON_DIR, 'daemon.log');
 const STATE_FILE = path.join(DAEMON_DIR, 'daemon-state.json');
 const STARTUP_TIMEOUT_MS = 10_000;
-// Watcher/poller drains allow HTTP timeout + 5s. The controller waits another
-// 5s so the worker can report a bounded drain failure and exit nonzero first.
-const SHUTDOWN_GRACE_MS = 10_000;
+// Watcher/poller drains allow HTTP timeout + SHUTDOWN_DRAIN_GRACE_MS. The
+// controller waits another 5s so the worker can report a bounded drain
+// failure and exit nonzero first.
+const CONTROLLER_EXTRA_GRACE_MS = 5_000;
+const SHUTDOWN_GRACE_MS = SHUTDOWN_DRAIN_GRACE_MS + CONTROLLER_EXTRA_GRACE_MS;
 const PROCESS_POLL_INTERVAL_MS = 50;
 const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_LOG_AGE_DAYS = 7;
 
 export interface DaemonStatus {
   running: boolean;
+  /**
+   * `running`: identity verified against a live process.
+   * `stopped`: no daemon (missing or stale record, which is removed).
+   * `unknown`: a live process matches the recorded PID but its start marker
+   * could not be probed on this platform; the PID file is retained so no
+   * second daemon is launched against the same roots.
+   */
+  state: 'running' | 'stopped' | 'unknown';
   pid: number | null;
   logFile: string;
   uptime: number | null;
@@ -64,7 +76,7 @@ type StoredPid =
  */
 function ensureDaemonDir(): void {
   if (!fs.existsSync(DAEMON_DIR)) {
-    fs.mkdirSync(DAEMON_DIR, { recursive: true });
+    fs.mkdirSync(DAEMON_DIR, { recursive: true, mode: 0o700 });
   }
 }
 
@@ -83,6 +95,7 @@ function readStoredPid(): StoredPid {
         && typeof identity.nonce === 'string'
         && identity.nonce.length >= 16
         && Number.isInteger(identity.claimantPid)
+        && (identity.claimantPid as number) > 0
         && typeof identity.claimantStartId === 'string'
         && identity.claimantStartId.length > 0
         && typeof identity.createdAt === 'string'
@@ -92,6 +105,7 @@ function readStoredPid(): StoredPid {
       if (
         identity.version === 1
         && Number.isInteger(identity.pid)
+        && (identity.pid as number) > 0
         && typeof identity.nonce === 'string'
         && identity.nonce.length >= 16
         && typeof identity.processStartId === 'string'
@@ -118,18 +132,51 @@ export function readPid(): number | null {
   return null;
 }
 
+/**
+ * Result of probing a process start marker.
+ *
+ * `gone` is a positive signal that the process does not exist; `unknown`
+ * means the probe itself failed (tool missing, timeout, permission), in
+ * which case the process may well be alive and callers must not treat the
+ * record as stale.
+ */
+type ProcessStartProbe =
+  | { kind: 'ok'; startId: string }
+  | { kind: 'gone' }
+  | { kind: 'unknown'; reason: string };
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** True when a child-process failure means "no such process" rather than "could not ask". */
+function childExitedNonZero(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { status?: unknown; code?: unknown; signal?: unknown };
+  // ENOENT (binary missing) and ETIMEDOUT/killed-by-timeout are probe failures.
+  if (e.code === 'ENOENT' || e.code === 'ETIMEDOUT' || e.signal) return false;
+  return typeof e.status === 'number' && e.status !== 0;
+}
+
 /** OS process start marker, stable for the lifetime of a process. */
-function readProcessStartId(pid: number): string | null {
-  try {
-    if (process.platform === 'linux') {
-      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
-      const commandEnd = stat.lastIndexOf(')');
-      if (commandEnd < 0) return null;
-      // After the command, index 0 is field 3 (state); starttime is field 22.
-      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
-      const startTick = fields[19];
-      return startTick ? `linux:${startTick}` : null;
+function readProcessStartId(pid: number): ProcessStartProbe {
+  if (process.platform === 'linux') {
+    let stat: string;
+    try {
+      stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ESRCH') return { kind: 'gone' };
+      return { kind: 'unknown', reason: describeError(err) };
     }
+    const commandEnd = stat.lastIndexOf(')');
+    if (commandEnd < 0) return { kind: 'unknown', reason: 'unparseable /proc stat' };
+    // After the command, index 0 is field 3 (state); starttime is field 22.
+    const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+    const startTick = fields[19];
+    return startTick ? { kind: 'ok', startId: `linux:${startTick}` } : { kind: 'unknown', reason: 'missing starttime field' };
+  }
+  try {
     if (process.platform === 'win32') {
       const ticks = execFileSync('powershell.exe', [
         '-NoProfile',
@@ -137,33 +184,41 @@ function readProcessStartId(pid: number): string | null {
         '-Command',
         `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`,
       ], { encoding: 'utf-8', timeout: 1_000 }).trim();
-      return ticks ? `win32:${ticks}` : null;
+      return ticks ? { kind: 'ok', startId: `win32:${ticks}` } : { kind: 'gone' };
     }
     const startedAt = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf-8',
       timeout: 1_000,
     }).trim();
-    return startedAt ? `${process.platform}:${startedAt}` : null;
-  } catch {
-    return null;
+    return startedAt ? { kind: 'ok', startId: `${process.platform}:${startedAt}` } : { kind: 'gone' };
+  } catch (err) {
+    if (childExitedNonZero(err)) return { kind: 'gone' };
+    return { kind: 'unknown', reason: describeError(err) };
   }
 }
 
-function identityMatchesProcess(identity: DaemonProcessIdentity): boolean {
-  if (!isProcessRunning(identity.pid)) return false;
-  const currentStartId = readProcessStartId(identity.pid);
-  return currentStartId !== null && currentStartId === identity.processStartId;
+type IdentityMatch = 'match' | 'mismatch' | 'unknown';
+
+function identityMatchesProcess(identity: DaemonProcessIdentity): IdentityMatch {
+  if (!isProcessRunning(identity.pid)) return 'mismatch';
+  const probe = readProcessStartId(identity.pid);
+  if (probe.kind === 'unknown') return 'unknown';
+  if (probe.kind === 'gone') return 'mismatch';
+  return probe.startId === identity.processStartId ? 'match' : 'mismatch';
 }
 
-function claimMatchesProcess(claim: DaemonStartupClaim): boolean {
-  if (!isProcessRunning(claim.claimantPid)) return false;
-  return readProcessStartId(claim.claimantPid) === claim.claimantStartId;
+function claimMatchesProcess(claim: DaemonStartupClaim): IdentityMatch {
+  if (!isProcessRunning(claim.claimantPid)) return 'mismatch';
+  const probe = readProcessStartId(claim.claimantPid);
+  if (probe.kind === 'unknown') return 'unknown';
+  if (probe.kind === 'gone') return 'mismatch';
+  return probe.startId === claim.claimantStartId ? 'match' : 'mismatch';
 }
 
 function createStartupClaim(nonce: string): DaemonStartupClaim {
   ensureDaemonDir();
-  const claimantStartId = readProcessStartId(process.pid);
-  if (!claimantStartId) {
+  const probe = readProcessStartId(process.pid);
+  if (probe.kind !== 'ok') {
     throw new Error(`Cannot verify daemon startup owner PID ${process.pid} on this platform.`);
   }
   const claim: DaemonStartupClaim = {
@@ -171,7 +226,7 @@ function createStartupClaim(nonce: string): DaemonStartupClaim {
     status: 'starting',
     nonce,
     claimantPid: process.pid,
-    claimantStartId,
+    claimantStartId: probe.startId,
     createdAt: new Date().toISOString(),
   };
   try {
@@ -203,16 +258,19 @@ function finalizeStartupClaim(claim: DaemonStartupClaim, pid: number): DaemonPro
  * Write the daemon PID to the PID file.
  */
 export function writePid(pid: number, nonce: string = randomUUID()): DaemonProcessIdentity {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`Refusing to record invalid daemon PID ${String(pid)}.`);
+  }
   ensureDaemonDir();
-  const processStartId = readProcessStartId(pid);
-  if (!processStartId) {
+  const probe = readProcessStartId(pid);
+  if (probe.kind !== 'ok') {
     throw new Error(`Cannot verify daemon process identity for PID ${pid} on this platform.`);
   }
   const identity: DaemonProcessIdentity = {
     version: 1,
     pid,
     nonce,
-    processStartId,
+    processStartId: probe.startId,
     createdAt: new Date().toISOString(),
   };
   fs.writeFileSync(PID_FILE, JSON.stringify(identity, null, 2) + '\n', { mode: 0o600 });
@@ -220,16 +278,24 @@ export function writePid(pid: number, nonce: string = randomUUID()): DaemonProce
 }
 
 /**
- * Remove the PID file.
+ * Remove the PID file, but only when it still records the identity whose
+ * nonce the caller holds. Fails closed: without a matching nonce nothing is
+ * removed, so a daemon that lost track of its own identity can never delete
+ * a newer daemon's ownership record.
  */
-export function removePid(identityNonce?: string): void {
-  if (fs.existsSync(PID_FILE)) {
-    if (identityNonce) {
-      const stored = readStoredPid();
-      if (stored.kind !== 'current' || stored.identity.nonce !== identityNonce) return;
-    }
-    fs.unlinkSync(PID_FILE);
-  }
+export function removePid(identityNonce: string): void {
+  if (!identityNonce) return;
+  if (!fs.existsSync(PID_FILE)) return;
+  const stored = readStoredPid();
+  if (stored.kind !== 'current' || stored.identity.nonce !== identityNonce) return;
+  fs.unlinkSync(PID_FILE);
+}
+
+/** Remove a legacy (PID-only) record. Never touches a versioned identity. */
+function removeLegacyPidFile(): void {
+  if (!fs.existsSync(PID_FILE)) return;
+  if (readStoredPid().kind !== 'legacy') return;
+  fs.unlinkSync(PID_FILE);
 }
 
 export function writeDaemonState(state: DaemonStartupState): void {
@@ -237,21 +303,31 @@ export function writeDaemonState(state: DaemonStartupState): void {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
 }
 
-export function readDaemonState(): DaemonStartupState | null {
+function readDaemonState(): DaemonStartupState | null {
   if (!fs.existsSync(STATE_FILE)) return null;
   try {
     const state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8')) as DaemonStartupState;
-    if ((state.status !== 'ready' && state.status !== 'failed') || !Number.isInteger(state.pid)) return null;
+    if ((state.status !== 'ready' && state.status !== 'failed') || !Number.isInteger(state.pid) || state.pid <= 0) return null;
     return state;
   } catch {
     return null;
   }
 }
 
-export function removeDaemonState(identityNonce?: string): void {
+/** Remove the startup-state file only when it carries the caller's nonce. */
+export function removeDaemonState(identityNonce: string): void {
+  if (!identityNonce) return;
   if (!fs.existsSync(STATE_FILE)) return;
-  if (identityNonce && readDaemonState()?.identityNonce !== identityNonce) return;
+  if (readDaemonState()?.identityNonce !== identityNonce) return;
   fs.unlinkSync(STATE_FILE);
+}
+
+/**
+ * Discard whatever startup state exists. Only the controller that holds the
+ * startup claim may call this, immediately before spawning a new worker.
+ */
+function discardDaemonState(): void {
+  if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
 }
 
 function removeDaemonFilesForIdentity(identity: DaemonProcessIdentity): void {
@@ -291,15 +367,19 @@ export function getDaemonStatus(): DaemonStatus {
   const identity = stored.kind === 'current' ? stored.identity : null;
   const pid = identity?.pid ?? (stored.kind === 'legacy' ? stored.pid : null);
   const processExists = pid !== null && isProcessRunning(pid);
-  const running = identity !== null && processExists && identityMatchesProcess(identity);
+  const match: IdentityMatch = identity !== null && processExists ? identityMatchesProcess(identity) : 'mismatch';
+  const running = match === 'match';
+  const state: DaemonStatus['state'] = running ? 'running' : match === 'unknown' ? 'unknown' : 'stopped';
 
   // Dead or PID-reused records are stale. A live legacy record is retained so
   // callers can fail safely without ever signaling an unverifiable process.
+  // An `unknown` probe result also retains the record: the process is alive
+  // and may be ours, so its ownership file must survive.
   if (identity !== null && !processExists) {
     removePid(identity.nonce);
   } else if (stored.kind === 'legacy' && !processExists) {
-    removePid();
-  } else if (identity !== null && processExists && !running) {
+    removeLegacyPidFile();
+  } else if (identity !== null && processExists && match === 'mismatch') {
     removePid(identity.nonce);
   }
 
@@ -318,7 +398,8 @@ export function getDaemonStatus(): DaemonStatus {
 
   return {
     running,
-    pid: running ? pid : null,
+    state,
+    pid: running || state === 'unknown' ? pid : null,
     logFile: LOG_FILE,
     uptime,
     startedAt,
@@ -372,14 +453,21 @@ export async function startDaemon(logFile?: string): Promise<{ pid: number; ling
     throw new Error(`Cannot verify ownership of legacy daemon PID ${stored.pid}; refusing to start another daemon.`);
   }
   if (stored.kind === 'starting') {
-    if (claimMatchesProcess(stored.claim)) {
+    const claimMatch = claimMatchesProcess(stored.claim);
+    if (claimMatch === 'match') {
       throw new Error('Another daemon start is already in progress.');
+    }
+    if (claimMatch === 'unknown') {
+      throw new Error(`Cannot verify whether daemon startup by PID ${stored.claim.claimantPid} is still in progress; refusing to start another daemon.`);
     }
     removeStartupClaim(stored.claim.nonce);
   }
   const status = getDaemonStatus();
   if (status.running) {
     throw new Error(`Daemon is already running (PID: ${status.pid})`);
+  }
+  if (status.state === 'unknown') {
+    throw new Error(`A process with the recorded daemon PID ${status.pid} is alive but cannot be verified on this platform; refusing to start another daemon.`);
   }
 
   if (!loadSyncConfigs().some(config => config.autoSync)) {
@@ -389,21 +477,22 @@ export async function startDaemon(logFile?: string): Promise<{ pid: number; ling
   ensureDaemonDir();
   const identityNonce = randomUUID();
   const startupClaim = createStartupClaim(identityNonce);
-  removeDaemonState();
+  discardDaemonState();
   const targetLog = logFile ?? LOG_FILE;
   rotateLogIfNeeded(targetLog);
 
   let logFd: number;
   try {
-    logFd = fs.openSync(targetLog, 'a');
+    logFd = fs.openSync(targetLog, 'a', 0o600);
   } catch (err) {
     removeStartupClaim(startupClaim.nonce);
     throw err;
   }
 
-  // Spawn the daemon worker as a detached process
-  // Use URL constructor for Node 20.0-20.10 compatibility (import.meta.dirname was added in 20.11).
-  const workerPath = path.join(path.dirname(new URL(import.meta.url).pathname), 'daemon-worker.js');
+  // Spawn the daemon worker as a detached process. fileURLToPath handles
+  // percent-encoded characters and Windows drive letters that a raw
+  // URL.pathname would mangle.
+  const workerPath = fileURLToPath(new URL('./daemon-worker.js', import.meta.url));
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(process.execPath, [workerPath], {
@@ -453,7 +542,7 @@ export async function startDaemon(logFile?: string): Promise<{ pid: number; ling
   }
 
   const ready = readDaemonState();
-  if (ready?.status !== 'ready' || ready.pid !== child.pid || ready.identityNonce !== identity.nonce || !identityMatchesProcess(identity)) {
+  if (ready?.status !== 'ready' || ready.pid !== child.pid || ready.identityNonce !== identity.nonce || identityMatchesProcess(identity) !== 'match') {
     try { process.kill(child.pid, 'SIGTERM'); } catch { /* already stopped */ }
     removePid(identity.nonce);
     throw new Error(`Timed out waiting for daemon readiness after ${STARTUP_TIMEOUT_MS / 1000}s. Check ${targetLog}.`);
@@ -473,12 +562,15 @@ export async function runDaemonForeground(): Promise<void> {
   if (status.running && status.pid !== process.pid) {
     throw new Error(`Daemon is already running (PID: ${status.pid})`);
   }
+  if (status.state === 'unknown' && status.pid !== process.pid) {
+    throw new Error(`A process with the recorded daemon PID ${status.pid} is alive but cannot be verified on this platform; refusing to run another daemon.`);
+  }
   if (!loadSyncConfigs().some(config => config.autoSync)) {
     throw new Error('No auto-sync configurations found. Enable auto-sync on at least one sync before running the daemon.');
   }
   ensureDaemonDir();
   const startupClaim = createStartupClaim(randomUUID());
-  removeDaemonState();
+  discardDaemonState();
   let identity: DaemonProcessIdentity;
   try {
     identity = finalizeStartupClaim(startupClaim, process.pid);
@@ -507,22 +599,30 @@ export async function stopDaemon(): Promise<boolean> {
     throw new Error('Daemon identity file is invalid; refusing to signal any process.');
   }
   if (stored.kind === 'starting') {
-    if (!claimMatchesProcess(stored.claim)) {
+    const claimMatch = claimMatchesProcess(stored.claim);
+    if (claimMatch === 'mismatch') {
       removeStartupClaim(stored.claim.nonce);
       return false;
+    }
+    if (claimMatch === 'unknown') {
+      throw new Error(`Cannot verify whether daemon startup by PID ${stored.claim.claimantPid} is still in progress; refusing to signal it.`);
     }
     throw new Error('Daemon startup is still in progress; refusing to signal its controller process.');
   }
   const pid = stored.kind === 'current' ? stored.identity.pid : stored.pid;
   if (!isProcessRunning(pid)) {
     if (stored.kind === 'current') removePid(stored.identity.nonce);
-    else removePid();
+    else removeLegacyPidFile();
     return false;
   }
   if (stored.kind === 'legacy') {
     throw new Error(`Cannot verify ownership of legacy daemon PID ${pid}; refusing to signal it.`);
   }
-  if (!identityMatchesProcess(stored.identity)) {
+  const match = identityMatchesProcess(stored.identity);
+  if (match === 'unknown') {
+    throw new Error(`Daemon PID ${pid} is alive but its identity cannot be verified on this platform; refusing to signal it.`);
+  }
+  if (match === 'mismatch') {
     removePid(stored.identity.nonce);
     return false;
   }

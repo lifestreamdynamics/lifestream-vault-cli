@@ -17,7 +17,7 @@ import type { SyncState, FileState } from './types.js';
 
 describe('sync state', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   describe('loadSyncState', () => {
@@ -29,11 +29,16 @@ describe('sync state', () => {
       expect(state.remote).toEqual({});
     });
 
-    it('should return empty state for corrupt file', () => {
+    it('throws for a corrupt file instead of returning an empty state', () => {
       mockedFs.existsSync.mockReturnValue(true);
       mockedFs.readFileSync.mockReturnValue('not-json');
-      const state = loadSyncState('sync-1');
-      expect(state.local).toEqual({});
+      expect(() => loadSyncState('sync-1')).toThrow(/sync-1\.json is not valid JSON/);
+    });
+
+    it('throws for JSON that is not a state object', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('{"syncId":"sync-1"}');
+      expect(() => loadSyncState('sync-1')).toThrow(/malformed/);
     });
 
     it('should return parsed state', () => {
@@ -84,9 +89,13 @@ describe('sync state', () => {
       saveSyncState(state);
 
       expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
-        expect.stringContaining('sync-1.json'),
+        expect.stringMatching(/sync-1\.json\.tmp\.[0-9a-f]{8}$/),
         expect.any(String),
-        { mode: 0o600 },
+        { encoding: 'utf-8', mode: 0o600 },
+      );
+      expect(mockedFs.renameSync).toHaveBeenCalledWith(
+        expect.stringMatching(/sync-1\.json\.tmp\./),
+        expect.stringMatching(/sync-1\.json$/),
       );
 
       // updatedAt should have been set

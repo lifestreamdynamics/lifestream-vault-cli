@@ -7,7 +7,7 @@ import type { LifestreamVaultClient, SyncListKnownState, DocumentGetResult, Docu
 import type { SyncConfig, SyncState, FileState } from './types.js';
 import { loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from './state.js';
 import { updateLastSync } from './config.js';
-import { resolveIgnorePatterns, shouldIgnore } from './ignore.js';
+import { shouldIgnore } from './ignore.js';
 import { computePullDiff, computePushDiff, type SyncDiff, type SyncDiffEntry } from './diff.js';
 import { atomicWriteFileSync, sweepOrphanedTempFiles } from './atomic-write.js';
 import { assertSyncRoot } from './root-marker.js';
@@ -26,13 +26,27 @@ export interface SyncProgress {
 
 export type ProgressCallback = (progress: SyncProgress) => void;
 
+export interface SyncOperationError {
+  path: string;
+  error: string;
+  /**
+   * True when a later run may succeed without operator action (network
+   * failure, exhausted rate limit, an operation skipped after such a failure).
+   * False for permanent rejections such as 400/401/403/404/409 or a quota
+   * limit, which recur identically until something changes.
+   */
+  retryable: boolean;
+}
+
 export interface SyncResult {
   filesUploaded: number;
   filesDownloaded: number;
   filesDeleted: number;
+  /** Operations that were planned but never attempted because an earlier failure stopped submission. */
+  filesSkipped: number;
   bytesTransferred: number;
-  errors: Array<{ path: string; error: string }>;
-  /** True when one or more requested transfers/deletions failed. */
+  errors: SyncOperationError[];
+  /** True when one or more requested transfers/deletions failed or were skipped. */
   failed: boolean;
 }
 
@@ -228,6 +242,7 @@ async function executeSyncOperation(
     filesUploaded: 0,
     filesDownloaded: 0,
     filesDeleted: 0,
+    filesSkipped: 0,
     bytesTransferred: 0,
     errors: [],
     failed: false,
@@ -236,12 +251,23 @@ async function executeSyncOperation(
   const state = loadSyncState(config.id);
   const allOps = [...handlers.transfers, ...handlers.deletes];
   let current = 0;
-  // Once a quota error is hit anywhere in the pool we stop submitting new
-  // work but let in-flight transfers drain to keep state consistent.
+  // Once a quota or exhausted-throttle error is hit anywhere in the pool we
+  // stop submitting new work but let in-flight transfers drain to keep state
+  // consistent. Everything not yet attempted is recorded as skipped so the
+  // caller can see the run was incomplete.
   let stopSubmitting = false;
+  let stopReason = '';
+
+  function recordSkipped(entry: SyncDiffEntry): void {
+    result.filesSkipped++;
+    result.errors.push({
+      path: entry.path,
+      error: `Skipped: not attempted after ${stopReason || 'an earlier failure'}`,
+      retryable: true,
+    });
+  }
 
   async function runOne(entry: SyncDiffEntry): Promise<void> {
-    if (stopSubmitting) return;
     current++;
     onProgress?.({
       phase: 'transferring',
@@ -271,14 +297,16 @@ async function executeSyncOperation(
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      result.errors.push({ path: entry.path, error: message });
+      result.errors.push({ path: entry.path, error: message, retryable: isRetryableSyncError(err) });
       if (isQuotaError(message)) {
         stopSubmitting = true;
+        stopReason = 'a quota error';
       }
       // 429 errors that reach here have already exhausted SDK-level retries.
       // Stop submitting new work to avoid hammering a still-throttled API.
       if (isThrottleError(err)) {
         stopSubmitting = true;
+        stopReason = 'an exhausted rate limit';
       }
     }
   }
@@ -297,9 +325,14 @@ async function executeSyncOperation(
       }
     }),
   );
+  for (const entry of queue.splice(0)) recordSkipped(entry);
 
   for (const entry of handlers.deletes) {
     current++;
+    if (stopSubmitting) {
+      recordSkipped(entry);
+      continue;
+    }
     onProgress?.({
       phase: 'transferring',
       current,
@@ -316,7 +349,15 @@ async function executeSyncOperation(
       delete state.remote[entry.path];
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      result.errors.push({ path: entry.path, error: message });
+      result.errors.push({ path: entry.path, error: message, retryable: isRetryableSyncError(err) });
+      if (isQuotaError(message)) {
+        stopSubmitting = true;
+        stopReason = 'a quota error';
+      }
+      if (isThrottleError(err)) {
+        stopSubmitting = true;
+        stopReason = 'an exhausted rate limit';
+      }
     }
   }
 
@@ -423,10 +464,12 @@ export async function executePush(
       assertSyncRoot(cfg);
       const localFile = resolveWithinSyncRoot(cfg.localPath, entry.path);
       const content = fs.readFileSync(localFile, 'utf-8');
-      await retryWithBackoff(() => {
-        assertSyncRoot(cfg);
-        return client.documents.put(cfg.vaultId, entry.path, content);
-      },
+      // The root assertion sits outside the retry wrapper: a missing or
+      // mismatched marker is a permanent condition, not a transient request
+      // failure, and must not be re-probed with backoff.
+      assertSyncRoot(cfg);
+      await retryWithBackoff(
+        () => client.documents.put(cfg.vaultId, entry.path, content),
         throttleCallback ? () => throttleCallback(entry.path) : undefined,
       );
       return content;
@@ -434,19 +477,62 @@ export async function executePush(
     async deleteFile(entry, cfg) {
       assertSyncRoot(cfg);
       resolveWithinSyncRoot(cfg.localPath, entry.path);
-      await retryWithBackoff(() => {
-        assertSyncRoot(cfg);
-        return client.documents.delete(cfg.vaultId, entry.path);
-      });
+      assertSyncRoot(cfg);
+      try {
+        await retryWithBackoff(() => client.documents.delete(cfg.vaultId, entry.path));
+      } catch (err) {
+        if (getStatusCode(err) === 403) {
+          throw new SyncPermissionError(
+            `Remote delete of ${entry.path} was forbidden (403). Deleting documents in a team vault requires the admin role; `
+            + 'the local deletion was not propagated. Ask a vault admin to delete it, or restore the local file with `lsvault sync pull`.',
+          );
+        }
+        throw err;
+      }
     },
   }, onProgress, concurrency, onThrottle);
 }
 
+/** A permanent authorization failure surfaced with an operator-facing message. */
+class SyncPermissionError extends Error {
+  readonly statusCode = 403;
+  constructor(message: string) {
+    super(message);
+    this.name = 'SyncPermissionError';
+  }
+}
+
+/** Structured HTTP status attached by the SDK (`statusCode`) or a fetch-style `status`. */
+function getStatusCode(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const code = (err as { statusCode?: unknown }).statusCode ?? (err as { status?: unknown }).status;
+  return typeof code === 'number' ? code : undefined;
+}
+
+/**
+ * Classify whether a failed sync request is worth retrying at the CLI level.
+ *
+ * - 4xx responses (400/401/403/404/409 and friends) are permanent: the same
+ *   request will be rejected the same way.
+ * - 429 has already been retried by the SDK with Retry-After backoff.
+ * - 5xx has already been retried by ky's retry policy inside the SDK; layering
+ *   another loop on top only multiplies load on an unhealthy server.
+ * - Quota and permission messages without a status code are permanent too.
+ *
+ * Only status-less failures (connection reset, DNS, timeout surfaced as a
+ * NetworkError) remain retryable here.
+ */
+export function isRetryableSyncError(err: unknown): boolean {
+  if (getStatusCode(err) !== undefined) return false;
+  if (isThrottleError(err)) return false;
+  const message = err instanceof Error ? err.message : String(err);
+  if (isQuotaError(message) || isPermissionError(message)) return false;
+  return true;
+}
+
 /**
  * Retry a function with exponential backoff (max 3 retries) for transient
- * network errors. Throttle (429) and quota/permission errors are NOT retried
- * here — the SDK already retries 429s transparently (ky retry config), and
- * quota/permission errors are not recoverable by retrying.
+ * network errors only — see {@link isRetryableSyncError} for the classifier.
  *
  * @param onThrottle - Optional callback to invoke when a 429 is observed.
  *   The SDK will retry automatically; this is called so the CLI can update
@@ -464,7 +550,6 @@ async function retryWithBackoff<T>(
       return await fn();
     } catch (err) {
       lastError = err;
-      const message = err instanceof Error ? err.message : String(err);
 
       // Throttle errors: the SDK already exhausted its own retry budget with
       // proper Retry-After backoff. Don't layer another retry loop on top —
@@ -474,8 +559,7 @@ async function retryWithBackoff<T>(
         throw err;
       }
 
-      // Don't retry on other non-transient errors
-      if (isQuotaError(message) || isPermissionError(message)) {
+      if (!isRetryableSyncError(err)) {
         throw err;
       }
       if (attempt < maxRetries) {

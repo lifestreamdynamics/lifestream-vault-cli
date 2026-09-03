@@ -21,10 +21,15 @@ export function atomicWriteFileSync(
   targetPath: string,
   content: string,
   encoding: BufferEncoding = 'utf-8',
+  options: { mode?: number } = {},
 ): void {
   const tmpFile = targetPath + '.tmp.' + randomBytes(4).toString('hex');
   try {
-    fs.writeFileSync(tmpFile, content, encoding);
+    if (options.mode !== undefined) {
+      fs.writeFileSync(tmpFile, content, { encoding, mode: options.mode });
+    } else {
+      fs.writeFileSync(tmpFile, content, encoding);
+    }
     fs.renameSync(tmpFile, targetPath);
   } catch (err) {
     try {

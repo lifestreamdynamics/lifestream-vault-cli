@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'node:fs';
 
 vi.mock('node:fs');
-vi.mock('./root-marker.js', () => ({ assertSyncRoot: vi.fn() }));
+vi.mock('./root-marker.js', () => ({ assertSyncRoot: vi.fn(), SYNC_ROOT_MARKER: '.lsvault-sync-root' }));
 const mockedFs = vi.mocked(fs);
+import { NotFoundError } from '@lifestreamdynamics/vault-sdk';
 
 // Mock chokidar
 const mockWatcher = {
@@ -49,8 +50,9 @@ vi.mock('./conflict.js', () => ({
 }));
 
 // Import mocked modules after vi.mock so we can configure them per test
-import { loadSyncState, saveSyncState, hashFileContent } from './state.js';
-import { detectConflict, resolveConflict } from './conflict.js';
+import { loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from './state.js';
+import { detectConflict, resolveConflict, createConflictFile, formatConflictLog } from './conflict.js';
+import { shouldIgnore } from './ignore.js';
 
 const mockLoadSyncState = vi.mocked(loadSyncState);
 const mockSaveSyncState = vi.mocked(saveSyncState);
@@ -58,7 +60,7 @@ const mockHashFileContent = vi.mocked(hashFileContent);
 const mockDetectConflict = vi.mocked(detectConflict);
 const mockResolveConflict = vi.mocked(resolveConflict);
 
-import { createWatcher } from './watcher.js';
+import { createWatcher, isNotFoundError } from './watcher.js';
 import { watch } from 'chokidar';
 import { assertSyncRoot } from './root-marker.js';
 import type { SyncConfig } from './types.js';
@@ -104,9 +106,24 @@ async function triggerUnlink(absPath: string): Promise<void> {
 
 describe('sync watcher', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // Full reset (not just clear) so a per-test mockImplementation/Once can
+    // never leak into the next test; every default is re-established below.
+    vi.resetAllMocks();
     mockWatcher.on.mockReturnThis();
     mockWatcher.once.mockReturnThis();
+    mockWatcher.close.mockResolvedValue(undefined);
+    vi.mocked(watch).mockReturnValue(mockWatcher as any);
+    mockedFs.lstatSync.mockImplementation(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); });
+    mockedFs.existsSync.mockReturnValue(true);
+    vi.mocked(shouldIgnore).mockReturnValue(false);
+    vi.mocked(createConflictFile).mockReturnValue('conflict-path.md');
+    vi.mocked(formatConflictLog).mockReturnValue('conflict log');
+    vi.mocked(buildRemoteFileState).mockImplementation((docPath: string, content: string, updatedAt: string) => ({
+      path: docPath,
+      hash: `hash-${content.slice(0, 8)}`,
+      mtime: updatedAt,
+      size: content.length,
+    }));
     // Reset loadSyncState to default empty state
     mockLoadSyncState.mockReturnValue({
       syncId: 'sync-1',
@@ -117,6 +134,127 @@ describe('sync watcher', () => {
     mockHashFileContent.mockImplementation((content: string) => `hash-${content.slice(0, 8)}`);
     mockDetectConflict.mockReturnValue(false);
     mockResolveConflict.mockReturnValue('local');
+  });
+
+  it('does not follow symlinks and does not report initial files', () => {
+    createWatcher({} as any, makeConfig(), { ignorePatterns: [] });
+
+    expect(watch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ followSymlinks: false, ignoreInitial: true }),
+    );
+  });
+
+  describe('isNotFoundError', () => {
+    it('accepts only a structured SDK NotFoundError', () => {
+      expect(isNotFoundError(new NotFoundError('Document', 'notes/x.md'))).toBe(true);
+      expect(isNotFoundError({ statusCode: 404 })).toBe(false);
+      expect(isNotFoundError(Object.assign(new Error('not found'), { statusCode: 404 }))).toBe(false);
+      expect(isNotFoundError(new Error('Not found'))).toBe(false);
+      expect(isNotFoundError(null)).toBe(false);
+    });
+  });
+
+  it('conflict-check: an SDK NotFoundError proves the remote is absent, so the push proceeds', async () => {
+    mockLoadSyncState.mockReturnValue({
+      syncId: 'sync-1', local: {},
+      remote: { 'notes/test.md': { path: 'notes/test.md', hash: 'known', mtime: '2026-01-01T00:00:00.000Z', size: 10 } },
+      updatedAt: '',
+    });
+    mockedFs.readFileSync.mockReturnValue('# local' as any);
+    const get = vi.fn().mockRejectedValue(new NotFoundError('Document', 'notes/test.md'));
+    const put = vi.fn().mockResolvedValue({});
+    const onError = vi.fn();
+    createWatcher({ documents: { get, put } } as any, makeConfig({ mode: 'sync' }), { ignorePatterns: [], debounceMs: 0, onError });
+
+    await triggerChange('/home/user/vault/notes/test.md');
+
+    expect(put).toHaveBeenCalledWith('vault-1', 'notes/test.md', '# local');
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('conflict-check: a bare 404-shaped object is not trusted and aborts the push', async () => {
+    mockLoadSyncState.mockReturnValue({
+      syncId: 'sync-1', local: {},
+      remote: { 'notes/test.md': { path: 'notes/test.md', hash: 'known', mtime: '2026-01-01T00:00:00.000Z', size: 10 } },
+      updatedAt: '',
+    });
+    mockedFs.readFileSync.mockReturnValue('# local' as any);
+    const get = vi.fn().mockRejectedValue(Object.assign(new Error('gone'), { statusCode: 404 }));
+    const put = vi.fn();
+    const onError = vi.fn();
+    createWatcher({ documents: { get, put } } as any, makeConfig({ mode: 'sync' }), { ignorePatterns: [], debounceMs: 0, onError });
+
+    await triggerChange('/home/user/vault/notes/test.md');
+
+    expect(put).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'gone' }));
+  });
+
+  it('adopts the remote version (no PUT) when the remote moved and the local bytes did not diverge', async () => {
+    const localContent = '# unchanged local';
+    const remoteContent = '# newer remote edit';
+    mockLoadSyncState.mockReturnValue({
+      syncId: 'sync-1',
+      local: { 'notes/doc.md': { path: 'notes/doc.md', hash: `hash-${localContent.slice(0, 8)}`, mtime: '2026-01-01T00:00:00.000Z', size: 10 } },
+      remote: { 'notes/doc.md': { path: 'notes/doc.md', hash: 'hash-old-remote', mtime: '2026-01-01T00:00:00.000Z', size: 10 } },
+      updatedAt: '',
+    });
+    mockedFs.readFileSync.mockReturnValue(localContent as any);
+    mockDetectConflict.mockReturnValue(false); // only the remote changed
+    const get = vi.fn().mockResolvedValue({
+      notModified: false, content: remoteContent, document: { updatedAt: '2026-06-01T00:00:00.000Z' },
+    });
+    const put = vi.fn();
+    const onLog = vi.fn();
+    createWatcher({ documents: { get, put } } as any, makeConfig({ mode: 'sync' }), { ignorePatterns: [], debounceMs: 0, onLog });
+
+    await triggerChange('/home/user/vault/notes/doc.md');
+
+    expect(put).not.toHaveBeenCalled();
+    expect(mockedFs.writeFileSync).toHaveBeenCalledWith(expect.stringContaining('/home/user/vault/notes/doc.md.tmp.'), remoteContent, 'utf-8');
+    expect(mockedFs.renameSync).toHaveBeenCalledWith(expect.stringContaining('.tmp.'), '/home/user/vault/notes/doc.md');
+    const saved = mockSaveSyncState.mock.calls.at(-1)?.[0];
+    expect(saved?.local['notes/doc.md'].hash).toBe(`hash-${remoteContent.slice(0, 8)}`);
+    expect(onLog).toHaveBeenCalledWith(expect.stringContaining('Adopted remote: notes/doc.md'));
+  });
+
+  it('records shared state without writing when remote and local already match', async () => {
+    const content = '# same bytes';
+    mockLoadSyncState.mockReturnValue({
+      syncId: 'sync-1',
+      local: { 'notes/doc.md': { path: 'notes/doc.md', hash: 'hash-old', mtime: '', size: 1 } },
+      remote: { 'notes/doc.md': { path: 'notes/doc.md', hash: 'hash-old', mtime: '', size: 1 } },
+      updatedAt: '',
+    });
+    mockedFs.readFileSync.mockReturnValue(content as any);
+    mockDetectConflict.mockReturnValue(false); // both changed to identical bytes
+    const get = vi.fn().mockResolvedValue({ notModified: false, content, document: { updatedAt: '2026-06-01T00:00:00.000Z' } });
+    const put = vi.fn();
+    createWatcher({ documents: { get, put } } as any, makeConfig({ mode: 'sync' }), { ignorePatterns: [], debounceMs: 0 });
+
+    await triggerChange('/home/user/vault/notes/doc.md');
+
+    expect(put).not.toHaveBeenCalled();
+    expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+    expect(mockSaveSyncState).toHaveBeenCalled();
+  });
+
+  it('refuses to write a conflict restore through a path that escapes the root', async () => {
+    mockLoadSyncState.mockReturnValue({
+      syncId: 'sync-1',
+      local: {}, remote: { '../escape.md': { path: '../escape.md', hash: 'old', mtime: '', size: 1 } },
+      updatedAt: '',
+    });
+    const get = vi.fn();
+    const onError = vi.fn();
+    createWatcher({ documents: { get } } as any, makeConfig({ mode: 'sync' }), { ignorePatterns: [], debounceMs: 0, onError });
+
+    await triggerUnlink('/home/user/escape.md');
+
+    expect(get).not.toHaveBeenCalled();
+    expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/Unsafe|escapes/) }));
   });
 
   it('should create a chokidar watcher', () => {
