@@ -234,6 +234,10 @@ lsvault vaults get vault_abc123
 | `lsvault docs delete <vaultId> <path>` | Delete a document |
 | `lsvault docs move <vaultId> <source> <dest>` | Move or rename a document |
 | `lsvault docs mkdir <vaultId> <path>` | Create a directory |
+| `lsvault docs bulk-move <vaultId> --paths <csv> --target <dir>` | Move multiple documents to a target directory |
+| `lsvault docs bulk-copy <vaultId> --paths <csv> --target <dir>` | Copy multiple documents to a target directory |
+| `lsvault docs bulk-delete <vaultId> --paths <csv>` | Delete multiple documents |
+| `lsvault docs bulk-tag <vaultId> --paths <csv> [--add <csv>] [--remove <csv>]` | Add or remove tags on multiple documents |
 
 **Example:**
 ```bash
@@ -268,6 +272,7 @@ lsvault docs get vault_abc123 notes/meeting.md --meta
 | `lsvault sync daemon run` | Run daemon in the foreground for a service supervisor |
 | `lsvault sync daemon stop` | Stop background sync daemon |
 | `lsvault sync daemon status` | Check daemon status |
+| `lsvault sync resolve <syncId> <docPath> --use <local\|remote>` | Manually resolve a sync conflict |
 | `lsvault sync delete <syncId>` | Remove sync configuration |
 
 **Example:**
