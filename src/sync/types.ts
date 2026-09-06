@@ -59,18 +59,29 @@ export interface FileState {
 }
 
 /**
- * A batch of remote-derived deletions the mass-delete guard refused to apply.
+ * Which side's files a refused deletion batch would have removed.
+ *
+ * `'local'` is a pull refusing to unlink files on this machine; `'remote'` is a
+ * push refusing to delete documents in the vault. The two want different
+ * operator responses, so they are carried, persisted and reported separately.
+ */
+export type DeletionTarget = 'local' | 'remote';
+
+/**
+ * A batch of listing-derived deletions the mass-delete guard refused to apply.
  *
  * Persisted rather than only logged: the daemon has no operator watching its
  * output, and a refusal means the vault is *not* converging. `lsvault sync
  * status` reads this so the condition stays visible until it is resolved.
  */
 export interface DeletionAnomaly {
+  /** Which side would have lost files: `local` from a pull, `remote` from a push. */
+  target: DeletionTarget;
   /** ISO 8601 timestamp of the refusal. */
   detectedAt: string;
-  /** How many tracked paths the remote listing no longer contained. */
+  /** How many tracked paths the current listing no longer contained. */
   removedCount: number;
-  /** How many paths the last-known remote state held. */
+  /** How many paths the last-known state held. */
   knownCount: number;
   /** Operator-facing explanation from `assessDeletions`. */
   reason: string;
@@ -104,8 +115,16 @@ export interface SyncState {
   remote: Record<string, FileState>;
   /** ETag from the most recent successful list response (for conditional polling). */
   remoteListEtag?: string;
-  /** Most recent deletion batch refused by the mass-delete guard, if any. */
-  deletionAnomaly?: DeletionAnomaly;
+  /**
+   * Most recent deletion batch refused by the mass-delete guard, keyed by the
+   * side it would have deleted from.
+   *
+   * Keyed rather than a single field because both can be live at once: a
+   * sync-mode reconciliation pushes and then pulls, and a machine whose drive
+   * unmounted mid-run can trip both halves. Collapsing them would let the
+   * second refusal hide the first.
+   */
+  deletionAnomalies?: Partial<Record<DeletionTarget, DeletionAnomaly>>;
   /** Document paths whose remote deletion the server refused, keyed by path. */
   deniedDeletes?: Record<string, DeniedDelete>;
   /** ISO 8601 timestamp when state was last updated */

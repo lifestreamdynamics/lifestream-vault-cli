@@ -2,7 +2,7 @@
  * Diff generation for sync operations.
  * Compares local and remote file states to determine what actions are needed.
  */
-import type { FileState, SyncState, SyncMode, DeletionAnomaly } from './types.js';
+import type { FileState, SyncState, SyncMode, DeletionAnomaly, DeletionTarget } from './types.js';
 import { assessDeletions } from './mass-delete-guard.js';
 import { assertNoPathCollisions } from './path-collision.js';
 
@@ -44,12 +44,42 @@ export interface SyncDiff {
   deletionAnomaly?: DeletionAnomaly;
 }
 
-export interface PullDiffOptions {
+export interface DiffOptions {
   /**
    * Apply the deletion batch even when the mass-delete guard would refuse it
-   * (`lsvault sync pull --allow-mass-delete`). Never set by the daemon.
+   * (`lsvault sync pull|push --allow-mass-delete`). Never set by the daemon.
    */
   allowMassDelete?: boolean;
+}
+
+/** @deprecated Use {@link DiffOptions}; kept as the pull-side alias. */
+export type PullDiffOptions = DiffOptions;
+
+/**
+ * Apply the mass-delete guard to a batch of listing-derived deletions.
+ *
+ * Returns the entries to act on plus, when the guard refused, the anomaly to
+ * report and persist. Shared by both directions so the pull and push halves
+ * cannot drift apart — they are the same defect with different blast radii.
+ */
+function applyDeletionGuard(
+  candidates: SyncDiffEntry[],
+  knownCount: number,
+  target: DeletionTarget,
+  options: DiffOptions,
+): { deletes: SyncDiffEntry[]; deletionAnomaly?: DeletionAnomaly } {
+  const assessment = assessDeletions(candidates.length, knownCount, target);
+  if (assessment.allow || options.allowMassDelete) return { deletes: candidates };
+  return {
+    deletes: [],
+    deletionAnomaly: {
+      target,
+      detectedAt: new Date().toISOString(),
+      removedCount: candidates.length,
+      knownCount,
+      reason: assessment.reason ?? 'Deletion batch refused by the mass-delete guard.',
+    },
+  };
 }
 
 /**
@@ -60,7 +90,7 @@ export function computePullDiff(
   localFiles: Record<string, FileState>,
   remoteFiles: Record<string, FileState>,
   lastState: SyncState,
-  options: PullDiffOptions = {},
+  options: DiffOptions = {},
 ): SyncDiff {
   assertNoPathCollisions([...Object.keys(remoteFiles), ...Object.keys(localFiles)]);
 
@@ -141,18 +171,9 @@ export function computePullDiff(
   // A short remote listing is indistinguishable from a bulk delete, and acting
   // on the wrong one is unrecoverable. Creates and updates still apply — only
   // the destructive half is withheld.
-  let deletionAnomaly: DeletionAnomaly | undefined;
-  const assessment = assessDeletions(candidateDeletes.length, trackedRemotePaths.length);
-  if (assessment.allow || options.allowMassDelete) {
-    deletes.push(...candidateDeletes);
-  } else {
-    deletionAnomaly = {
-      detectedAt: new Date().toISOString(),
-      removedCount: candidateDeletes.length,
-      knownCount: trackedRemotePaths.length,
-      reason: assessment.reason ?? 'Deletion batch refused by the mass-delete guard.',
-    };
-  }
+  const guarded = applyDeletionGuard(candidateDeletes, trackedRemotePaths.length, 'local', options);
+  deletes.push(...guarded.deletes);
+  const deletionAnomaly = guarded.deletionAnomaly;
 
   const totalBytes = downloads.reduce((sum, d) => sum + d.sizeBytes, 0);
   return { uploads: [], downloads, deletes, totalBytes, ...(deletionAnomaly ? { deletionAnomaly } : {}) };
@@ -166,6 +187,7 @@ export function computePushDiff(
   localFiles: Record<string, FileState>,
   remoteFiles: Record<string, FileState>,
   lastState: SyncState,
+  options: DiffOptions = {},
 ): SyncDiff {
   assertNoPathCollisions([...Object.keys(remoteFiles), ...Object.keys(localFiles)]);
 
@@ -226,9 +248,11 @@ export function computePushDiff(
   }
 
   // Files deleted locally since last sync
-  for (const docPath of Object.keys(lastState.local)) {
+  const trackedLocalPaths = Object.keys(lastState.local);
+  const candidateDeletes: SyncDiffEntry[] = [];
+  for (const docPath of trackedLocalPaths) {
     if (!localFiles[docPath] && remoteFiles[docPath]) {
-      deletes.push({
+      candidateDeletes.push({
         path: docPath,
         action: 'delete',
         direction: 'upload',
@@ -240,8 +264,18 @@ export function computePushDiff(
     }
   }
 
+  // The mirror of the pull-side guard, and the more destructive of the two: a
+  // local scan that came back short (an unmounted drive, an empty mount point)
+  // deletes documents from the vault every other client syncs from, including
+  // clients that were never near the fault. Uploads still apply.
+  const guarded = applyDeletionGuard(candidateDeletes, trackedLocalPaths.length, 'remote', options);
+  deletes.push(...guarded.deletes);
+
   const totalBytes = uploads.reduce((sum, u) => sum + u.sizeBytes, 0);
-  return { uploads, downloads: [], deletes, totalBytes };
+  return {
+    uploads, downloads: [], deletes, totalBytes,
+    ...(guarded.deletionAnomaly ? { deletionAnomaly: guarded.deletionAnomaly } : {}),
+  };
 }
 
 /**

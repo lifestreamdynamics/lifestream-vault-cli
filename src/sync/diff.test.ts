@@ -85,6 +85,79 @@ describe('computePullDiff — mass-delete guard', () => {
   });
 });
 
+describe('computePushDiff — mass-delete guard', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('refuses a full-tracked-set deletion derived from an empty local scan', () => {
+    // The gating case, and the worse of the two directions: an unmounted network
+    // drive or a mount point that reads empty makes every tracked path look
+    // locally deleted, and the push would delete them from the vault every other
+    // client syncs from — including clients that were never near the fault.
+    const tracked = files(50);
+    const diff = computePushDiff({}, tracked, makeState({ local: tracked, remote: tracked }));
+
+    expect(diff.deletes).toEqual([]);
+    expect(diff.deletionAnomaly).toBeDefined();
+    expect(diff.deletionAnomaly?.target).toBe('remote');
+    expect(diff.deletionAnomaly?.removedCount).toBe(50);
+    expect(diff.deletionAnomaly?.knownCount).toBe(50);
+    expect(diff.deletionAnomaly?.reason).toMatch(/the local scan/);
+    expect(diff.deletionAnomaly?.reason).toMatch(/no remote document was deleted/);
+  });
+
+  it('still applies uploads while withholding the deletions', () => {
+    const tracked = files(50);
+    const local = { 'brand-new.md': file('brand-new.md') };
+    const diff = computePushDiff(local, tracked, makeState({ local: tracked, remote: tracked }));
+
+    expect(diff.deletes).toEqual([]);
+    expect(diff.uploads.map(u => u.path)).toEqual(['brand-new.md']);
+    expect(diff.deletionAnomaly).toBeDefined();
+  });
+
+  it('applies the same batch when --allow-mass-delete is threaded through', () => {
+    const tracked = files(50);
+    const diff = computePushDiff(
+      {}, tracked, makeState({ local: tracked, remote: tracked }), { allowMassDelete: true },
+    );
+
+    expect(diff.deletes).toHaveLength(50);
+    expect(diff.deletionAnomaly).toBeUndefined();
+  });
+
+  it('leaves an ordinary deletion batch alone', () => {
+    const tracked = files(50);
+    const remaining = { ...tracked };
+    delete remaining['doc-0.md'];
+
+    const diff = computePushDiff(remaining, tracked, makeState({ local: tracked, remote: tracked }));
+
+    expect(diff.deletes.map(d => d.path)).toEqual(['doc-0.md']);
+    expect(diff.deletionAnomaly).toBeUndefined();
+  });
+
+  it('uses the same threshold as the pull side', () => {
+    // A push guard looser than the pull guard would be the more dangerous of
+    // the two; keep them provably in lockstep.
+    const tracked = files(50);
+    const keepPushed = { ...tracked };
+    const keepPulled = { ...tracked };
+    for (let i = 0; i < 11; i++) {
+      delete keepPushed[`doc-${i}.md`];
+      delete keepPulled[`doc-${i}.md`];
+    }
+
+    const push = computePushDiff(keepPushed, tracked, makeState({ local: tracked, remote: tracked }));
+    const pull = computePullDiff(tracked, keepPulled, makeState({ local: tracked, remote: tracked }));
+
+    expect(push.deletionAnomaly).toBeDefined();
+    expect(pull.deletionAnomaly).toBeDefined();
+    expect(push.deletionAnomaly?.removedCount).toBe(pull.deletionAnomaly?.removedCount);
+  });
+});
+
 describe('computePullDiff — denied deletes', () => {
   beforeEach(() => {
     vi.clearAllMocks();

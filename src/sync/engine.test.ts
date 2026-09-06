@@ -413,18 +413,26 @@ describe('sync engine', () => {
     });
 
     it('should detect local deletions', () => {
+      // A tracked set large enough that one deletion sits below the mass-delete
+      // guard's threshold — the guard is exercised separately below.
+      const tracked: Record<string, FileState> = {};
+      for (let i = 0; i < 20; i++) {
+        tracked[`keep-${i}.md`] = { path: `keep-${i}.md`, hash: 'x', mtime: '', size: 5 };
+      }
       const lastState: SyncState = {
         syncId: 's1',
-        local: { 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
+        local: { ...tracked, 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
         remote: {},
         updatedAt: '',
       };
       const diff = computePushDiff(
-        {},
-        { 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
+        tracked,
+        { ...tracked, 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
         lastState,
       );
       expect(diff.deletes).toHaveLength(1);
+      expect(diff.deletes[0].path).toBe('deleted.md');
+      expect(diff.deletionAnomaly).toBeUndefined();
     });
 
     it('should upload all local files when remote is empty', () => {
@@ -1057,16 +1065,22 @@ describe('sync engine', () => {
     });
 
     it('sends a precondition on a delete derived from a real push diff', async () => {
+      // Padded so this single deletion stays under the mass-delete threshold;
+      // the test is about the If-Match, not the guard.
+      const tracked: Record<string, FileState> = {};
+      for (let i = 0; i < 20; i++) {
+        tracked[`keep-${i}.md`] = { path: `keep-${i}.md`, hash: 'x', mtime: '', size: 5 };
+      }
       const lastState = {
         syncId: 'sync-1',
-        local: { 'notes/gone.md': { path: 'notes/gone.md', hash: 'h', mtime: 'm', size: 5 } },
+        local: { ...tracked, 'notes/gone.md': { path: 'notes/gone.md', hash: 'h', mtime: 'm', size: 5 } },
         remote: { 'notes/gone.md': { path: 'notes/gone.md', hash: 'remote-observed', mtime: 'm', size: 5 } },
         updatedAt: '',
       } as any;
 
       const diff = computePushDiff(
-        {} as any,
-        { 'notes/gone.md': { path: 'notes/gone.md', hash: 'remote-observed', mtime: 'm', size: 5 } } as any,
+        tracked as any,
+        { ...tracked, 'notes/gone.md': { path: 'notes/gone.md', hash: 'remote-observed', mtime: 'm', size: 5 } } as any,
         lastState,
       );
       expect(diff.deletes).toHaveLength(1);

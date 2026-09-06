@@ -926,13 +926,18 @@ describe('remote-poller', () => {
 
       expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
       const saved = mockSaveSyncState.mock.calls.at(-1)?.[0] as SyncState;
-      expect(saved.deletionAnomaly).toBeDefined();
-      expect(saved.deletionAnomaly?.removedCount).toBe(50);
-      expect(saved.deletionAnomaly?.knownCount).toBe(50);
+      // Keyed by the side that would have lost files: this is a pull, so it is
+      // the local copy that was spared.
+      expect(saved.deletionAnomalies?.local).toBeDefined();
+      expect(saved.deletionAnomalies?.local?.target).toBe('local');
+      expect(saved.deletionAnomalies?.local?.removedCount).toBe(50);
+      expect(saved.deletionAnomalies?.local?.knownCount).toBe(50);
+      expect(saved.deletionAnomalies?.remote).toBeUndefined();
       // Every tracked path is still tracked — the state was not pruned either.
       expect(Object.keys(saved.remote)).toHaveLength(50);
       const logs = onLog.mock.calls.map((c: any[]) => c[0] as string);
-      expect(logs.some((m: string) => m.includes('Refusing 50 remote deletion(s)'))).toBe(true);
+      expect(logs.some((m: string) => m.includes('Refusing 50 local deletion(s)'))).toBe(true);
+      expect(logs.some((m: string) => m.includes('lsvault sync pull --allow-mass-delete'))).toBe(true);
     });
 
     it('holds the list ETag so the next poll re-evaluates instead of 304ing past it', async () => {
@@ -987,8 +992,11 @@ describe('remote-poller', () => {
       mockLoadSyncState.mockReturnValue(makeState({
         remote: tracked,
         local: { ...tracked },
-        deletionAnomaly: {
-          detectedAt: '2026-09-01T00:00:00.000Z', removedCount: 50, knownCount: 50, reason: 'stale',
+        deletionAnomalies: {
+          local: {
+            target: 'local', detectedAt: '2026-09-01T00:00:00.000Z',
+            removedCount: 50, knownCount: 50, reason: 'stale',
+          },
         },
       }));
 
@@ -1005,7 +1013,7 @@ describe('remote-poller', () => {
       await poller.stop();
 
       const saved = mockSaveSyncState.mock.calls.at(-1)?.[0] as SyncState;
-      expect(saved.deletionAnomaly).toBeUndefined();
+      expect(saved.deletionAnomalies).toBeUndefined();
     });
   });
 

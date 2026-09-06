@@ -10,7 +10,8 @@ import { getClientAsync } from '../client.js';
 import type { FSWatcher } from 'chokidar';
 import { scanLocalFiles, scanRemoteFiles, computePushDiff, computePullDiff, executePush, executePull, sweepOrphanedTempFiles } from './engine.js';
 import { loadSyncState, saveSyncState, pruneDeniedDeletes } from './state.js';
-import { MASS_DELETE_OVERRIDE_HINT } from './mass-delete-guard.js';
+import { clearDeletionAnomaly, massDeleteOverrideHint, recordDeletionAnomaly } from './mass-delete-guard.js';
+import type { SyncDiff } from './diff.js';
 import { assertSyncRoot } from './root-marker.js';
 import type { SyncConfig } from './types.js';
 
@@ -56,6 +57,24 @@ function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Log and persist (or clear) a refused deletion batch.
+ *
+ * Reads and writes its own copy of the state because the surrounding phases
+ * save between steps; the marker must survive whatever they wrote last.
+ */
+function reportDeletionAnomaly(syncId: string, diff: SyncDiff, target: 'local' | 'remote'): void {
+  const state = loadSyncState(syncId);
+  if (diff.deletionAnomaly) {
+    log(`  Refusing ${diff.deletionAnomaly.removedCount} ${target} deletion(s): ${diff.deletionAnomaly.reason} ${massDeleteOverrideHint(target)}`);
+    recordDeletionAnomaly(state, diff.deletionAnomaly);
+    saveSyncState(state);
+  } else if (clearDeletionAnomaly(state, target)) {
+    saveSyncState(state);
+    log(`  Deletion guard cleared for ${target}: that side's listing is consistent again.`);
+  }
+}
+
 async function reconcile(client: Awaited<ReturnType<typeof getClientAsync>>, config: SyncConfig): Promise<void> {
   assertSyncRoot(config);
   log(`Reconciling ${config.id.slice(0, 8)} (${config.mode} mode)...`);
@@ -82,7 +101,12 @@ async function reconcile(client: Awaited<ReturnType<typeof getClientAsync>>, con
   let pushFailed = false;
   let pushChangedRemote = false;
   if (config.mode === 'push' || config.mode === 'sync') {
+    // The daemon never passes `allowMassDelete` in either direction: there is no
+    // operator present to confirm, and an unattended process is exactly where an
+    // unnoticed wipe does the most damage. A refused push is the worse of the
+    // two — it would have deleted the copy every other client syncs from.
     const diff = computePushDiff(localFiles, remoteFiles, lastState);
+    reportDeletionAnomaly(config.id, diff, 'remote');
     if (diff.uploads.length + diff.deletes.length > 0) {
       const result = await executePush(client, config, diff);
       pushed = result.filesUploaded;
@@ -119,20 +143,8 @@ async function reconcile(client: Awaited<ReturnType<typeof getClientAsync>>, con
             remoteListEtag: pullState.remoteListEtag,
           })).files
         : remoteFiles;
-      // The daemon never passes `allowMassDelete`: there is no operator present
-      // to confirm, and an unattended process is exactly where an unnoticed
-      // wipe does the most damage.
       const diff = computePullDiff(pullLocalFiles, pullRemoteFiles, pullState);
-      const anomalyState = loadSyncState(config.id);
-      if (diff.deletionAnomaly) {
-        log(`  Refusing ${diff.deletionAnomaly.removedCount} deletion(s): ${diff.deletionAnomaly.reason} ${MASS_DELETE_OVERRIDE_HINT}`);
-        anomalyState.deletionAnomaly = diff.deletionAnomaly;
-        saveSyncState(anomalyState);
-      } else if (anomalyState.deletionAnomaly) {
-        delete anomalyState.deletionAnomaly;
-        saveSyncState(anomalyState);
-        log('  Deletion anomaly cleared: the remote listing is consistent again.');
-      }
+      reportDeletionAnomaly(config.id, diff, 'local');
       if (diff.downloads.length + diff.deletes.length > 0) {
         const result = await executePull(client, config, diff, undefined, undefined, undefined,
           (docPath, conflictFile) => log(`  CONFLICT: kept a local edit of ${docPath} as ${conflictFile} before applying the remote deletion`));

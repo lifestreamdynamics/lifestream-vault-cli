@@ -16,7 +16,12 @@ import { assertSyncRoot } from './root-marker.js';
 import type { SyncOperationSerializer } from './watcher.js';
 import { resolveWithinSyncRoot, SyncPathError } from './safe-path.js';
 import { assertNoPathCollisions } from './path-collision.js';
-import { assessDeletions, MASS_DELETE_OVERRIDE_HINT } from './mass-delete-guard.js';
+import {
+  assessDeletions,
+  clearDeletionAnomaly,
+  massDeleteOverrideHint,
+  recordDeletionAnomaly,
+} from './mass-delete-guard.js';
 import { awaitWithTimeout, defaultShutdownTimeoutMs } from './shutdown.js';
 
 export const DEFAULT_POLL_INTERVAL_MS = 30_000;
@@ -266,22 +271,23 @@ export function createRemotePoller(
       // API key, a lagging replica, a server-side path migration — is
       // indistinguishable from a real bulk delete. The guard refuses the whole
       // batch in that case; the creates and updates above have already applied.
-      const deletionAssessment = assessDeletions(sync.removed.length, Object.keys(known.hashes).length);
+      const knownCount = Object.keys(known.hashes).length;
+      const deletionAssessment = assessDeletions(sync.removed.length, knownCount, 'local');
       let deletionsRefused = false;
       if (!deletionAssessment.allow) {
         deletionsRefused = true;
         const reason = deletionAssessment.reason ?? 'Deletion batch refused by the mass-delete guard.';
-        log(`Refusing ${sync.removed.length} remote deletion(s): ${reason} ${MASS_DELETE_OVERRIDE_HINT}`);
-        state.deletionAnomaly = {
+        log(`Refusing ${sync.removed.length} local deletion(s): ${reason} ${massDeleteOverrideHint('local')}`);
+        recordDeletionAnomaly(state, {
+          target: 'local',
           detectedAt: new Date().toISOString(),
           removedCount: sync.removed.length,
-          knownCount: Object.keys(known.hashes).length,
+          knownCount,
           reason,
-        };
+        });
         stateMutated = true;
-      } else if (state.deletionAnomaly) {
+      } else if (clearDeletionAnomaly(state, 'local')) {
         // The listing looks sane again — stop reporting a resolved anomaly.
-        delete state.deletionAnomaly;
         stateMutated = true;
       }
       for (const removedPath of deletionsRefused ? [] : sync.removed) {

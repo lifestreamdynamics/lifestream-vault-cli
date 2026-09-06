@@ -28,7 +28,12 @@ import {
   type ScanRemoteResult,
 } from '../sync/engine.js';
 import { formatDiff } from '../sync/diff.js';
-import { MASS_DELETE_OVERRIDE_HINT } from '../sync/mass-delete-guard.js';
+import {
+  clearDeletionAnomaly,
+  massDeleteOverrideHint,
+  recordDeletionAnomaly,
+} from '../sync/mass-delete-guard.js';
+import type { DeletionAnomaly, DeletionTarget, SyncState } from '../sync/types.js';
 import { createConflictFile } from '../sync/conflict.js';
 import { atomicWriteFileSync } from '../sync/atomic-write.js';
 import { createWatcher } from '../sync/watcher.js';
@@ -37,6 +42,35 @@ import { runDaemonForeground, startDaemon, stopDaemon, getDaemonStatus } from '.
 import { assertSyncRoot, prepareSyncRoot } from '../sync/root-marker.js';
 import { isSyncMode, isConflictStrategy, SYNC_MODES, CONFLICT_STRATEGIES } from '../sync/types.js';
 import { resolveWithinSyncRoot } from '../sync/safe-path.js';
+
+/**
+ * Warn about, and persist, a deletion batch the mass-delete guard refused —
+ * or clear a marker that no longer applies.
+ *
+ * A refusal is not a transient console line: the vault is not converging until
+ * someone acts on it, so it goes into the sync state for `lsvault sync status`
+ * and is re-surfaced on every run until that side's listing recovers.
+ *
+ * @returns true when the state was modified and needs saving.
+ */
+function reportDeletionAnomaly(
+  out: ReturnType<typeof createOutput>,
+  state: SyncState,
+  anomaly: DeletionAnomaly | undefined,
+  target: DeletionTarget,
+): boolean {
+  if (anomaly) {
+    recordDeletionAnomaly(state, anomaly);
+    out.stopSpinner();
+    out.warn(`Refused ${anomaly.removedCount} ${target} deletion(s): ${anomaly.reason} ${massDeleteOverrideHint(target)}`);
+    return true;
+  }
+  if (clearDeletionAnomaly(state, target)) {
+    out.debug(`Deletion guard cleared for ${target}: that side's listing is consistent again.`);
+    return true;
+  }
+  return false;
+}
 
 /** Remove a directory that `sync init --create-dir` created but could not finish setting up. */
 function removeCreatedDir(dir: string): void {
@@ -314,18 +348,7 @@ Sync modes:
         // `lsvault sync status` and re-surfaced on every run until it clears.
         const clearedDenials = pruneDeniedDeletes(lastState, remoteFiles, localFiles);
         let stateDirty = clearedDenials.length > 0;
-        if (diff.deletionAnomaly) {
-          lastState.deletionAnomaly = diff.deletionAnomaly;
-          stateDirty = true;
-          out.stopSpinner();
-          out.warn(
-            `Refused ${diff.deletionAnomaly.removedCount} deletion(s): ${diff.deletionAnomaly.reason} ${MASS_DELETE_OVERRIDE_HINT}`,
-          );
-        } else if (lastState.deletionAnomaly) {
-          delete lastState.deletionAnomaly;
-          stateDirty = true;
-          out.debug('Deletion anomaly cleared: the remote listing is consistent again.');
-        }
+        if (reportDeletionAnomaly(out, lastState, diff.deletionAnomaly, 'local')) stateDirty = true;
 
         if (totalOps === 0) {
           if (remoteResult.listEtag || stateDirty) {
@@ -417,7 +440,8 @@ Sync modes:
   addGlobalFlags(sync.command('push')
     .description('Push local changes to remote vault')
     .argument('<syncId>', 'Sync configuration ID')
-    .option('--concurrency <n>', 'Max concurrent file transfers (1-16, default 4)', (v) => parseInt(v, 10)))
+    .option('--concurrency <n>', 'Max concurrent file transfers (1-16, default 4)', (v) => parseInt(v, 10))
+    .option('--allow-mass-delete', 'Apply a deletion batch the safety guard would otherwise refuse'))
     .action(async (syncId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -454,13 +478,18 @@ Sync modes:
         out.debug(`Found ${Object.keys(remoteFiles).length} remote files`);
 
         const clearedDenials = pruneDeniedDeletes(lastState, remoteFiles, localFiles);
+        let stateDirty = clearedDenials.length > 0;
         if (clearedDenials.length > 0) {
-          saveSyncState(lastState);
           out.debug(`Cleared ${clearedDenials.length} stale denied-delete marker(s)`);
         }
 
         out.startSpinner('Computing diff...');
-        const diff = computePushDiff(localFiles, remoteFiles, lastState);
+        // The mirror of the pull guard, and the more destructive direction: a
+        // local scan that came back short deletes documents from the vault every
+        // other client syncs from.
+        const allowMassDelete = _opts.allowMassDelete === true;
+        const diff = computePushDiff(localFiles, remoteFiles, lastState, { allowMassDelete });
+        if (reportDeletionAnomaly(out, lastState, diff.deletionAnomaly, 'remote')) stateDirty = true;
 
         const unchanged = Object.keys(localFiles).length - diff.uploads.length;
         const totalOps = diff.uploads.length + diff.deletes.length;
@@ -471,7 +500,7 @@ Sync modes:
         }
 
         if (totalOps === 0) {
-          if (remoteResult.listEtag) {
+          if (remoteResult.listEtag || stateDirty) {
             saveSyncState(lastState);
           }
           out.succeedSpinner('Everything is up to date');
@@ -483,6 +512,7 @@ Sync modes:
               unchanged: Object.keys(localFiles).length,
               bytesTransferred: 0,
               errors: 0,
+              ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
             });
           }
           return;
@@ -498,6 +528,7 @@ Sync modes:
               deletes: diff.deletes.length,
               unchanged,
               totalBytes: diff.totalBytes,
+              ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
             });
           } else {
             out.status(chalk.yellow('Dry run — no changes will be made:'));
@@ -511,6 +542,8 @@ Sync modes:
         }
 
         const concurrency = resolveConcurrency(_opts.concurrency as number | undefined);
+
+        if (stateDirty) saveSyncState(lastState);
 
         out.startSpinner(`Pushing ${totalOps} file(s)...`);
         const result = await executePush(client, config, diff, (progress) => {
@@ -537,6 +570,7 @@ Sync modes:
           unchanged,
           bytesTransferred: result.bytesTransferred,
           errors: result.errors.length,
+          ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
         });
       } catch (err) {
         handleError(out, err, 'Push failed');
@@ -578,9 +612,14 @@ Sync modes:
 
         const pullOps = pullDiff.downloads.length + pullDiff.deletes.length;
         const pushOps = pushDiff.uploads.length + pushDiff.deletes.length;
-        // The persisted anomaly is what a refusing daemon leaves behind; the
-        // freshly computed one is what this scan sees right now. Report either.
-        const deletionAnomaly = pullDiff.deletionAnomaly ?? lastState.deletionAnomaly;
+        // A persisted anomaly is what a refusing daemon left behind; a freshly
+        // computed one is what this scan sees right now. Report either, per side:
+        // "your local nearly got wiped" and "your remote nearly got wiped" need
+        // different responses from the operator.
+        const deletionAnomalies = [
+          pullDiff.deletionAnomaly ?? lastState.deletionAnomalies?.local,
+          pushDiff.deletionAnomaly ?? lastState.deletionAnomalies?.remote,
+        ].filter((a): a is DeletionAnomaly => a !== undefined);
         const deniedDeletes = Object.entries(lastState.deniedDeletes ?? {});
 
         if (flags.output === 'json') {
@@ -594,7 +633,7 @@ Sync modes:
             pendingPull: pullOps,
             pendingPush: pushOps,
             lastSyncAt: config.lastSyncAt,
-            ...(deletionAnomaly ? { deletionAnomaly } : {}),
+            ...(deletionAnomalies.length > 0 ? { deletionAnomalies } : {}),
             ...(deniedDeletes.length > 0
               ? { deniedDeletes: deniedDeletes.map(([docPath, entry]) => ({ path: docPath, ...entry })) }
               : {}),
@@ -627,12 +666,12 @@ Sync modes:
           out.status(chalk.green('Push: up to date'));
         }
 
-        if (deletionAnomaly) {
+        for (const anomaly of deletionAnomalies) {
           out.status('');
           out.status(chalk.red(
-            `Deletion guard active since ${deletionAnomaly.detectedAt}: ${deletionAnomaly.reason}`,
+            `Deletion guard active on the ${anomaly.target} side since ${anomaly.detectedAt}: ${anomaly.reason}`,
           ));
-          out.status(chalk.red(`  ${MASS_DELETE_OVERRIDE_HINT}`));
+          out.status(chalk.red(`  ${massDeleteOverrideHint(anomaly.target)}`));
         }
 
         if (deniedDeletes.length > 0) {

@@ -221,6 +221,7 @@ describe('daemon-worker reconciliation', () => {
     const config = makeConfig({ mode: 'pull' });
     mockLoadSyncConfigs.mockReturnValue([config]);
     const anomaly = {
+      target: 'local' as const,
       detectedAt: '2026-09-06T00:00:00.000Z', removedCount: 50, knownCount: 50,
       reason: 'the remote listing no longer contains any of the 50 document(s)',
     };
@@ -235,9 +236,56 @@ describe('daemon-worker reconciliation', () => {
 
     // The daemon must never pass allowMassDelete — there is no operator to confirm.
     expect(mockComputePullDiff).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything());
-    expect(state.deletionAnomaly).toEqual(anomaly);
+    expect((state.deletionAnomalies as Record<string, unknown>).local).toEqual(anomaly);
     const logged = mockStdoutWrite.mock.calls.map(c => String(c[0])).join('');
-    expect(logged).toContain('Refusing 50 deletion(s)');
+    expect(logged).toContain('Refusing 50 local deletion(s)');
+  });
+
+  it('records a refused PUSH batch under the remote key, alongside a pull refusal', async () => {
+    // The daemon runs both phases; a machine whose drive unmounted mid-run can
+    // trip both guards, and neither refusal may hide the other.
+    const config = makeConfig({ mode: 'sync' });
+    mockLoadSyncConfigs.mockReturnValue([config]);
+    const pushAnomaly = {
+      target: 'remote' as const, detectedAt: '2026-09-06T00:00:00.000Z',
+      removedCount: 40, knownCount: 40, reason: 'the local scan no longer contains any of the 40 document(s)',
+    };
+    const pullAnomaly = {
+      target: 'local' as const, detectedAt: '2026-09-06T00:00:01.000Z',
+      removedCount: 50, knownCount: 50, reason: 'the remote listing no longer contains any of the 50 document(s)',
+    };
+    mockComputePushDiff.mockReturnValue({
+      uploads: [], deletes: [], downloads: [], totalBytes: 0, deletionAnomaly: pushAnomaly,
+    });
+    mockComputePullDiff.mockReturnValue({
+      uploads: [], deletes: [], downloads: [], totalBytes: 0, deletionAnomaly: pullAnomaly,
+    });
+    const state = { syncId: 'test', local: {}, remote: {}, updatedAt: '' } as Record<string, unknown>;
+    mockLoadSyncState.mockReturnValue(state as never);
+
+    const { runDaemonWorker } = await import('./daemon-worker.js');
+    await runDaemonWorker({ installSignalHandlers: false });
+
+    const anomalies = state.deletionAnomalies as Record<string, unknown>;
+    expect(anomalies.remote).toEqual(pushAnomaly);
+    expect(anomalies.local).toEqual(pullAnomaly);
+    const logged = mockStdoutWrite.mock.calls.map(c => String(c[0])).join('');
+    expect(logged).toContain('Refusing 40 remote deletion(s)');
+    expect(logged).toContain('Refusing 50 local deletion(s)');
+    expect(logged).toContain('lsvault sync push --allow-mass-delete');
+  });
+
+  it('never passes allowMassDelete in either direction', async () => {
+    // No operator is present to confirm, and an unattended process is exactly
+    // where an unnoticed wipe does the most damage.
+    const config = makeConfig({ mode: 'sync' });
+    mockLoadSyncConfigs.mockReturnValue([config]);
+
+    const { runDaemonWorker } = await import('./daemon-worker.js');
+    await runDaemonWorker({ installSignalHandlers: false });
+
+    expect(mockComputePushDiff).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything());
+    expect(mockComputePullDiff).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything());
   });
 
   it('clears a recorded anomaly once the listing is consistent again', async () => {
@@ -245,14 +293,16 @@ describe('daemon-worker reconciliation', () => {
     mockLoadSyncConfigs.mockReturnValue([config]);
     const state = {
       syncId: 'test', local: {}, remote: {}, updatedAt: '',
-      deletionAnomaly: { detectedAt: 'x', removedCount: 1, knownCount: 1, reason: 'stale' },
+      deletionAnomalies: {
+        local: { target: 'local', detectedAt: 'x', removedCount: 1, knownCount: 1, reason: 'stale' },
+      },
     } as Record<string, unknown>;
     mockLoadSyncState.mockReturnValue(state as never);
 
     const { runDaemonWorker } = await import('./daemon-worker.js');
     await runDaemonWorker({ installSignalHandlers: false });
 
-    expect(state.deletionAnomaly).toBeUndefined();
+    expect(state.deletionAnomalies).toBeUndefined();
   });
 
   it('reports readiness before the initial reconciliation touches the network', async () => {

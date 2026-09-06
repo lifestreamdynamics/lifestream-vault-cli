@@ -416,6 +416,56 @@ describe('sync commands', () => {
     });
   });
 
+  describe('sync push — mass-delete guard reporting', () => {
+    beforeEach(() => {
+      mockConfigs.push({
+        id: 'push-1', vaultId: 'vault-1', localPath: '/tmp/test',
+        mode: 'push', onConflict: 'newer', ignore: [],
+        lastSyncAt: '1970-01-01T00:00:00.000Z', autoSync: false,
+      });
+    });
+
+    const anomaly = {
+      target: 'remote' as const,
+      detectedAt: '2026-09-06T00:00:00.000Z',
+      removedCount: 50,
+      knownCount: 50,
+      reason: 'the local scan no longer contains any of the 50 document(s) this sync was tracking.',
+    };
+
+    it('warns about a refused deletion batch and records it under the remote key', async () => {
+      vi.mocked(computePushDiff).mockReturnValueOnce({
+        downloads: [], deletes: [], uploads: [], totalBytes: 0, deletionAnomaly: anomaly,
+      });
+
+      await program.parseAsync(['node', 'cli', 'sync', 'push', 'push-1']);
+
+      expect(outputSpy.stderr.join('')).toContain('Refused 50 remote deletion(s)');
+      // The push override, not the pull one — sending the operator to the wrong
+      // command sends them round a loop.
+      expect(outputSpy.stderr.join('')).toContain('lsvault sync push --allow-mass-delete');
+      const saved = vi.mocked(saveSyncState).mock.calls.at(-1)?.[0];
+      expect(saved?.deletionAnomalies?.remote).toEqual(anomaly);
+      expect(saved?.deletionAnomalies?.local).toBeUndefined();
+    });
+
+    it('threads --allow-mass-delete into the diff', async () => {
+      await program.parseAsync(['node', 'cli', 'sync', 'push', 'push-1', '--allow-mass-delete']);
+
+      expect(computePushDiff).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), expect.anything(), { allowMassDelete: true },
+      );
+    });
+
+    it('does not set the flag by default', async () => {
+      await program.parseAsync(['node', 'cli', 'sync', 'push', 'push-1']);
+
+      expect(computePushDiff).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), expect.anything(), { allowMassDelete: false },
+      );
+    });
+  });
+
   describe('sync status persistent warnings', () => {
     beforeEach(() => {
       mockConfigs.push({
@@ -423,6 +473,11 @@ describe('sync commands', () => {
         mode: 'sync', onConflict: 'newer', ignore: [],
         lastSyncAt: '1970-01-01T00:00:00.000Z', autoSync: false,
       });
+      // These tests are about what `status` reads out of persisted state, so
+      // both diffs must be quiet regardless of what ran before them.
+      const empty = { downloads: [], deletes: [], uploads: [], totalBytes: 0 };
+      vi.mocked(computePullDiff).mockReturnValue(empty);
+      vi.mocked(computePushDiff).mockReturnValue(empty);
     });
 
     it('surfaces a recorded deletion anomaly, not just the run that found it', async () => {
@@ -430,17 +485,28 @@ describe('sync commands', () => {
       // visible somewhere the user actually looks.
       vi.mocked(loadSyncState).mockReturnValue({
         syncId: 'status-1', local: {}, remote: {}, updatedAt: '',
-        deletionAnomaly: {
-          detectedAt: '2026-09-06T00:00:00.000Z', removedCount: 50, knownCount: 50,
-          reason: 'the remote listing no longer contains any of the 50 document(s)',
+        deletionAnomalies: {
+          local: {
+            target: 'local', detectedAt: '2026-09-06T00:00:00.000Z', removedCount: 50, knownCount: 50,
+            reason: 'the remote listing no longer contains any of the 50 document(s)',
+          },
+          remote: {
+            target: 'remote', detectedAt: '2026-09-06T01:00:00.000Z', removedCount: 40, knownCount: 40,
+            reason: 'the local scan no longer contains any of the 40 document(s)',
+          },
         },
       });
 
       await program.parseAsync(['node', 'cli', 'sync', 'status', 'status-1', '--output', 'json']);
 
-      const jsonOutput = outputSpy.stdout.find(l => l.includes('"deletionAnomaly"'));
+      const jsonOutput = outputSpy.stdout.find(l => l.includes('"deletionAnomalies"'));
       expect(jsonOutput).toBeDefined();
-      expect(JSON.parse(jsonOutput!).deletionAnomaly.removedCount).toBe(50);
+      // Both sides are reported independently: a refused push and a refused pull
+      // are different conditions and neither may hide the other.
+      const reported = JSON.parse(jsonOutput!).deletionAnomalies as Array<{ target: string; removedCount: number }>;
+      expect(reported.map(a => a.target)).toEqual(['local', 'remote']);
+      expect(reported[0].removedCount).toBe(50);
+      expect(reported[1].removedCount).toBe(40);
     });
 
     it('lists deletions the server refused so the user knows why they keep coming back', async () => {
@@ -469,7 +535,7 @@ describe('sync commands', () => {
 
       const jsonOutput = outputSpy.stdout.find(l => l.startsWith('{'));
       const parsed = JSON.parse(jsonOutput!);
-      expect(parsed.deletionAnomaly).toBeUndefined();
+      expect(parsed.deletionAnomalies).toBeUndefined();
       expect(parsed.deniedDeletes).toBeUndefined();
     });
   });
@@ -688,6 +754,7 @@ describe('sync commands', () => {
     });
 
     const anomaly = {
+      target: 'local' as const,
       detectedAt: '2026-09-06T00:00:00.000Z',
       removedCount: 50,
       knownCount: 50,
@@ -695,16 +762,16 @@ describe('sync commands', () => {
     };
 
     it('warns about a refused deletion batch and records it in the sync state', async () => {
-      vi.mocked(computePullDiff).mockReturnValue({
+      vi.mocked(computePullDiff).mockReturnValueOnce({
         downloads: [], deletes: [], uploads: [], totalBytes: 0, deletionAnomaly: anomaly,
       });
 
       await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-1']);
 
-      expect(outputSpy.stderr.join('')).toContain('Refused 50 deletion(s)');
-      expect(outputSpy.stderr.join('')).toContain('--allow-mass-delete');
+      expect(outputSpy.stderr.join('')).toContain('Refused 50 local deletion(s)');
+      expect(outputSpy.stderr.join('')).toContain('lsvault sync pull --allow-mass-delete');
       const saved = vi.mocked(saveSyncState).mock.calls.at(-1)?.[0];
-      expect(saved?.deletionAnomaly).toEqual(anomaly);
+      expect(saved?.deletionAnomalies?.local).toEqual(anomaly);
     });
 
     it('threads --allow-mass-delete into the diff', async () => {
@@ -725,7 +792,7 @@ describe('sync commands', () => {
 
     it('reports the conflict copies executePull made while deleting', async () => {
       // Without the 7th argument wired, these copies were made and never mentioned.
-      vi.mocked(computePullDiff).mockReturnValue({
+      vi.mocked(computePullDiff).mockReturnValueOnce({
         downloads: [], uploads: [], totalBytes: 0,
         deletes: [{ path: 'notes.md', action: 'delete', direction: 'download', sizeBytes: 0, reason: 'Deleted from remote' }],
       });
