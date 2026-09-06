@@ -4,7 +4,7 @@
  */
 import type { FileState, SyncState, SyncMode, DeletionAnomaly, DeletionTarget } from './types.js';
 import { assessDeletions } from './mass-delete-guard.js';
-import { assertNoPathCollisions } from './path-collision.js';
+import { assertNoPathCollisions, type PathFoldOptions } from './path-collision.js';
 
 export type SyncAction = 'create' | 'update' | 'delete';
 export type SyncDirection = 'upload' | 'download';
@@ -50,6 +50,13 @@ export interface DiffOptions {
    * (`lsvault sync pull|push --allow-mass-delete`). Never set by the daemon.
    */
   allowMassDelete?: boolean;
+  /**
+   * How the local filesystem folds path names, from `resolvePathFold` at the
+   * caller's impure boundary. A resolved value, not a dependency: these
+   * functions do no I/O. Omitted, the platform default applies, which is what
+   * every caller did before the probe existed.
+   */
+  fold?: PathFoldOptions;
 }
 
 /** @deprecated Use {@link DiffOptions}; kept as the pull-side alias. */
@@ -92,7 +99,7 @@ export function computePullDiff(
   lastState: SyncState,
   options: DiffOptions = {},
 ): SyncDiff {
-  assertNoPathCollisions([...Object.keys(remoteFiles), ...Object.keys(localFiles)]);
+  assertNoPathCollisions([...Object.keys(remoteFiles), ...Object.keys(localFiles)], options.fold);
 
   const downloads: SyncDiffEntry[] = [];
   const deletes: SyncDiffEntry[] = [];
@@ -189,7 +196,7 @@ export function computePushDiff(
   lastState: SyncState,
   options: DiffOptions = {},
 ): SyncDiff {
-  assertNoPathCollisions([...Object.keys(remoteFiles), ...Object.keys(localFiles)]);
+  assertNoPathCollisions([...Object.keys(remoteFiles), ...Object.keys(localFiles)], options.fold);
 
   const uploads: SyncDiffEntry[] = [];
   const deletes: SyncDiffEntry[] = [];

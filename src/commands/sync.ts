@@ -42,6 +42,7 @@ import { runDaemonForeground, startDaemon, stopDaemon, getDaemonStatus } from '.
 import { assertSyncRoot, prepareSyncRoot } from '../sync/root-marker.js';
 import { isSyncMode, isConflictStrategy, SYNC_MODES, CONFLICT_STRATEGIES } from '../sync/types.js';
 import { resolveWithinSyncRoot } from '../sync/safe-path.js';
+import { resolvePathFold } from '../sync/path-collision.js';
 
 /**
  * Warn about, and persist, a deletion batch the mass-delete guard refused —
@@ -333,7 +334,10 @@ Sync modes:
 
         out.startSpinner('Computing diff...');
         const allowMassDelete = _opts.allowMassDelete === true;
-        const diff = computePullDiff(localFiles, remoteFiles, lastState, { allowMassDelete });
+        const diff = computePullDiff(localFiles, remoteFiles, lastState, {
+          allowMassDelete,
+          fold: resolvePathFold(config.localPath),
+        });
 
         const unchanged = Object.keys(remoteFiles).length - diff.downloads.length;
         const totalOps = diff.downloads.length + diff.deletes.length;
@@ -488,7 +492,10 @@ Sync modes:
         // local scan that came back short deletes documents from the vault every
         // other client syncs from.
         const allowMassDelete = _opts.allowMassDelete === true;
-        const diff = computePushDiff(localFiles, remoteFiles, lastState, { allowMassDelete });
+        const diff = computePushDiff(localFiles, remoteFiles, lastState, {
+          allowMassDelete,
+          fold: resolvePathFold(config.localPath),
+        });
         if (reportDeletionAnomaly(out, lastState, diff.deletionAnomaly, 'remote')) stateDirty = true;
 
         const unchanged = Object.keys(localFiles).length - diff.uploads.length;
@@ -605,8 +612,9 @@ Sync modes:
         );
         const remoteFiles = remoteResult.files;
 
-        const pullDiff = computePullDiff(localFiles, remoteFiles, lastState);
-        const pushDiff = computePushDiff(localFiles, remoteFiles, lastState);
+        const fold = resolvePathFold(config.localPath);
+        const pullDiff = computePullDiff(localFiles, remoteFiles, lastState, { fold });
+        const pushDiff = computePushDiff(localFiles, remoteFiles, lastState, { fold });
 
         out.stopSpinner();
 

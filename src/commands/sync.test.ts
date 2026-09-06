@@ -453,7 +453,8 @@ describe('sync commands', () => {
       await program.parseAsync(['node', 'cli', 'sync', 'push', 'push-1', '--allow-mass-delete']);
 
       expect(computePushDiff).toHaveBeenCalledWith(
-        expect.anything(), expect.anything(), expect.anything(), { allowMassDelete: true },
+        expect.anything(), expect.anything(), expect.anything(),
+        expect.objectContaining({ allowMassDelete: true }),
       );
     });
 
@@ -461,7 +462,8 @@ describe('sync commands', () => {
       await program.parseAsync(['node', 'cli', 'sync', 'push', 'push-1']);
 
       expect(computePushDiff).toHaveBeenCalledWith(
-        expect.anything(), expect.anything(), expect.anything(), { allowMassDelete: false },
+        expect.anything(), expect.anything(), expect.anything(),
+        expect.objectContaining({ allowMassDelete: false }),
       );
     });
   });
@@ -778,7 +780,8 @@ describe('sync commands', () => {
       await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-1', '--allow-mass-delete']);
 
       expect(computePullDiff).toHaveBeenCalledWith(
-        expect.anything(), expect.anything(), expect.anything(), { allowMassDelete: true },
+        expect.anything(), expect.anything(), expect.anything(),
+        expect.objectContaining({ allowMassDelete: true }),
       );
     });
 
@@ -786,7 +789,8 @@ describe('sync commands', () => {
       await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-1']);
 
       expect(computePullDiff).toHaveBeenCalledWith(
-        expect.anything(), expect.anything(), expect.anything(), { allowMassDelete: false },
+        expect.anything(), expect.anything(), expect.anything(),
+        expect.objectContaining({ allowMassDelete: false }),
       );
     });
 

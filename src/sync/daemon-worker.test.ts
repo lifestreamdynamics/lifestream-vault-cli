@@ -30,7 +30,11 @@ vi.mock('./watcher.js', () => ({ createWatcher: mockCreateWatcher }));
 vi.mock('./remote-poller.js', () => ({ createRemotePoller: mockCreateRemotePoller }));
 vi.mock('./daemon.js', () => ({ removePid: mockRemovePid, removeDaemonState: vi.fn(), writeDaemonState: mockWriteDaemonState }));
 vi.mock('../client.js', () => ({ getClientAsync: mockLoadConfig }));
-vi.mock('./root-marker.js', () => ({ assertSyncRoot: mockAssertSyncRoot }));
+vi.mock('./root-marker.js', () => ({
+  assertSyncRoot: mockAssertSyncRoot,
+  // path-collision.js reads the marker name to build its case-folding probe.
+  SYNC_ROOT_MARKER: '.lsvault-sync-root',
+}));
 vi.mock('./engine.js', () => ({
   scanLocalFiles: mockScanLocalFiles,
   scanRemoteFiles: mockScanRemoteFiles,
@@ -235,7 +239,7 @@ describe('daemon-worker reconciliation', () => {
     await runDaemonWorker({ installSignalHandlers: false });
 
     // The daemon must never pass allowMassDelete — there is no operator to confirm.
-    expect(mockComputePullDiff).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything());
+    expect((mockComputePullDiff.mock.calls[0] as unknown[])[3]).not.toMatchObject({ allowMassDelete: true });
     expect((state.deletionAnomalies as Record<string, unknown>).local).toEqual(anomaly);
     const logged = mockStdoutWrite.mock.calls.map(c => String(c[0])).join('');
     expect(logged).toContain('Refusing 50 local deletion(s)');
@@ -284,8 +288,8 @@ describe('daemon-worker reconciliation', () => {
     const { runDaemonWorker } = await import('./daemon-worker.js');
     await runDaemonWorker({ installSignalHandlers: false });
 
-    expect(mockComputePushDiff).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything());
-    expect(mockComputePullDiff).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything());
+    expect((mockComputePushDiff.mock.calls[0] as unknown[])[3]).not.toMatchObject({ allowMassDelete: true });
+    expect((mockComputePullDiff.mock.calls[0] as unknown[])[3]).not.toMatchObject({ allowMassDelete: true });
   });
 
   it('clears a recorded anomaly once the listing is consistent again', async () => {
@@ -368,7 +372,9 @@ describe('daemon-worker reconciliation', () => {
     await runDaemonWorker({ installSignalHandlers: false });
 
     expect(mockScanRemoteFiles).toHaveBeenCalledTimes(2);
-    expect(mockComputePullDiff).toHaveBeenCalledWith(expect.anything(), refreshedRemote, expect.anything());
+    expect(mockComputePullDiff).toHaveBeenCalledWith(
+      expect.anything(), refreshedRemote, expect.anything(), expect.anything(),
+    );
   });
 
   it('should run only pull reconciliation for pull-mode configs', async () => {

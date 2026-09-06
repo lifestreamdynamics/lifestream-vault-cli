@@ -15,7 +15,7 @@ import { atomicWriteFileSync } from './atomic-write.js';
 import { assertSyncRoot } from './root-marker.js';
 import type { SyncOperationSerializer } from './watcher.js';
 import { resolveWithinSyncRoot, SyncPathError } from './safe-path.js';
-import { assertNoPathCollisions } from './path-collision.js';
+import { assertNoPathCollisions, resolvePathFold } from './path-collision.js';
 import {
   assessDeletions,
   clearDeletionAnomaly,
@@ -116,7 +116,10 @@ export function createRemotePoller(
       // Two vault paths that name one local file make every pass overwrite the
       // other and mint another `.conflicted.*` copy. Refuse the whole poll and
       // say which pair, rather than burning disk on the loop.
-      assertNoPathCollisions([...sync.changes.map(c => c.path), ...sync.unchanged]);
+      assertNoPathCollisions(
+        [...sync.changes.map(c => c.path), ...sync.unchanged],
+        resolvePathFold(config.localPath),
+      );
 
       // Paths that failed this pass. Held back rather than thrown, so one
       // permanently-unsyncable document cannot discard every other document's

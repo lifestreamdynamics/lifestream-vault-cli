@@ -11,6 +11,7 @@ import type { FSWatcher } from 'chokidar';
 import { scanLocalFiles, scanRemoteFiles, computePushDiff, computePullDiff, executePush, executePull, sweepOrphanedTempFiles } from './engine.js';
 import { loadSyncState, saveSyncState, pruneDeniedDeletes } from './state.js';
 import { clearDeletionAnomaly, massDeleteOverrideHint, recordDeletionAnomaly } from './mass-delete-guard.js';
+import { resolvePathFold } from './path-collision.js';
 import type { SyncDiff } from './diff.js';
 import { assertSyncRoot } from './root-marker.js';
 import type { SyncConfig } from './types.js';
@@ -80,6 +81,8 @@ async function reconcile(client: Awaited<ReturnType<typeof getClientAsync>>, con
   log(`Reconciling ${config.id.slice(0, 8)} (${config.mode} mode)...`);
   const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
   const lastState = loadSyncState(config.id);
+  // Measured once per root, at the boundary that already holds localPath.
+  const fold = resolvePathFold(config.localPath);
   const localFiles = scanLocalFiles(config.localPath, ignorePatterns, lastState);
   assertSyncRoot(config);
   const remoteResult = await scanRemoteFiles(client, config.vaultId, ignorePatterns, {
@@ -105,7 +108,7 @@ async function reconcile(client: Awaited<ReturnType<typeof getClientAsync>>, con
     // operator present to confirm, and an unattended process is exactly where an
     // unnoticed wipe does the most damage. A refused push is the worse of the
     // two — it would have deleted the copy every other client syncs from.
-    const diff = computePushDiff(localFiles, remoteFiles, lastState);
+    const diff = computePushDiff(localFiles, remoteFiles, lastState, { fold });
     reportDeletionAnomaly(config.id, diff, 'remote');
     if (diff.uploads.length + diff.deletes.length > 0) {
       const result = await executePush(client, config, diff);
@@ -143,7 +146,7 @@ async function reconcile(client: Awaited<ReturnType<typeof getClientAsync>>, con
             remoteListEtag: pullState.remoteListEtag,
           })).files
         : remoteFiles;
-      const diff = computePullDiff(pullLocalFiles, pullRemoteFiles, pullState);
+      const diff = computePullDiff(pullLocalFiles, pullRemoteFiles, pullState, { fold });
       reportDeletionAnomaly(config.id, diff, 'local');
       if (diff.downloads.length + diff.deletes.length > 0) {
         const result = await executePull(client, config, diff, undefined, undefined, undefined,

@@ -213,12 +213,20 @@ describe('diff path-collision plumbing', () => {
 
   it('checks the union of local and remote paths on pull', () => {
     computePullDiff({ 'a.md': file('a.md') }, { 'b.md': file('b.md') }, makeState());
-    expect(mockAssertNoPathCollisions).toHaveBeenCalledWith(['b.md', 'a.md']);
+    expect(mockAssertNoPathCollisions).toHaveBeenCalledWith(['b.md', 'a.md'], undefined);
   });
 
   it('checks the union of local and remote paths on push', () => {
     computePushDiff({ 'a.md': file('a.md') }, { 'b.md': file('b.md') }, makeState());
-    expect(mockAssertNoPathCollisions).toHaveBeenCalledWith(['b.md', 'a.md']);
+    expect(mockAssertNoPathCollisions).toHaveBeenCalledWith(['b.md', 'a.md'], undefined);
+  });
+
+  it('passes the caller-resolved fold straight through, doing no I/O of its own', () => {
+    // The probe runs at the impure boundary; these functions only ever receive
+    // its result as a value.
+    const fold = { caseInsensitive: true, normalizationInsensitive: false };
+    computePullDiff({}, { 'a.md': file('a.md') }, makeState(), { fold });
+    expect(mockAssertNoPathCollisions).toHaveBeenCalledWith(['a.md'], fold);
   });
 
   it('propagates the refusal rather than planning work on a colliding set', () => {

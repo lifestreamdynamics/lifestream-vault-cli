@@ -13,7 +13,6 @@ import { computePullDiff, computePushDiff, type SyncDiff, type SyncDiffEntry } f
 import { atomicWriteFileSync, sweepOrphanedTempFiles } from './atomic-write.js';
 import { assertSyncRoot } from './root-marker.js';
 import { resolveWithinSyncRoot } from './safe-path.js';
-import { assertNoPathCollisions } from './path-collision.js';
 import { createConflictFile } from './conflict.js';
 
 export { sweepOrphanedTempFiles };
@@ -178,8 +177,9 @@ export async function scanRemoteFiles(
     }
   }
 
-  assertNoPathCollisions(Object.keys(files));
-
+  // No collision check here: this function has no sync root to measure the
+  // filesystem's folding against, and computePullDiff/computePushDiff already
+  // check the union of these paths with the local set, which is a superset.
   return { files, listEtag: sync.listEtag, vaultUnchanged: false };
 }
 
