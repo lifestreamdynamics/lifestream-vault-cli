@@ -101,6 +101,20 @@ function makeRemoteFileState(docPath: string, hash: string, mtime = '2026-01-01T
   return { path: docPath, hash, mtime, size: 100 };
 }
 
+/**
+ * Filler entries for the tracked remote state.
+ *
+ * The mass-delete guard refuses a batch that removes every tracked path, so a
+ * test about *one* ordinary deletion needs a realistic baseline around it.
+ */
+function trackedPaths(count: number): Record<string, ReturnType<typeof makeRemoteFileState>> {
+  const files: Record<string, ReturnType<typeof makeRemoteFileState>> = {};
+  for (let i = 0; i < count; i++) {
+    files[`tracked-${i}.md`] = makeRemoteFileState(`tracked-${i}.md`, `hash-${i}`);
+  }
+  return files;
+}
+
 function makeClient() {
   const syncList = vi.fn();
   const get = vi.fn();
@@ -123,6 +137,11 @@ describe('remote-poller', () => {
     mockedFs.existsSync.mockReturnValue(false);
     mockedFs.mkdirSync.mockImplementation(() => undefined as any);
     mockedFs.writeFileSync.mockImplementation(() => undefined);
+    mockedFs.openSync.mockReturnValue(7);
+    mockedFs.writeSync.mockReturnValue(0);
+    mockedFs.fsyncSync.mockImplementation(() => undefined);
+    mockedFs.closeSync.mockImplementation(() => undefined);
+    mockedFs.chmodSync.mockImplementation(() => undefined);
     mockedFs.renameSync.mockImplementation(() => undefined);
     mockedFs.unlinkSync.mockImplementation(() => undefined);
     mockedFs.readFileSync.mockReturnValue('file-content' as any);
@@ -169,7 +188,9 @@ describe('remote-poller', () => {
     await poller.stop();
 
     expect(serialize).toHaveBeenCalledOnce();
-    expect(onLocalWrite).toHaveBeenCalledWith('notes/pulled.md');
+    // The hash travels with the mark: the watcher suppresses an event only when
+    // the file still holds exactly these bytes.
+    expect(onLocalWrite).toHaveBeenCalledWith('notes/pulled.md', 'sha256-remote content');
   });
 
   it.each(['../outside.md', '/tmp/absolute.md', 'notes\\windows-escape.md', '.lsvault-sync-root'])(
@@ -188,7 +209,7 @@ describe('remote-poller', () => {
       await poller.stop();
 
       expect(client._get).not.toHaveBeenCalled();
-      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+      expect(mockedFs.writeSync).not.toHaveBeenCalled();
       expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
       expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/Unsafe|reserved/) }));
     },
@@ -215,7 +236,7 @@ describe('remote-poller', () => {
 
     releaseDownload({ content: '# downloaded', document: { updatedAt: '2026-05-01T00:00:00.000Z' } });
     await stopping;
-    expect(mockedFs.writeFileSync).toHaveBeenCalled();
+    expect(mockedFs.writeSync).toHaveBeenCalled();
     expect(mockSaveSyncState).toHaveBeenCalled();
   });
 
@@ -361,7 +382,7 @@ describe('remote-poller', () => {
 
     expect(client._get).toHaveBeenCalledTimes(1);
     // No file write should occur
-    expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+    expect(mockedFs.writeSync).not.toHaveBeenCalled();
     expect(mockedFs.renameSync).not.toHaveBeenCalled();
     // State should still be saved (stateMutated = true because mtime changed + listEtag updated)
     expect(mockSaveSyncState).toHaveBeenCalled();
@@ -425,9 +446,15 @@ describe('remote-poller', () => {
     await poller.stop();
 
     // File was written atomically via tmp + rename
-    expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
+    expect(mockedFs.openSync).toHaveBeenCalledWith(
       expect.stringContaining('.tmp'),
+      'wx',
+      expect.any(Number),
+    );
+    expect(mockedFs.writeSync).toHaveBeenCalledWith(
+      expect.anything(),
       newContent,
+      0,
       'utf-8',
     );
     expect(mockedFs.renameSync).toHaveBeenCalled();
@@ -526,7 +553,7 @@ describe('remote-poller', () => {
     expect(client._get).toHaveBeenCalledTimes(1);
     expect(client._get).toHaveBeenCalledWith(config.vaultId, 'notes/brand-new.md');
     // File was created
-    expect(mockedFs.writeFileSync).toHaveBeenCalled();
+    expect(mockedFs.writeSync).toHaveBeenCalled();
     expect(mockedFs.renameSync).toHaveBeenCalled();
     // Log message
     const logMessages = onLog.mock.calls.map((c: any[]) => c[0] as string);
@@ -602,6 +629,7 @@ describe('remote-poller', () => {
     const config = makeConfig();
     const state = makeState({
       remote: {
+        ...trackedPaths(20),
         'notes/deleted.md': makeRemoteFileState('notes/deleted.md', 'hash-old'),
       },
       local: {
@@ -646,6 +674,7 @@ describe('remote-poller', () => {
     const config = makeConfig({ onConflict: 'local' });
     const state = makeState({
       remote: {
+        ...trackedPaths(20),
         'notes/edited.md': makeRemoteFileState('notes/edited.md', 'hash-old'),
       },
       local: {
@@ -800,7 +829,7 @@ describe('remote-poller', () => {
       const config = makeConfig({ mode: 'pull', onConflict: 'local' });
       mockLoadSyncState.mockReturnValue(makeState({
         local: { 'notes/edited.md': makeRemoteFileState('notes/edited.md', 'hash-old') },
-        remote: { 'notes/edited.md': makeRemoteFileState('notes/edited.md', 'hash-old') },
+        remote: { ...trackedPaths(20), 'notes/edited.md': makeRemoteFileState('notes/edited.md', 'hash-old') },
       }));
       mockHashFileContent.mockImplementation(content => content === '# local edit' ? 'hash-new' : `sha256-${content.slice(0, 16)}`);
       mockedFs.existsSync.mockReturnValue(true);
@@ -868,5 +897,141 @@ describe('remote-poller', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+  // Gating tests for the highest-severity data-loss path: a truncated listing
+  // is subtracted from the known state and every local file is unlinked, with
+  // no conflict copy, for a cleanly synced vault.
+  describe('mass-delete guard', () => {
+    it('refuses the batch, unlinks nothing, and persists the anomaly', async () => {
+      const config = makeConfig();
+      const tracked = trackedPaths(50);
+      const state = makeState({ remote: tracked, local: { ...tracked } });
+      mockLoadSyncState.mockReturnValue(state);
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const client = makeClient();
+      client._syncList.mockResolvedValue({
+        vaultUnchanged: false,
+        changes: [],
+        removed: Object.keys(tracked),
+        unchanged: [],
+        listEtag: 'W/"truncated"',
+      });
+
+      const onLog = vi.fn();
+      const poller = createRemotePoller(client as any, config, {
+        ignorePatterns: [], intervalMs: 60_000, onLog,
+      });
+      await poller.stop();
+
+      expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+      const saved = mockSaveSyncState.mock.calls.at(-1)?.[0] as SyncState;
+      expect(saved.deletionAnomaly).toBeDefined();
+      expect(saved.deletionAnomaly?.removedCount).toBe(50);
+      expect(saved.deletionAnomaly?.knownCount).toBe(50);
+      // Every tracked path is still tracked — the state was not pruned either.
+      expect(Object.keys(saved.remote)).toHaveLength(50);
+      const logs = onLog.mock.calls.map((c: any[]) => c[0] as string);
+      expect(logs.some((m: string) => m.includes('Refusing 50 remote deletion(s)'))).toBe(true);
+    });
+
+    it('holds the list ETag so the next poll re-evaluates instead of 304ing past it', async () => {
+      const config = makeConfig();
+      const tracked = trackedPaths(50);
+      mockLoadSyncState.mockReturnValue(makeState({ remote: tracked, local: { ...tracked } }));
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const client = makeClient();
+      client._syncList.mockResolvedValue({
+        vaultUnchanged: false,
+        changes: [],
+        removed: Object.keys(tracked),
+        unchanged: [],
+        listEtag: 'W/"truncated"',
+      });
+
+      const poller = createRemotePoller(client as any, config, { ignorePatterns: [], intervalMs: 60_000 });
+      await poller.stop();
+
+      const saved = mockSaveSyncState.mock.calls.at(-1)?.[0] as SyncState;
+      expect(saved.remoteListEtag).toBeUndefined();
+    });
+
+    it('still applies the changed documents in the same poll', async () => {
+      // The creates and updates are unaffected; only the destructive half is held.
+      const config = makeConfig();
+      const tracked = trackedPaths(50);
+      mockLoadSyncState.mockReturnValue(makeState({ remote: tracked, local: { ...tracked } }));
+      mockedFs.existsSync.mockReturnValue(false);
+
+      const client = makeClient();
+      client._syncList.mockResolvedValue({
+        vaultUnchanged: false,
+        changes: [{ path: 'notes/new.md', contentHash: 'h', fileModifiedAt: '2026-06-01T00:00:00.000Z', kind: 'added' }],
+        removed: Object.keys(tracked),
+        unchanged: [],
+        listEtag: 'W/"truncated"',
+      });
+      client._get.mockResolvedValue({ notModified: false, content: '# new', document: { updatedAt: '2026-06-01T00:00:00.000Z' } });
+
+      const poller = createRemotePoller(client as any, config, { ignorePatterns: [], intervalMs: 60_000 });
+      await poller.stop();
+
+      expect(mockedFs.renameSync).toHaveBeenCalled();
+      expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+    });
+
+    it('clears a recorded anomaly once the listing is consistent again', async () => {
+      const config = makeConfig();
+      const tracked = trackedPaths(50);
+      mockLoadSyncState.mockReturnValue(makeState({
+        remote: tracked,
+        local: { ...tracked },
+        deletionAnomaly: {
+          detectedAt: '2026-09-01T00:00:00.000Z', removedCount: 50, knownCount: 50, reason: 'stale',
+        },
+      }));
+
+      const client = makeClient();
+      client._syncList.mockResolvedValue({
+        vaultUnchanged: false,
+        changes: [],
+        removed: [],
+        unchanged: Object.keys(tracked),
+        listEtag: 'W/"healthy"',
+      });
+
+      const poller = createRemotePoller(client as any, config, { ignorePatterns: [], intervalMs: 60_000 });
+      await poller.stop();
+
+      const saved = mockSaveSyncState.mock.calls.at(-1)?.[0] as SyncState;
+      expect(saved.deletionAnomaly).toBeUndefined();
+    });
+  });
+
+  describe('local-write marking', () => {
+    it('marks a deletion with a null hash so the watcher can tell it from a user delete', async () => {
+      const config = makeConfig();
+      const tracked = trackedPaths(20);
+      mockLoadSyncState.mockReturnValue(makeState({
+        remote: { ...tracked, 'notes/gone.md': makeRemoteFileState('notes/gone.md', 'hash-old') },
+        local: { 'notes/gone.md': makeRemoteFileState('notes/gone.md', 'hash-old') },
+      }));
+      mockHashFileContent.mockReturnValue('hash-old');
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const client = makeClient();
+      client._syncList.mockResolvedValue({
+        vaultUnchanged: false, changes: [], removed: ['notes/gone.md'], unchanged: [], listEtag: 'W/"e"',
+      });
+
+      const onLocalWrite = vi.fn();
+      const poller = createRemotePoller(client as any, config, {
+        ignorePatterns: [], intervalMs: 60_000, onLocalWrite,
+      });
+      await poller.stop();
+
+      expect(onLocalWrite).toHaveBeenCalledWith('notes/gone.md', null);
+    });
   });
 });

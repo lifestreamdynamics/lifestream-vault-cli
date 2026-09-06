@@ -117,4 +117,14 @@ export function saveConfig(config: Partial<CliConfig>): void {
 
   const merged = { ...existing, ...config };
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2) + '\n', { mode: 0o600 });
+  // `mode` on writeFileSync only applies when the file is created. A config
+  // written before this option was added — or created by an older CLI — keeps
+  // its 0644, and this file holds `apiKey`/`accessToken` whenever the keychain
+  // and the encrypted store are both unavailable.
+  try {
+    fs.chmodSync(CONFIG_FILE, 0o600);
+  } catch {
+    // Best effort: a filesystem without POSIX modes (or a file owned by another
+    // user) must not make saving the config fail.
+  }
 }

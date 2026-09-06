@@ -59,6 +59,39 @@ export interface FileState {
 }
 
 /**
+ * A batch of remote-derived deletions the mass-delete guard refused to apply.
+ *
+ * Persisted rather than only logged: the daemon has no operator watching its
+ * output, and a refusal means the vault is *not* converging. `lsvault sync
+ * status` reads this so the condition stays visible until it is resolved.
+ */
+export interface DeletionAnomaly {
+  /** ISO 8601 timestamp of the refusal. */
+  detectedAt: string;
+  /** How many tracked paths the remote listing no longer contained. */
+  removedCount: number;
+  /** How many paths the last-known remote state held. */
+  knownCount: number;
+  /** Operator-facing explanation from `assessDeletions`. */
+  reason: string;
+}
+
+/**
+ * A local deletion the server refused to propagate (HTTP 403).
+ *
+ * Deleting a document in a team vault is admin-only. Without this record the
+ * push fails permanently, the pull phase then treats the missing local file as
+ * "deleted locally, exists remotely" and restores it, and the next watcher pass
+ * deletes it again — forever.
+ */
+export interface DeniedDelete {
+  /** ISO 8601 timestamp of the first refusal. */
+  deniedAt: string;
+  /** The server-facing message that came back with the 403. */
+  reason: string;
+}
+
+/**
  * Persisted state for a single sync configuration.
  * Stored in ~/.lsvault/sync-state/<syncId>.json.
  */
@@ -71,6 +104,10 @@ export interface SyncState {
   remote: Record<string, FileState>;
   /** ETag from the most recent successful list response (for conditional polling). */
   remoteListEtag?: string;
+  /** Most recent deletion batch refused by the mass-delete guard, if any. */
+  deletionAnomaly?: DeletionAnomaly;
+  /** Document paths whose remote deletion the server refused, keyed by path. */
+  deniedDeletes?: Record<string, DeniedDelete>;
   /** ISO 8601 timestamp when state was last updated */
   updatedAt: string;
 }

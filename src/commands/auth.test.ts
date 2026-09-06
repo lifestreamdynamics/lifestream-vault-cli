@@ -104,6 +104,51 @@ describe('auth commands', () => {
       expect(mockCredentialManager.saveCredentials).toHaveBeenCalledWith({ apiUrl: 'https://my-server.com' });
     });
 
+    it('rejects a plain-http API URL before anything is stored or sent', async () => {
+      // The value was persisted first and only then used for the password POST,
+      // so a pasted http:// URL put the password and every later bearer token
+      // on the wire in cleartext.
+      await program.parseAsync([
+        'node', 'cli', 'auth', 'login',
+        '--email', 'user@example.com', '--password', 'hunter2',
+        '--api-url', 'http://vault.example.com',
+      ]);
+
+      expect(mockCredentialManager.saveCredentials).not.toHaveBeenCalled();
+      expect(mockedSaveConfig).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      expect(consoleSpy.errors.join('')).toContain('cleartext');
+    });
+
+    it('rejects a value that is not an absolute URL', async () => {
+      await program.parseAsync(['node', 'cli', 'auth', 'login', '--api-url', 'vault.example.com']);
+
+      expect(mockCredentialManager.saveCredentials).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      expect(consoleSpy.errors.join('')).toContain('absolute URL');
+    });
+
+    it('rejects a non-http scheme', async () => {
+      await program.parseAsync(['node', 'cli', 'auth', 'login', '--api-url', 'file:///etc/passwd']);
+
+      expect(mockCredentialManager.saveCredentials).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('accepts plain http for loopback, where nothing leaves the machine', async () => {
+      process.exitCode = undefined;
+      await program.parseAsync(['node', 'cli', 'auth', 'login', '--api-url', 'http://localhost:4660']);
+
+      expect(mockCredentialManager.saveCredentials).toHaveBeenCalledWith({ apiUrl: 'http://localhost:4660' });
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('accepts plain http for 127.0.0.1', async () => {
+      await program.parseAsync(['node', 'cli', 'auth', 'login', '--api-url', 'http://127.0.0.1:4660']);
+
+      expect(mockCredentialManager.saveCredentials).toHaveBeenCalledWith({ apiUrl: 'http://127.0.0.1:4660' });
+    });
+
     it('should print usage when neither option is provided', async () => {
       await program.parseAsync(['node', 'cli', 'auth', 'login']);
 

@@ -118,3 +118,30 @@ export function buildRemoteFileState(
 export function hasFileChanged(current: FileState, known: FileState): boolean {
   return current.hash !== known.hash;
 }
+
+/**
+ * Drop denied-delete markers that no longer describe reality.
+ *
+ * A marker is stale once the remote document is gone (someone with the right
+ * role deleted it) or the local file is back (the user restored it, so there is
+ * nothing left to suppress). Leaving it in place would keep `computePullDiff`
+ * refusing to restore a document that is now legitimately syncable.
+ *
+ * @returns the paths whose markers were cleared.
+ */
+export function pruneDeniedDeletes(
+  state: SyncState,
+  remoteFiles: Record<string, FileState>,
+  localFiles: Record<string, FileState>,
+): string[] {
+  if (!state.deniedDeletes) return [];
+  const cleared: string[] = [];
+  for (const docPath of Object.keys(state.deniedDeletes)) {
+    if (!remoteFiles[docPath] || localFiles[docPath]) {
+      delete state.deniedDeletes[docPath];
+      cleared.push(docPath);
+    }
+  }
+  if (Object.keys(state.deniedDeletes).length === 0) delete state.deniedDeletes;
+  return cleared;
+}

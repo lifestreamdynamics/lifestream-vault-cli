@@ -14,7 +14,7 @@ import {
   getSyncConfig,
   trustSyncRoot,
 } from '../sync/config.js';
-import { deleteSyncState, loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from '../sync/state.js';
+import { deleteSyncState, loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState, pruneDeniedDeletes } from '../sync/state.js';
 import { resolveIgnorePatterns } from '../sync/ignore.js';
 import {
   scanLocalFiles,
@@ -28,6 +28,9 @@ import {
   type ScanRemoteResult,
 } from '../sync/engine.js';
 import { formatDiff } from '../sync/diff.js';
+import { MASS_DELETE_OVERRIDE_HINT } from '../sync/mass-delete-guard.js';
+import { createConflictFile } from '../sync/conflict.js';
+import { atomicWriteFileSync } from '../sync/atomic-write.js';
 import { createWatcher } from '../sync/watcher.js';
 import { createRemotePoller } from '../sync/remote-poller.js';
 import { runDaemonForeground, startDaemon, stopDaemon, getDaemonStatus } from '../sync/daemon.js';
@@ -258,7 +261,8 @@ Sync modes:
   addGlobalFlags(sync.command('pull')
     .description('Pull remote changes to local directory')
     .argument('<syncId>', 'Sync configuration ID')
-    .option('--concurrency <n>', 'Max concurrent file transfers (1-16, default 4)', (v) => parseInt(v, 10)))
+    .option('--concurrency <n>', 'Max concurrent file transfers (1-16, default 4)', (v) => parseInt(v, 10))
+    .option('--allow-mass-delete', 'Apply a deletion batch the safety guard would otherwise refuse'))
     .action(async (syncId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -276,7 +280,7 @@ Sync modes:
         const lastState = loadSyncState(config.id);
 
         // Clean up any orphaned temp files left by a prior interrupted pull.
-        const swept = sweepOrphanedTempFiles(config.localPath);
+        const swept = sweepOrphanedTempFiles(config.localPath, { ignorePatterns });
         if (swept > 0) {
           out.debug(`Removed ${swept} orphaned temp file(s) from ${config.localPath}`);
         }
@@ -294,7 +298,8 @@ Sync modes:
         out.debug(`Found ${Object.keys(remoteFiles).length} remote files`);
 
         out.startSpinner('Computing diff...');
-        const diff = computePullDiff(localFiles, remoteFiles, lastState);
+        const allowMassDelete = _opts.allowMassDelete === true;
+        const diff = computePullDiff(localFiles, remoteFiles, lastState, { allowMassDelete });
 
         const unchanged = Object.keys(remoteFiles).length - diff.downloads.length;
         const totalOps = diff.downloads.length + diff.deletes.length;
@@ -304,8 +309,26 @@ Sync modes:
           lastState.remoteListEtag = remoteResult.listEtag;
         }
 
+        // A refused deletion batch is not a transient console warning: the vault
+        // is not converging until someone looks at it, so it is persisted for
+        // `lsvault sync status` and re-surfaced on every run until it clears.
+        const clearedDenials = pruneDeniedDeletes(lastState, remoteFiles, localFiles);
+        let stateDirty = clearedDenials.length > 0;
+        if (diff.deletionAnomaly) {
+          lastState.deletionAnomaly = diff.deletionAnomaly;
+          stateDirty = true;
+          out.stopSpinner();
+          out.warn(
+            `Refused ${diff.deletionAnomaly.removedCount} deletion(s): ${diff.deletionAnomaly.reason} ${MASS_DELETE_OVERRIDE_HINT}`,
+          );
+        } else if (lastState.deletionAnomaly) {
+          delete lastState.deletionAnomaly;
+          stateDirty = true;
+          out.debug('Deletion anomaly cleared: the remote listing is consistent again.');
+        }
+
         if (totalOps === 0) {
-          if (remoteResult.listEtag) {
+          if (remoteResult.listEtag || stateDirty) {
             saveSyncState(lastState);
           }
           out.succeedSpinner('Everything is up to date');
@@ -317,6 +340,7 @@ Sync modes:
               unchanged: Object.keys(remoteFiles).length,
               bytesTransferred: 0,
               errors: 0,
+              ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
             });
           }
           return;
@@ -332,6 +356,7 @@ Sync modes:
               deletes: diff.deletes.length,
               unchanged,
               totalBytes: diff.totalBytes,
+              ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
             });
           } else {
             out.status(chalk.yellow('Dry run — no changes will be made:'));
@@ -346,13 +371,18 @@ Sync modes:
 
         const concurrency = resolveConcurrency(_opts.concurrency as number | undefined);
 
+        if (stateDirty) saveSyncState(lastState);
+
         out.startSpinner(`Pulling ${totalOps} file(s)...`);
+        const conflictCopies: Array<{ path: string; conflictFile: string }> = [];
         const result = await executePull(client, config, diff, (progress) => {
           if (progress.phase === 'transferring' && progress.currentFile) {
             out.startSpinner(`[${progress.current}/${progress.total}] ${progress.currentFile}`);
           }
         }, concurrency, (file) => {
           out.startSpinner(`Rate limited — waiting and retrying… (${file})`);
+        }, (docPath, conflictFile) => {
+          conflictCopies.push({ path: docPath, conflictFile });
         });
 
         if (result.errors.length > 0) {
@@ -365,12 +395,18 @@ Sync modes:
           out.succeedSpinner('Pull complete');
         }
 
+        for (const copy of conflictCopies) {
+          out.warn(`Kept your local edit of ${copy.path} as ${copy.conflictFile} before applying the remote deletion.`);
+        }
+
         out.success('', {
           downloaded: result.filesDownloaded,
           deleted: result.filesDeleted,
           unchanged,
           bytesTransferred: result.bytesTransferred,
           errors: result.errors.length,
+          ...(conflictCopies.length > 0 ? { conflictCopies } : {}),
+          ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
         });
       } catch (err) {
         handleError(out, err, 'Pull failed');
@@ -398,6 +434,13 @@ Sync modes:
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const lastState = loadSyncState(config.id);
 
+        // An interrupted pull leaves temp files behind that a later push would
+        // otherwise be free to upload; the sweep is not pull-specific.
+        const swept = sweepOrphanedTempFiles(config.localPath, { ignorePatterns });
+        if (swept > 0) {
+          out.debug(`Removed ${swept} orphaned temp file(s) from ${config.localPath}`);
+        }
+
         out.startSpinner('Scanning local files...');
         const localFiles = scanLocalFiles(config.localPath, ignorePatterns, lastState);
         out.debug(`Found ${Object.keys(localFiles).length} local files`);
@@ -409,6 +452,12 @@ Sync modes:
         );
         const remoteFiles = remoteResult.files;
         out.debug(`Found ${Object.keys(remoteFiles).length} remote files`);
+
+        const clearedDenials = pruneDeniedDeletes(lastState, remoteFiles, localFiles);
+        if (clearedDenials.length > 0) {
+          saveSyncState(lastState);
+          out.debug(`Cleared ${clearedDenials.length} stale denied-delete marker(s)`);
+        }
 
         out.startSpinner('Computing diff...');
         const diff = computePushDiff(localFiles, remoteFiles, lastState);
@@ -529,6 +578,10 @@ Sync modes:
 
         const pullOps = pullDiff.downloads.length + pullDiff.deletes.length;
         const pushOps = pushDiff.uploads.length + pushDiff.deletes.length;
+        // The persisted anomaly is what a refusing daemon leaves behind; the
+        // freshly computed one is what this scan sees right now. Report either.
+        const deletionAnomaly = pullDiff.deletionAnomaly ?? lastState.deletionAnomaly;
+        const deniedDeletes = Object.entries(lastState.deniedDeletes ?? {});
 
         if (flags.output === 'json') {
           out.record({
@@ -541,6 +594,10 @@ Sync modes:
             pendingPull: pullOps,
             pendingPush: pushOps,
             lastSyncAt: config.lastSyncAt,
+            ...(deletionAnomaly ? { deletionAnomaly } : {}),
+            ...(deniedDeletes.length > 0
+              ? { deniedDeletes: deniedDeletes.map(([docPath, entry]) => ({ path: docPath, ...entry })) }
+              : {}),
           });
           return;
         }
@@ -568,6 +625,23 @@ Sync modes:
           out.status(formatDiff(pushDiff));
         } else {
           out.status(chalk.green('Push: up to date'));
+        }
+
+        if (deletionAnomaly) {
+          out.status('');
+          out.status(chalk.red(
+            `Deletion guard active since ${deletionAnomaly.detectedAt}: ${deletionAnomaly.reason}`,
+          ));
+          out.status(chalk.red(`  ${MASS_DELETE_OVERRIDE_HINT}`));
+        }
+
+        if (deniedDeletes.length > 0) {
+          out.status('');
+          out.status(chalk.yellow(`${deniedDeletes.length} local deletion(s) the server refused:`));
+          for (const [docPath, entry] of deniedDeletes) {
+            out.status(chalk.yellow(`  - ${docPath} (since ${entry.deniedAt}): ${entry.reason}`));
+          }
+          out.status(chalk.yellow('  These paths are not restored by pull. Ask a vault admin to delete them, or restore the file locally to clear the marker.'));
         }
 
         if (config.lastSyncAt !== '1970-01-01T00:00:00.000Z') {
@@ -732,7 +806,13 @@ Sync modes:
           }
           const content = fs.readFileSync(localFile, 'utf-8');
           assertSyncRoot(config);
-          await client.documents.put(config.vaultId, docPath, content);
+          // Condition the overwrite on the remote bytes this sync last saw. If
+          // the server has moved on again since the conflict was recorded, the
+          // 412 is the right answer — resolving a stale conflict must not
+          // destroy an edit that arrived after it.
+          const knownRemoteHash = state.remote[docPath]?.hash;
+          await client.documents.put(config.vaultId, docPath, content,
+            knownRemoteHash ? { ifMatch: knownRemoteHash } : undefined);
 
           state.local[docPath] = {
             path: docPath,
@@ -750,7 +830,19 @@ Sync modes:
             fs.mkdirSync(dir, { recursive: true });
           }
           assertSyncRoot(config);
-          fs.writeFileSync(resolveWithinSyncRoot(config.localPath, docPath), content, 'utf-8');
+          // The local side is about to be discarded, so keep a copy first —
+          // `--use remote` is a one-way door otherwise, and the file being
+          // resolved is by definition one the user edited.
+          if (fs.existsSync(mutationTarget)) {
+            const localContent = fs.readFileSync(mutationTarget, 'utf-8');
+            if (localContent !== content) {
+              const backup = createConflictFile(config.localPath, docPath, localContent, 'local');
+              out.warn(`Saved the local version as ${backup} before overwriting it.`);
+            }
+          }
+          // Atomic, like every other local write in the sync engine: a crash
+          // mid-write must not leave a truncated document at the target path.
+          atomicWriteFileSync(mutationTarget, content, 'utf-8');
 
           state.local[docPath] = {
             path: docPath,

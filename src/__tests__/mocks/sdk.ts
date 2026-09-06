@@ -19,6 +19,7 @@ export const createSDKMock = () => ({
     getEncrypted: vi.fn(),
     delete: vi.fn(),
     move: vi.fn(),
+    bulkMove: vi.fn(),
     copy: vi.fn(),
     listVersions: vi.fn(),
     getVersion: vi.fn(),

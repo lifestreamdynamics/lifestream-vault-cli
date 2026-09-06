@@ -9,7 +9,8 @@ import { removeDaemonState, removePid, writeDaemonState } from './daemon.js';
 import { getClientAsync } from '../client.js';
 import type { FSWatcher } from 'chokidar';
 import { scanLocalFiles, scanRemoteFiles, computePushDiff, computePullDiff, executePush, executePull, sweepOrphanedTempFiles } from './engine.js';
-import { loadSyncState, saveSyncState } from './state.js';
+import { loadSyncState, saveSyncState, pruneDeniedDeletes } from './state.js';
+import { MASS_DELETE_OVERRIDE_HINT } from './mass-delete-guard.js';
 import { assertSyncRoot } from './root-marker.js';
 import type { SyncConfig } from './types.js';
 
@@ -18,6 +19,27 @@ interface ManagedSync {
   watcher: FSWatcher;
   stopWatcher: () => Promise<void>;
   stopPoller?: () => Promise<void>;
+  stopReconcileTimer?: () => void;
+}
+
+/**
+ * How often each root is fully reconciled while the daemon runs.
+ *
+ * The watcher and poller are event-driven and can both miss work — a chokidar
+ * event dropped by the OS, a save the suppression window swallowed, a poll that
+ * failed and held its ETag. Only a full scan of both sides finds those, and
+ * until this ran once per process start, a missed event stayed missed until the
+ * user restarted the daemon.
+ */
+const DEFAULT_RECONCILE_INTERVAL_MS = 15 * 60_000;
+const MIN_RECONCILE_INTERVAL_MS = 60_000;
+
+/** Read the reconcile interval from the environment, clamped to a sane floor. */
+export function resolveReconcileIntervalMs(raw = process.env.LSVAULT_RECONCILE_INTERVAL_MS): number {
+  if (!raw) return DEFAULT_RECONCILE_INTERVAL_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_RECONCILE_INTERVAL_MS;
+  return Math.max(MIN_RECONCILE_INTERVAL_MS, Math.floor(parsed));
 }
 
 const managed: ManagedSync[] = [];
@@ -45,8 +67,12 @@ async function reconcile(client: Awaited<ReturnType<typeof getClientAsync>>, con
     remote: lastState.remote ?? {}, remoteListEtag: lastState.remoteListEtag,
   });
   const remoteFiles = remoteResult.files;
-  if (remoteResult.listEtag) {
-    lastState.remoteListEtag = remoteResult.listEtag;
+  const clearedDenials = pruneDeniedDeletes(lastState, remoteFiles, localFiles);
+  if (clearedDenials.length > 0) {
+    log(`  Cleared ${clearedDenials.length} stale denied-delete marker(s): ${clearedDenials.slice(0, 5).join(', ')}`);
+  }
+  if (remoteResult.listEtag || clearedDenials.length > 0) {
+    if (remoteResult.listEtag) lastState.remoteListEtag = remoteResult.listEtag;
     saveSyncState(lastState);
   }
 
@@ -93,9 +119,23 @@ async function reconcile(client: Awaited<ReturnType<typeof getClientAsync>>, con
             remoteListEtag: pullState.remoteListEtag,
           })).files
         : remoteFiles;
+      // The daemon never passes `allowMassDelete`: there is no operator present
+      // to confirm, and an unattended process is exactly where an unnoticed
+      // wipe does the most damage.
       const diff = computePullDiff(pullLocalFiles, pullRemoteFiles, pullState);
+      const anomalyState = loadSyncState(config.id);
+      if (diff.deletionAnomaly) {
+        log(`  Refusing ${diff.deletionAnomaly.removedCount} deletion(s): ${diff.deletionAnomaly.reason} ${MASS_DELETE_OVERRIDE_HINT}`);
+        anomalyState.deletionAnomaly = diff.deletionAnomaly;
+        saveSyncState(anomalyState);
+      } else if (anomalyState.deletionAnomaly) {
+        delete anomalyState.deletionAnomaly;
+        saveSyncState(anomalyState);
+        log('  Deletion anomaly cleared: the remote listing is consistent again.');
+      }
       if (diff.downloads.length + diff.deletes.length > 0) {
-        const result = await executePull(client, config, diff);
+        const result = await executePull(client, config, diff, undefined, undefined, undefined,
+          (docPath, conflictFile) => log(`  CONFLICT: kept a local edit of ${docPath} as ${conflictFile} before applying the remote deletion`));
         pulled = result.filesDownloaded;
         deleted += result.filesDeleted;
         for (const err of result.errors) log(`  Pull error: ${err.path}: ${err.error}`);
@@ -140,7 +180,9 @@ export async function runDaemonWorker(options: { installSignalHandlers?: boolean
   for (const config of validConfigs) {
     try {
       assertSyncRoot(config);
-      const swept = sweepOrphanedTempFiles(config.localPath);
+      const swept = sweepOrphanedTempFiles(config.localPath, {
+        ignorePatterns: resolveIgnorePatterns(config.ignore, config.localPath),
+      });
       if (swept > 0) log(`Swept ${swept} orphaned temp file(s) from ${config.localPath}`);
     } catch (err) {
       // The root is re-asserted before every later mutation, so this only
@@ -210,6 +252,26 @@ export async function runDaemonWorker(options: { installSignalHandlers?: boolean
       log(`Reconciliation failed for ${config.id.slice(0, 8)}: ${describe(err)}`);
     }
   }
+
+  // …and then on a timer. The event-driven paths can each drop work silently;
+  // a full scan is the only thing that finds a missed edit, and running it only
+  // at startup meant a long-lived daemon never recovered from one.
+  const reconcileIntervalMs = resolveReconcileIntervalMs();
+  for (const config of validConfigs) {
+    const serialize = serializers.get(config.id);
+    const entry = managed.find(m => m.syncId === config.id);
+    if (!serialize || !entry) continue;
+    const timer = setInterval(() => {
+      void serialize(() => reconcile(client, config)).catch(err => {
+        log(`Periodic reconciliation failed for ${config.id.slice(0, 8)}: ${describe(err)}`);
+      });
+    }, reconcileIntervalMs);
+    // The watcher and poller already hold the event loop open; this timer must
+    // not be what keeps a shutting-down process alive.
+    timer.unref?.();
+    entry.stopReconcileTimer = () => clearInterval(timer);
+  }
+  log(`Periodic reconciliation every ${Math.round(reconcileIntervalMs / 1000)}s`);
 }
 
 async function performShutdown(): Promise<void> {
@@ -217,6 +279,7 @@ async function performShutdown(): Promise<void> {
   const syncs = managed.splice(0);
   const failures: string[] = [];
   await Promise.all(syncs.map(async sync => {
+    sync.stopReconcileTimer?.();
     const results = await Promise.allSettled([
       sync.stopPoller?.() ?? Promise.resolve(),
       sync.stopWatcher(),

@@ -9,6 +9,40 @@ import { promptPassword, promptMfaCode } from '../utils/prompt.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 
+/** Hosts where plaintext HTTP never leaves the machine, so it stays permitted. */
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/**
+ * Validate an operator-supplied API URL *before* anything is persisted or sent.
+ *
+ * The value is used for the password POST that immediately follows and for
+ * every request afterwards, so an `http://` URL pasted from a wiki puts the
+ * password and then the bearer token on the wire in cleartext. Rejecting it
+ * here — rather than after `saveCredentials` — also stops a bad value from
+ * being written into the config where later commands would silently reuse it.
+ *
+ * @returns the normalised URL string.
+ * @throws {Error} with an operator-facing message when the URL is unusable.
+ */
+export function validateApiUrl(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`--api-url must be an absolute URL such as https://vault.example.com (got ${JSON.stringify(raw)}).`);
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error(`--api-url must use https (got ${parsed.protocol.replace(':', '')}).`);
+  }
+  if (parsed.protocol === 'http:' && !LOOPBACK_HOSTNAMES.has(parsed.hostname)) {
+    throw new Error(
+      `--api-url must use https for ${parsed.hostname}: an http URL sends your password and access token in cleartext. `
+      + 'Plain http is accepted only for localhost, 127.0.0.1 and ::1.',
+    );
+  }
+  return parsed.toString().replace(/\/$/, '');
+}
+
 export function registerAuthCommands(program: Command): void {
   const auth = program.command('auth').description('Authentication and credential management');
 
@@ -28,15 +62,23 @@ EXAMPLES
     .action(async (opts: { apiKey?: string; email?: string; password?: string; mfaCode?: string; apiUrl?: string }) => {
       const cm = getCredentialManager();
 
-      // Set API URL first if provided
+      // Set API URL first if provided — validated before it is stored or used.
+      let apiUrlOverride: string | undefined;
       if (opts.apiUrl) {
         try {
-          await cm.saveCredentials({ apiUrl: opts.apiUrl });
-          console.log(chalk.green(`API URL set to ${opts.apiUrl}`));
+          apiUrlOverride = validateApiUrl(opts.apiUrl);
+        } catch (err) {
+          console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+          process.exitCode = 1;
+          return;
+        }
+        try {
+          await cm.saveCredentials({ apiUrl: apiUrlOverride });
+          console.log(chalk.green(`API URL set to ${apiUrlOverride}`));
         } catch {
           const { saveConfig } = await import('../config.js');
-          saveConfig({ apiUrl: opts.apiUrl });
-          console.log(chalk.green(`API URL set to ${opts.apiUrl}`));
+          saveConfig({ apiUrl: apiUrlOverride });
+          console.log(chalk.green(`API URL set to ${apiUrlOverride}`));
         }
       }
 
@@ -50,7 +92,7 @@ EXAMPLES
         }
 
         const config = await loadConfigAsync();
-        const apiUrl = opts.apiUrl ?? config.apiUrl;
+        const apiUrl = apiUrlOverride ?? config.apiUrl;
 
         const spinner = ora('Authenticating...').start();
         try {

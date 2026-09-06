@@ -115,6 +115,10 @@ describe('sync watcher', () => {
     vi.mocked(watch).mockReturnValue(mockWatcher as any);
     mockedFs.lstatSync.mockImplementation(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); });
     mockedFs.existsSync.mockReturnValue(true);
+    // atomicWriteFileSync's open/write/fsync/close/rename sequence.
+    mockedFs.openSync.mockReturnValue(7);
+    mockedFs.writeSync.mockReturnValue(0);
+    mockedFs.statSync.mockImplementation(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); });
     vi.mocked(shouldIgnore).mockReturnValue(false);
     vi.mocked(createConflictFile).mockReturnValue('conflict-path.md');
     vi.mocked(formatConflictLog).mockReturnValue('conflict log');
@@ -169,7 +173,9 @@ describe('sync watcher', () => {
 
     await triggerChange('/home/user/vault/notes/test.md');
 
-    expect(put).toHaveBeenCalledWith('vault-1', 'notes/test.md', '# local');
+    // A confirmed 404 means there is no remote version to guard against, so the
+    // create goes out with no precondition.
+    expect(put).toHaveBeenCalledWith('vault-1', 'notes/test.md', '# local', undefined);
     expect(onError).not.toHaveBeenCalled();
   });
 
@@ -212,7 +218,8 @@ describe('sync watcher', () => {
     await triggerChange('/home/user/vault/notes/doc.md');
 
     expect(put).not.toHaveBeenCalled();
-    expect(mockedFs.writeFileSync).toHaveBeenCalledWith(expect.stringContaining('/home/user/vault/notes/doc.md.tmp.'), remoteContent, 'utf-8');
+    expect(mockedFs.openSync).toHaveBeenCalledWith(expect.stringContaining('/home/user/vault/notes/doc.md.tmp.'), 'wx', expect.any(Number));
+    expect(mockedFs.writeSync).toHaveBeenCalledWith(expect.anything(), remoteContent, 0, 'utf-8');
     expect(mockedFs.renameSync).toHaveBeenCalledWith(expect.stringContaining('.tmp.'), '/home/user/vault/notes/doc.md');
     const saved = mockSaveSyncState.mock.calls.at(-1)?.[0];
     expect(saved?.local['notes/doc.md'].hash).toBe(`hash-${remoteContent.slice(0, 8)}`);
@@ -309,15 +316,78 @@ describe('sync watcher', () => {
   });
 
   it('suppresses a poller-originated local write from being uploaded again', async () => {
+    const pulled = '# pulled from remote';
     const put = vi.fn();
+    mockedFs.readFileSync.mockReturnValue(pulled as any);
     const { markLocalWrite } = createWatcher({ documents: { put } } as any, makeConfig(), {
       ignorePatterns: [], debounceMs: 0,
     });
-    markLocalWrite('notes/pulled.md');
+    // The mark carries the bytes the poller wrote; the file still holds them.
+    markLocalWrite('notes/pulled.md', `hash-${pulled.slice(0, 8)}`);
 
     await triggerChange('/home/user/vault/notes/pulled.md');
 
     expect(put).not.toHaveBeenCalled();
+  });
+
+  it('does NOT suppress a user edit that lands inside the same TTL window', async () => {
+    // The clock-only guard silently dropped this event: state.local kept the
+    // pulled hash, and the next remote change overwrote the user's save with no
+    // conflict copy. The file was simply gone.
+    const userEdit = '# my unsaved work';
+    mockLoadSyncState.mockReturnValue({
+      syncId: 'sync-1', local: {},
+      remote: { 'notes/pulled.md': { path: 'notes/pulled.md', hash: 'hash-# pulled', mtime: '', size: 10 } },
+      updatedAt: '',
+    });
+    mockedFs.readFileSync.mockReturnValue(userEdit as any);
+    const get = vi.fn().mockResolvedValue({ notModified: true });
+    const put = vi.fn().mockResolvedValue({});
+    const { markLocalWrite } = createWatcher({ documents: { get, put } } as any, makeConfig({ mode: 'sync' }), {
+      ignorePatterns: [], debounceMs: 0,
+    });
+    // The poller wrote different bytes moments ago; the user has since saved.
+    markLocalWrite('notes/pulled.md', 'hash-# pulled');
+
+    await triggerChange('/home/user/vault/notes/pulled.md');
+
+    expect(put).toHaveBeenCalledWith('vault-1', 'notes/pulled.md', userEdit, { ifMatch: 'hash-# pulled' });
+  });
+
+  it('suppresses a poller-originated delete but not the user\'s own', async () => {
+    const deleteRemote = vi.fn().mockResolvedValue(undefined);
+    const get = vi.fn().mockResolvedValue({ notModified: true });
+    const { markLocalWrite } = createWatcher(
+      { documents: { get, delete: deleteRemote } } as any,
+      makeConfig({ mode: 'sync' }),
+      { ignorePatterns: [], debounceMs: 0 },
+    );
+    // A deletion is marked with a null hash — there is no content to compare.
+    markLocalWrite('notes/gone.md', null);
+
+    await triggerUnlink('/home/user/vault/notes/gone.md');
+    expect(deleteRemote).not.toHaveBeenCalled();
+
+    // A different path was never marked, so the user's own delete propagates.
+    await triggerUnlink('/home/user/vault/notes/mine.md');
+    expect(deleteRemote).toHaveBeenCalledWith('vault-1', 'notes/mine.md', undefined);
+  });
+
+  it('ignores a change event for a file that vanished before the handler ran', async () => {
+    // The unlink handler owns that case; reporting an ENOENT here would be noise.
+    mockedFs.readFileSync.mockImplementation(() => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    const put = vi.fn();
+    const onError = vi.fn();
+    createWatcher({ documents: { put } } as any, makeConfig({ mode: 'push' }), {
+      ignorePatterns: [], debounceMs: 0, onError,
+    });
+
+    await triggerChange('/home/user/vault/notes/vanished.md');
+
+    expect(put).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it('serializes operations that share the sync-state file', async () => {
@@ -471,8 +541,9 @@ describe('sync watcher', () => {
       'notes/test.md',
       { ifNoneMatch: `"${lastRemoteHash}"` },
     );
-    // 304 → no conflict → push proceeds
-    expect(mockPut).toHaveBeenCalledWith('vault-1', 'notes/test.md', localContent);
+    // 304 → no conflict → push proceeds, conditioned on the hash the 304 just
+    // confirmed the server still holds.
+    expect(mockPut).toHaveBeenCalledWith('vault-1', 'notes/test.md', localContent, { ifMatch: lastRemoteHash });
   });
 
   it('conflict-check: preflights even with no recorded remote state', async () => {
@@ -494,8 +565,9 @@ describe('sync watcher', () => {
 
     // Unconditional GET: no baseline hash to send.
     expect(get).toHaveBeenCalledWith('vault-1', 'notes/test.md', {});
-    // A confirmed 404 means nothing to clobber, so the create proceeds.
-    expect(put).toHaveBeenCalledWith('vault-1', 'notes/test.md', '# local edit');
+    // A confirmed 404 means nothing to clobber, so the create proceeds — and
+    // with no observed remote hash, unconditionally.
+    expect(put).toHaveBeenCalledWith('vault-1', 'notes/test.md', '# local edit', undefined);
   });
 
   it('conflict-check: does not blind-write over remote content it has no record of', async () => {
@@ -576,7 +648,7 @@ describe('sync watcher', () => {
 
     expect(get).toHaveBeenCalledWith('vault-1', 'notes/deleted.md', { ifNoneMatch: '"old"' });
     expect(deleteRemote).not.toHaveBeenCalled();
-    expect(mockedFs.writeFileSync).toHaveBeenCalledWith(expect.stringContaining('.tmp.'), remoteContent, 'utf-8');
+    expect(mockedFs.writeSync).toHaveBeenCalledWith(expect.anything(), remoteContent, 0, 'utf-8');
     expect(mockedFs.renameSync).toHaveBeenCalledWith(expect.stringContaining('.tmp.'), '/home/user/vault/notes/deleted.md');
     expect(mockSaveSyncState).toHaveBeenCalled();
   });
@@ -613,8 +685,9 @@ describe('sync watcher', () => {
 
     // get() called with ifNoneMatch
     expect(mockGet).toHaveBeenCalledWith('vault-1', 'notes/same.md', { ifNoneMatch: `"${hash}"` });
-    // No conflict detected (hash matches) — push proceeds
-    expect(mockPut).toHaveBeenCalledWith('vault-1', 'notes/same.md', localContent);
+    // No conflict detected (hash matches) — push proceeds, guarded by the hash
+    // this very request observed.
+    expect(mockPut).toHaveBeenCalledWith('vault-1', 'notes/same.md', localContent, { ifMatch: hash });
   });
 
   it('conflict-check: 200 + different hash — conflict handler invoked', async () => {

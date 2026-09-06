@@ -43,27 +43,39 @@ export function isNotFoundError(error: unknown): boolean {
   return error instanceof NotFoundError;
 }
 
-/** TTL set to prevent sync loops — files written by sync are ignored for 5s */
+/**
+ * Remembers what sync itself just wrote, so chokidar's event for that write is
+ * not mistaken for a user edit.
+ *
+ * A hit requires BOTH that the mark is inside the TTL *and* that the file still
+ * holds the bytes sync wrote. Suppressing on the clock alone silently discarded
+ * a real edit: the poller writes at T=0, the user saves at T=1.5s, the event is
+ * dropped, `state.local` keeps the pulled hash, and the next remote change
+ * overwrites the user's work with no conflict copy — the file is simply gone.
+ *
+ * A deletion is marked with a `null` hash, which matches only the delete-side
+ * probe; a file recreated at the same path is a genuine event.
+ */
 class RecentlyWrittenSet {
-  private map = new Map<string, number>();
+  private map = new Map<string, { at: number; hash: string | null }>();
   private ttlMs: number;
 
   constructor(ttlMs = 5000) {
     this.ttlMs = ttlMs;
   }
 
-  add(filePath: string): void {
-    this.map.set(filePath, Date.now());
+  add(filePath: string, hash: string | null): void {
+    this.map.set(filePath, { at: Date.now(), hash });
   }
 
-  has(filePath: string): boolean {
-    const ts = this.map.get(filePath);
-    if (!ts) return false;
-    if (Date.now() - ts > this.ttlMs) {
+  has(filePath: string, hash: string | null): boolean {
+    const mark = this.map.get(filePath);
+    if (!mark) return false;
+    if (Date.now() - mark.at > this.ttlMs) {
       this.map.delete(filePath);
       return false;
     }
-    return true;
+    return mark.hash === hash;
   }
 
   clear(): void {
@@ -82,8 +94,12 @@ export function createWatcher(
 ): {
   watcher: FSWatcher;
   ready: Promise<void>;
-  /** Mark a poller-originated local mutation so chokidar will not re-upload it. */
-  markLocalWrite: (docPath: string) => void;
+  /**
+   * Mark a poller-originated local mutation so chokidar will not re-upload it.
+   * `contentHash` is the SHA-256 of the bytes written, or null for a deletion;
+   * an event whose content no longer matches is a user edit and is processed.
+   */
+  markLocalWrite: (docPath: string, contentHash: string | null) => void;
   /** Run a state/file operation after earlier watcher or poller operations finish. */
   serialize: SyncOperationSerializer;
   stop: () => Promise<void>;
@@ -109,7 +125,8 @@ export function createWatcher(
     operationTail = run.then(() => undefined, () => undefined);
     return run;
   };
-  const markLocalWrite = (docPath: string): void => recentlyWritten.add(docPath);
+  const markLocalWrite = (docPath: string, contentHash: string | null): void =>
+    recentlyWritten.add(docPath, contentHash);
 
   const log = (msg: string) => onLog?.(`[sync:${config.id.slice(0, 8)}] ${msg}`);
 
@@ -124,7 +141,7 @@ export function createWatcher(
     const target = resolveWithinSyncRoot(config.localPath, docPath);
     const dir = path.dirname(target);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    recentlyWritten.add(docPath);
+    recentlyWritten.add(docPath, hashFileContent(content));
     atomicWriteFileSync(target, content, 'utf-8');
   }
 
@@ -160,7 +177,10 @@ export function createWatcher(
       assertSyncRoot(config);
       conflictFile = createConflictFile(config.localPath, docPath, remoteContent, 'remote');
       assertSyncRoot(config);
-      await client.documents.put(config.vaultId, docPath, localContent);
+      // Conditional on the remote bytes this handler just read, so a third
+      // client writing in between is refused rather than silently overwritten.
+      await client.documents.put(config.vaultId, docPath, localContent,
+        remoteHash ? { ifMatch: remoteHash } : undefined);
       log(`Conflict: ${docPath} — used local, saved remote as ${conflictFile}`);
     } else {
       assertSyncRoot(config);
@@ -185,19 +205,35 @@ export function createWatcher(
 
     if (shouldIgnore(docPath, ignorePatterns)) return;
     if (!docPath.endsWith('.md')) return;
-    if (recentlyWritten.has(docPath)) {
-      log(`Skipping ${docPath} (recently written by sync)`);
-      return;
-    }
 
     try {
       assertSyncRoot(config);
       const localFile = resolveWithinSyncRoot(config.localPath, docPath);
-      const content = fs.readFileSync(localFile, 'utf-8');
+      let content: string;
+      try {
+        content = fs.readFileSync(localFile, 'utf-8');
+      } catch (readErr) {
+        // The file disappeared between the event and this handler. The unlink
+        // event covers that case; there is nothing to push here.
+        if ((readErr as NodeJS.ErrnoException).code === 'ENOENT') return;
+        throw readErr;
+      }
       const localHash = hashFileContent(content);
+      // The suppression check needs the *content*, so it can only run once the
+      // file has been read: a same-path event whose bytes differ from what sync
+      // wrote is a user edit that must not be discarded.
+      if (recentlyWritten.has(docPath, localHash)) {
+        log(`Skipping ${docPath} (recently written by sync)`);
+        return;
+      }
       const state = loadSyncState(config.id);
       const lastLocal = state.local[docPath];
       const lastRemote = state.remote[docPath];
+
+      // The remote hash this push may assert as an If-Match precondition. Only
+      // ever set from an observation made moments ago in this same handler; in
+      // push mode there is no preflight, so the write stays unconditional.
+      let expectedRemoteHash: string | undefined;
 
       // Check remote for conflicts in bidirectional mode.
       // This used to be gated on `lastRemote` being present, which skipped the check in
@@ -243,8 +279,12 @@ export function createWatcher(
               return;
             }
             // 200 + matching hash: rare list/cache mismatch — fall through to push.
+            expectedRemoteHash = remoteHash;
+          } else {
+            // 304: remote unchanged since last sync — it is still at the hash we
+            // conditioned the GET on. No conflict possible; fall through to push.
+            expectedRemoteHash = lastRemote?.hash;
           }
-          // 304: remote unchanged since last sync — no conflict possible. Fall through to push.
         } catch (err) {
           // A confirmed 404 means the remote side has no competing content,
           // so creating it is safe. Authentication, timeout, and server
@@ -256,7 +296,8 @@ export function createWatcher(
       // No conflict — push the change
       if (config.mode === 'push' || config.mode === 'sync') {
         assertSyncRoot(config);
-        await client.documents.put(config.vaultId, docPath, content);
+        await client.documents.put(config.vaultId, docPath, content,
+          expectedRemoteHash ? { ifMatch: expectedRemoteHash } : undefined);
         log(`Pushed: ${docPath}`);
 
         state.local[docPath] = { path: docPath, hash: localHash, mtime: new Date().toISOString(), size: Buffer.byteLength(content) };
@@ -273,7 +314,9 @@ export function createWatcher(
     const docPath = toDocPath(absPath);
     if (shouldIgnore(docPath, ignorePatterns)) return;
     if (!docPath.endsWith('.md')) return;
-    if (recentlyWritten.has(docPath)) return;
+    // A deletion the poller performed is marked with a null hash; a user's own
+    // deletion of the same path has no mark and is processed normally.
+    if (recentlyWritten.has(docPath, null)) return;
 
     try {
       if (config.mode === 'push' || config.mode === 'sync') {
@@ -283,6 +326,9 @@ export function createWatcher(
         const state = loadSyncState(config.id);
         const lastRemote = state.remote[docPath];
         let remoteAlreadyMissing = false;
+        // Remote hash to assert as an If-Match on the DELETE, set only from an
+        // observation this handler just made.
+        let expectedRemoteHash: string | undefined;
         // As on the write path, the preflight must run even with no recorded shared
         // state — otherwise a local delete of a file we never synced issues an
         // unconditional remote DELETE against content we have never seen.
@@ -294,10 +340,12 @@ export function createWatcher(
             if (!result.notModified) {
               // The remote changed after the last shared state while the local
               // file was deleted. Preserve the losing side, then apply the
-              // configured conflict policy. There is no conditional DELETE in
-              // the SDK, so this preflight is the strongest available guard.
+              // configured conflict policy. The DELETE below is additionally
+              // conditioned on the hash read here, so a write landing between
+              // this preflight and the delete is refused rather than lost.
               const remoteContent = result.content;
               const remoteHash = hashFileContent(remoteContent);
+              expectedRemoteHash = remoteHash;
               if (!lastRemote || remoteHash !== lastRemote.hash) {
                 const localDeletionState = {
                   path: docPath,
@@ -330,6 +378,9 @@ export function createWatcher(
                 onConflictLog?.(formatConflictLog(docPath, resolution, conflictFile));
                 log(`Conflict: ${docPath} — kept local deletion, saved remote as ${conflictFile}`);
               }
+            } else {
+              // 304: the remote is still at the hash we conditioned the GET on.
+              expectedRemoteHash = lastRemote?.hash;
             }
           } catch (err) {
             // If another client already deleted the document, local and remote
@@ -341,7 +392,8 @@ export function createWatcher(
 
         if (!remoteAlreadyMissing) {
           assertSyncRoot(config);
-          await client.documents.delete(config.vaultId, docPath);
+          await client.documents.delete(config.vaultId, docPath,
+            expectedRemoteHash ? { ifMatch: expectedRemoteHash } : undefined);
           log(`Deleted remote: ${docPath}`);
         }
 

@@ -74,12 +74,23 @@ describe('sync config', () => {
 
     it('writes JSON to a temp file and renames it over syncs.json (mode 0600)', () => {
       mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.openSync.mockReturnValue(5);
       const configs = [makeSyncConfig()];
       saveSyncConfigs(configs);
-      expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
+      expect(mockedFs.openSync).toHaveBeenCalledWith(
         expect.stringMatching(/syncs\.json\.tmp\.[0-9a-f]{8}$/),
+        'wx',
+        0o600,
+      );
+      expect(mockedFs.writeSync).toHaveBeenCalledWith(
+        5,
         expect.stringContaining('"vaultId": "vault-1"'),
-        { encoding: 'utf-8', mode: 0o600 },
+        0,
+        'utf-8',
+      );
+      expect(mockedFs.chmodSync).toHaveBeenCalledWith(
+        expect.stringMatching(/syncs\.json\.tmp\.[0-9a-f]{8}$/),
+        0o600,
       );
       expect(mockedFs.renameSync).toHaveBeenCalledWith(
         expect.stringMatching(/syncs\.json\.tmp\.[0-9a-f]{8}$/),
@@ -89,6 +100,7 @@ describe('sync config', () => {
 
     it('removes the temp file and rethrows when the rename fails', () => {
       mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.openSync.mockReturnValue(5);
       mockedFs.renameSync.mockImplementation(() => { throw new Error('EXDEV'); });
       expect(() => saveSyncConfigs([])).toThrow('EXDEV');
       expect(mockedFs.unlinkSync).toHaveBeenCalledWith(expect.stringMatching(/syncs\.json\.tmp\./));
@@ -183,7 +195,11 @@ describe('sync config', () => {
     it('should persist the new config', () => {
       mockedFs.existsSync.mockReturnValue(false);
       createSyncConfig({ vaultId: 'vault-1', localPath: '/tmp/test' });
-      expect(mockedFs.writeFileSync).toHaveBeenCalled();
+      expect(mockedFs.writeSync).toHaveBeenCalled();
+      expect(mockedFs.renameSync).toHaveBeenCalledWith(
+        expect.stringMatching(/syncs\.json\.tmp\./),
+        expect.stringMatching(/syncs\.json$/),
+      );
     });
 
     it('writes the root marker before persisting a marked configuration', () => {
@@ -193,6 +209,7 @@ describe('sync config', () => {
       });
       mockedFs.readFileSync.mockReturnValue('[]');
       mockedFs.statSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+      mockedFs.openSync.mockReturnValue(5);
 
       const config = createSyncConfig(
         { vaultId: 'vault-1', localPath: '/home/user/vault' },
@@ -200,11 +217,16 @@ describe('sync config', () => {
       );
 
       expect(config.rootMarkerVersion).toBe(1);
-      const writes = mockedFs.writeFileSync.mock.calls;
-      expect(String(writes[0][0])).toContain('.lsvault-sync-root');
-      expect(writes[0][2]).toEqual(expect.objectContaining({ flag: 'wx', mode: 0o600 }));
-      expect(String(writes[1][0])).toContain('syncs.json');
-      expect(String(writes[1][1])).toContain('"rootMarkerVersion": 1');
+      // The marker still goes through writeFileSync (exclusive create); the
+      // configuration list goes through the atomic open/write/rename path.
+      const markerWrites = mockedFs.writeFileSync.mock.calls;
+      expect(String(markerWrites[0][0])).toContain('.lsvault-sync-root');
+      expect(markerWrites[0][2]).toEqual(expect.objectContaining({ flag: 'wx', mode: 0o600 }));
+      const configWrites = mockedFs.writeSync.mock.calls;
+      expect(String(configWrites[0][1])).toContain('"rootMarkerVersion": 1');
+      expect(String(mockedFs.renameSync.mock.calls[0][1])).toContain('syncs.json');
+      // Ordering matters: the marker must exist before the config references it.
+      expect(mockedFs.writeFileSync).toHaveBeenCalledBefore(mockedFs.writeSync as never);
     });
 
     it('refuses to mark a directory that already carries a marker', () => {
@@ -238,6 +260,8 @@ describe('sync config', () => {
         if (String(target).endsWith('.lsvault-sync-root')) { markerContent = String(content); return; }
         throw new Error('disk full');
       });
+      mockedFs.openSync.mockReturnValue(5);
+      mockedFs.writeSync.mockImplementation(() => { throw new Error('disk full'); });
 
       expect(() => createSyncConfig(
         { vaultId: 'vault-1', localPath: '/home/user/vault' },
@@ -253,6 +277,7 @@ describe('sync config', () => {
       mockedFs.existsSync.mockReturnValue(true);
       mockedFs.readFileSync.mockReturnValue(JSON.stringify([legacy]));
       mockedFs.statSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+      mockedFs.openSync.mockReturnValue(5);
 
       const trusted = trustSyncRoot(legacy.id);
 
@@ -262,10 +287,15 @@ describe('sync config', () => {
         expect.stringContaining('"syncId": "sync-1"'),
         expect.objectContaining({ flag: 'wx', mode: 0o600 }),
       );
-      expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
-        expect.stringMatching(/syncs\.json\.tmp\./),
+      expect(mockedFs.writeSync).toHaveBeenCalledWith(
+        5,
         expect.stringContaining('"rootMarkerVersion": 1'),
-        { encoding: 'utf-8', mode: 0o600 },
+        0,
+        'utf-8',
+      );
+      expect(mockedFs.renameSync).toHaveBeenCalledWith(
+        expect.stringMatching(/syncs\.json\.tmp\./),
+        expect.stringMatching(/syncs\.json$/),
       );
     });
 
@@ -313,6 +343,8 @@ describe('sync config', () => {
         if (String(target).endsWith('.lsvault-sync-root')) { markerContent = String(content); return; }
         throw new Error('disk full');
       });
+      mockedFs.openSync.mockReturnValue(5);
+      mockedFs.writeSync.mockImplementation(() => { throw new Error('disk full'); });
 
       expect(() => trustSyncRoot(legacy.id)).toThrow('disk full');
       expect(mockedFs.unlinkSync).toHaveBeenCalledWith(expect.stringMatching(/\.lsvault-sync-root$/));
@@ -326,10 +358,10 @@ describe('sync config', () => {
       mockedFs.readFileSync.mockReturnValue(JSON.stringify(configs));
 
       expect(deleteSyncConfig('sync-1')).toBe(true);
-      expect(mockedFs.writeFileSync).toHaveBeenCalled();
+      expect(mockedFs.writeSync).toHaveBeenCalled();
 
       // Verify the written content doesn't include the deleted config
-      const writtenContent = mockedFs.writeFileSync.mock.calls[0][1] as string;
+      const writtenContent = mockedFs.writeSync.mock.calls[0][1] as string;
       const written = JSON.parse(writtenContent);
       expect(written).toHaveLength(1);
       expect(written[0].id).toBe('sync-2');
@@ -351,7 +383,7 @@ describe('sync config', () => {
       const ts = '2025-06-15T10:00:00.000Z';
       updateLastSync('sync-1', ts);
 
-      const writtenContent = mockedFs.writeFileSync.mock.calls[0][1] as string;
+      const writtenContent = mockedFs.writeSync.mock.calls[0][1] as string;
       const written = JSON.parse(writtenContent);
       expect(written[0].lastSyncAt).toBe(ts);
     });

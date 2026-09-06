@@ -3,6 +3,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { NotFoundError } from '@lifestreamdynamics/vault-sdk';
 import type { LifestreamVaultClient, SyncListKnownState, DocumentGetResult, DocumentWithContent } from '@lifestreamdynamics/vault-sdk';
 import type { SyncConfig, SyncState, FileState } from './types.js';
 import { loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from './state.js';
@@ -12,6 +13,7 @@ import { computePullDiff, computePushDiff, type SyncDiff, type SyncDiffEntry } f
 import { atomicWriteFileSync, sweepOrphanedTempFiles } from './atomic-write.js';
 import { assertSyncRoot } from './root-marker.js';
 import { resolveWithinSyncRoot } from './safe-path.js';
+import { assertNoPathCollisions } from './path-collision.js';
 import { createConflictFile } from './conflict.js';
 
 export { sweepOrphanedTempFiles };
@@ -176,7 +178,21 @@ export async function scanRemoteFiles(
     }
   }
 
+  assertNoPathCollisions(Object.keys(files));
+
   return { files, listEtag: sync.listEtag, vaultUnchanged: false };
+}
+
+/**
+ * True when a hash is usable as an `If-Match` precondition.
+ *
+ * `scanRemoteFiles` falls back to an empty hash for a path the server listed as
+ * unchanged but that the persisted state has no entry for. `If-Match: ""` never
+ * matches anything, so sending it would turn every such write into an
+ * unconditional 412.
+ */
+function hasPrecondition(hash: string | undefined): hash is string {
+  return hash !== undefined && hash !== '';
 }
 
 /**
@@ -357,9 +373,20 @@ async function executeSyncOperation(
       result.filesDeleted++;
       delete state.local[entry.path];
       delete state.remote[entry.path];
+      if (state.deniedDeletes) delete state.deniedDeletes[entry.path];
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       result.errors.push({ path: entry.path, error: message, retryable: isRetryableSyncError(err) });
+      if (getStatusCode(err) === 403 && entry.direction === 'upload') {
+        // A remote delete the server will keep refusing. Recorded so the pull
+        // phase stops "restoring" the file the user deleted — without this the
+        // two phases fight each other on every reconciliation, forever.
+        state.deniedDeletes ??= {};
+        state.deniedDeletes[entry.path] = {
+          deniedAt: state.deniedDeletes[entry.path]?.deniedAt ?? new Date().toISOString(),
+          reason: message,
+        };
+      }
       if (isQuotaError(message)) {
         stopSubmitting = true;
         stopReason = 'a quota error';
@@ -417,7 +444,7 @@ export async function executePull(
       // server's current hash), which would send the 304 branch into a
       // readFileSync on a non-existent path (ENOENT).  Guarding on existsSync
       // also makes the readFileSync in the 304 branch provably safe.
-      const useConditional = entry.remoteHash !== undefined && fs.existsSync(localFile);
+      const useConditional = hasPrecondition(entry.remoteHash) && fs.existsSync(localFile);
 
       const result = await retryWithBackoff<DocumentGetResult | DocumentWithContent>(
         () => useConditional
@@ -456,9 +483,17 @@ export async function executePull(
       // If the user edited it locally since the last sync, unlinking here
       // destroys the only copy. Preserve it as a conflict file first, the same
       // way the remote poller does for this exact case.
+      //
+      // The backup is skipped only when the file provably still holds the bytes
+      // of the last successful sync. An *absent* last-known hash is not that
+      // proof — it is the case where we know least — and used to be the exact
+      // condition under which the backup was skipped. The poller has always
+      // treated a missing `state.local` entry as "changed" (remote-poller.ts,
+      // the removed-document branch); this makes the engine agree.
       const lastLocalHash = pullState.local[entry.path]?.hash;
       const localContent = fs.readFileSync(localFile, 'utf-8');
-      if (lastLocalHash !== undefined && hashFileContent(localContent) !== lastLocalHash) {
+      const provablyUnchanged = lastLocalHash !== undefined && hashFileContent(localContent) === lastLocalHash;
+      if (!provablyUnchanged) {
         const conflictFile = createConflictFile(cfg.localPath, entry.path, localContent, 'local');
         onConflict?.(entry.path, conflictFile);
       }
@@ -497,7 +532,7 @@ export async function executePush(
       // `remoteHash` is undefined for a create, where there is nothing to guard.
       try {
         await retryWithBackoff(
-          () => entry.remoteHash !== undefined
+          () => hasPrecondition(entry.remoteHash)
             ? client.documents.put(cfg.vaultId, entry.path, content, { ifMatch: entry.remoteHash })
             : client.documents.put(cfg.vaultId, entry.path, content),
           throttleCallback ? () => throttleCallback(entry.path) : undefined,
@@ -514,10 +549,20 @@ export async function executePush(
       try {
         // Same precondition on the delete: the preflight-to-delete window is
         // exactly where a concurrent remote edit would otherwise be destroyed.
-        await retryWithBackoff(() => entry.remoteHash !== undefined
+        await retryWithBackoff(() => hasPrecondition(entry.remoteHash)
           ? client.documents.delete(cfg.vaultId, entry.path, { ifMatch: entry.remoteHash })
           : client.documents.delete(cfg.vaultId, entry.path));
       } catch (err) {
+        // The server's If-Match assertion answers 412 for BOTH "the document
+        // moved on" and "the document is already gone", distinguishable only by
+        // message text we must not parse. One follow-up GET settles it: a 404
+        // means the desired end state is already reached, so report success and
+        // let the caller drop the path from its state. Without this a document
+        // deleted by someone else wedges every future push and, through
+        // `result.failed`, every future pull in the daemon.
+        if (getStatusCode(err) === 412 && await remoteDocumentIsAbsent(client, cfg.vaultId, entry.path)) {
+          return;
+        }
         const precondition = rewritePreconditionFailure(err, entry.path, 'delete');
         if (precondition !== err) throw precondition;
         if (getStatusCode(err) === 403) {
@@ -530,6 +575,26 @@ export async function executePush(
       }
     },
   }, onProgress, concurrency, onThrottle);
+}
+
+/**
+ * Probe whether a document is already absent from the remote vault.
+ *
+ * Only a structured SDK `NotFoundError` counts. Any other outcome — a 200, an
+ * auth failure, a network error — leaves the remote state unknown, and the
+ * original precondition failure must stand.
+ */
+async function remoteDocumentIsAbsent(
+  client: LifestreamVaultClient,
+  vaultId: string,
+  docPath: string,
+): Promise<boolean> {
+  try {
+    await client.documents.get(vaultId, docPath);
+    return false;
+  } catch (probeErr) {
+    return probeErr instanceof NotFoundError;
+  }
 }
 
 /**

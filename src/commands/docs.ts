@@ -7,6 +7,31 @@ import { getCredentialManager } from '../config.js';
 import { confirmAction } from '../utils/confirm.js';
 import { resolveVaultId } from '../utils/resolve-vault.js';
 
+/** Structured HTTP status attached by the SDK (`statusCode`) or a fetch-style `status`. */
+function getStatusCode(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const code = (err as { statusCode?: unknown }).statusCode ?? (err as { status?: unknown }).status;
+  return typeof code === 'number' ? code : undefined;
+}
+
+/**
+ * Turn a 403 on a move into a message that says what to do about it.
+ *
+ * Moving or renaming a document deletes it from the source path, so the REST
+ * routes are owner/admin-only in a team vault — matching WebDAV MOVE. A bare
+ * "Forbidden" leaves an editor guessing whether the vault, the document, or
+ * their token is at fault; the copy-then-delete alternative is the actionable
+ * part.
+ */
+function explainMovePermission(err: unknown, subject: string): unknown {
+  if (getStatusCode(err) !== 403) return err;
+  return new Error(
+    `Moving ${subject} was forbidden (403). Renaming or moving documents in a team vault requires the owner or admin role `
+    + '(a move deletes the source path); nothing was changed. Ask a vault admin to move it, or use `lsvault docs bulk-copy` '
+    + 'and have an admin remove the original.',
+  );
+}
+
 export function registerDocCommands(program: Command): void {
   const docs = program.command('docs').description('Read, write, move, and delete documents in a vault');
 
@@ -243,7 +268,7 @@ EXAMPLES
           destination: result.destination,
         });
       } catch (err) {
-        handleError(out, err, 'Failed to move document');
+        handleError(out, explainMovePermission(err, `${source} to ${dest}`), 'Failed to move document');
       }
     });
 
@@ -271,7 +296,7 @@ EXAMPLES
           }
         }
       } catch (err) {
-        handleError(out, err, 'Failed to bulk move documents');
+        handleError(out, explainMovePermission(err, 'these documents'), 'Failed to bulk move documents');
       }
     });
 

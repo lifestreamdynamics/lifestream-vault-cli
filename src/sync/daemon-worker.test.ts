@@ -40,7 +40,12 @@ vi.mock('./engine.js', () => ({
   executePull: mockExecutePull,
   sweepOrphanedTempFiles: mockSweepOrphanedTempFiles,
 }));
-vi.mock('./state.js', () => ({ loadSyncState: mockLoadSyncState, saveSyncState: vi.fn() }));
+const mockPruneDeniedDeletes = vi.fn((): string[] => []);
+vi.mock('./state.js', () => ({
+  loadSyncState: mockLoadSyncState,
+  saveSyncState: vi.fn(),
+  pruneDeniedDeletes: mockPruneDeniedDeletes,
+}));
 vi.mock('@lifestreamdynamics/vault-sdk', () => ({
   LifestreamVaultClient: vi.fn(function() { return {}; }),
 }));
@@ -155,6 +160,99 @@ describe('daemon-worker reconciliation', () => {
 
     // A 403 would recur on every reconciliation; it must not freeze pulls.
     expect(mockComputePullDiff).toHaveBeenCalled();
+  });
+
+  describe('periodic reconciliation', () => {
+    it('defaults to 15 minutes and clamps a too-small override', async () => {
+      const { resolveReconcileIntervalMs } = await import('./daemon-worker.js');
+      expect(resolveReconcileIntervalMs(undefined)).toBe(15 * 60_000);
+      expect(resolveReconcileIntervalMs('')).toBe(15 * 60_000);
+      expect(resolveReconcileIntervalMs('not-a-number')).toBe(15 * 60_000);
+      expect(resolveReconcileIntervalMs('0')).toBe(15 * 60_000);
+      // A too-eager interval would have every root rescanning constantly.
+      expect(resolveReconcileIntervalMs('1000')).toBe(60_000);
+      expect(resolveReconcileIntervalMs('300000')).toBe(300_000);
+    });
+
+    it('re-runs a full reconciliation on a timer, not only at startup', async () => {
+      // The watcher and poller can each drop work silently — an OS event lost,
+      // a poll that failed and held its ETag. Until this ran on an interval, a
+      // long-lived daemon never recovered from one without a restart.
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        const config = makeConfig({ mode: 'pull' });
+        mockLoadSyncConfigs.mockReturnValue([config]);
+
+        const { runDaemonWorker } = await import('./daemon-worker.js');
+        await runDaemonWorker({ installSignalHandlers: false });
+
+        expect(mockScanRemoteFiles).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(15 * 60_000);
+        expect(mockScanRemoteFiles).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it('wires an onConflict reporter into executePull so preserved edits are visible', async () => {
+    // The 7th argument was never passed, so every conflict copy the engine made
+    // while applying a remote deletion was invisible to the operator.
+    const config = makeConfig({ mode: 'pull' });
+    mockLoadSyncConfigs.mockReturnValue([config]);
+    mockComputePullDiff.mockReturnValue({
+      uploads: [], downloads: [],
+      deletes: [{ path: 'notes.md', action: 'delete', direction: 'download', sizeBytes: 0, reason: 'Deleted from remote' }],
+      totalBytes: 0,
+    });
+
+    const { runDaemonWorker } = await import('./daemon-worker.js');
+    await runDaemonWorker({ installSignalHandlers: false });
+
+    const pullArgs = mockExecutePull.mock.calls[0] as unknown[];
+    const onConflict = pullArgs[6] as ((docPath: string, conflictFile: string) => void) | undefined;
+    expect(typeof onConflict).toBe('function');
+    onConflict?.('notes.md', 'notes.conflicted.local.md');
+    const logged = mockStdoutWrite.mock.calls.map(c => String(c[0])).join('');
+    expect(logged).toContain('notes.conflicted.local.md');
+  });
+
+  it('records a refused deletion batch in the sync state and never overrides it', async () => {
+    const config = makeConfig({ mode: 'pull' });
+    mockLoadSyncConfigs.mockReturnValue([config]);
+    const anomaly = {
+      detectedAt: '2026-09-06T00:00:00.000Z', removedCount: 50, knownCount: 50,
+      reason: 'the remote listing no longer contains any of the 50 document(s)',
+    };
+    mockComputePullDiff.mockReturnValue({
+      uploads: [], downloads: [], deletes: [], totalBytes: 0, deletionAnomaly: anomaly,
+    });
+    const state = { syncId: 'test', local: {}, remote: {}, updatedAt: '' } as Record<string, unknown>;
+    mockLoadSyncState.mockReturnValue(state as never);
+
+    const { runDaemonWorker } = await import('./daemon-worker.js');
+    await runDaemonWorker({ installSignalHandlers: false });
+
+    // The daemon must never pass allowMassDelete — there is no operator to confirm.
+    expect(mockComputePullDiff).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything());
+    expect(state.deletionAnomaly).toEqual(anomaly);
+    const logged = mockStdoutWrite.mock.calls.map(c => String(c[0])).join('');
+    expect(logged).toContain('Refusing 50 deletion(s)');
+  });
+
+  it('clears a recorded anomaly once the listing is consistent again', async () => {
+    const config = makeConfig({ mode: 'pull' });
+    mockLoadSyncConfigs.mockReturnValue([config]);
+    const state = {
+      syncId: 'test', local: {}, remote: {}, updatedAt: '',
+      deletionAnomaly: { detectedAt: 'x', removedCount: 1, knownCount: 1, reason: 'stale' },
+    } as Record<string, unknown>;
+    mockLoadSyncState.mockReturnValue(state as never);
+
+    const { runDaemonWorker } = await import('./daemon-worker.js');
+    await runDaemonWorker({ installSignalHandlers: false });
+
+    expect(state.deletionAnomaly).toBeUndefined();
   });
 
   it('reports readiness before the initial reconciliation touches the network', async () => {

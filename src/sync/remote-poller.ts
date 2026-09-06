@@ -15,6 +15,8 @@ import { atomicWriteFileSync } from './atomic-write.js';
 import { assertSyncRoot } from './root-marker.js';
 import type { SyncOperationSerializer } from './watcher.js';
 import { resolveWithinSyncRoot, SyncPathError } from './safe-path.js';
+import { assertNoPathCollisions } from './path-collision.js';
+import { assessDeletions, MASS_DELETE_OVERRIDE_HINT } from './mass-delete-guard.js';
 import { awaitWithTimeout, defaultShutdownTimeoutMs } from './shutdown.js';
 
 export const DEFAULT_POLL_INTERVAL_MS = 30_000;
@@ -40,8 +42,13 @@ export interface PollerOptions {
   onConflictLog?: (message: string) => void;
   /** Callback for errors */
   onError?: (error: Error) => void;
-  /** Callback when a file is written locally (for watcher loop prevention) */
-  onLocalWrite?: (docPath: string) => void;
+  /**
+   * Callback when the poller mutates a local file, so the watcher can tell its
+   * own echo from a user edit. `contentHash` is the SHA-256 of the bytes just
+   * written, or null for a deletion — the watcher requires a content match, not
+   * just a recent timestamp, before discarding an event.
+   */
+  onLocalWrite?: (docPath: string, contentHash: string | null) => void;
   /** Shared watcher/poller operation queue for one sync state file. */
   serialize?: SyncOperationSerializer;
   /** Maximum time to wait for an in-flight poll during shutdown. */
@@ -100,6 +107,11 @@ export function createRemotePoller(
 
       // Steady-state: server confirmed nothing changed — skip all per-doc work.
       if (sync.vaultUnchanged) return;
+
+      // Two vault paths that name one local file make every pass overwrite the
+      // other and mint another `.conflicted.*` copy. Refuse the whole poll and
+      // say which pair, rather than burning disk on the loop.
+      assertNoPathCollisions([...sync.changes.map(c => c.path), ...sync.unchanged]);
 
       // Paths that failed this pass. Held back rather than thrown, so one
       // permanently-unsyncable document cannot discard every other document's
@@ -175,7 +187,7 @@ export function createRemotePoller(
                 conflictFile = createConflictFile(config.localPath, change.path, localContent, 'local');
                 assertSyncRoot(config);
                 const mutationTarget = resolveWithinSyncRoot(config.localPath, change.path);
-                onLocalWrite?.(change.path);
+                onLocalWrite?.(change.path, remoteHash);
                 atomicWriteFileSync(mutationTarget, content, 'utf-8');
                 log(`Conflict: ${change.path} — used remote, saved local as ${conflictFile}`);
               } else {
@@ -183,12 +195,17 @@ export function createRemotePoller(
                 conflictFile = createConflictFile(config.localPath, change.path, content, 'remote');
                 if (canPush) {
                   assertSyncRoot(config);
-                  await client.documents.put(config.vaultId, change.path, localContent);
-              // This poll just wrote to the remote, so the list ETag it was handed
-              // describes the pre-write state — same reasoning as the delete-conflict
-              // branch below.
-              state.remoteListEtag = undefined;
-              listEtagInvalidated = true;
+                  // Conditional on the bytes this poll just read: a third client
+                  // writing between that GET and this PUT is refused rather than
+                  // silently overwritten. An empty hash is never a usable
+                  // precondition (`If-Match: ""` matches nothing).
+                  await client.documents.put(config.vaultId, change.path, localContent,
+                    remoteHash ? { ifMatch: remoteHash } : undefined);
+                  // This poll just wrote to the remote, so the list ETag it was handed
+                  // describes the pre-write state — same reasoning as the delete-conflict
+                  // branch below.
+                  state.remoteListEtag = undefined;
+                  listEtagInvalidated = true;
                   log(`Conflict: ${change.path} — used local, saved remote as ${conflictFile}`);
                 } else {
                   log(`Conflict: ${change.path} — kept local edit (pull-only, remote not updated), saved remote as ${conflictFile}`);
@@ -217,7 +234,7 @@ export function createRemotePoller(
           if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
           }
-          onLocalWrite?.(change.path);
+          onLocalWrite?.(change.path, remoteHash);
           atomicWriteFileSync(mutationTarget, content, 'utf-8');
           log(`Pulled: ${change.path}`);
           changes++;
@@ -243,7 +260,31 @@ export function createRemotePoller(
       }
 
       // Process remote deletions.
-      for (const removedPath of sync.removed) {
+      //
+      // `sync.removed` is derived by subtracting the current listing from our
+      // known hashes, so a listing that came back short — a scope change on the
+      // API key, a lagging replica, a server-side path migration — is
+      // indistinguishable from a real bulk delete. The guard refuses the whole
+      // batch in that case; the creates and updates above have already applied.
+      const deletionAssessment = assessDeletions(sync.removed.length, Object.keys(known.hashes).length);
+      let deletionsRefused = false;
+      if (!deletionAssessment.allow) {
+        deletionsRefused = true;
+        const reason = deletionAssessment.reason ?? 'Deletion batch refused by the mass-delete guard.';
+        log(`Refusing ${sync.removed.length} remote deletion(s): ${reason} ${MASS_DELETE_OVERRIDE_HINT}`);
+        state.deletionAnomaly = {
+          detectedAt: new Date().toISOString(),
+          removedCount: sync.removed.length,
+          knownCount: Object.keys(known.hashes).length,
+          reason,
+        };
+        stateMutated = true;
+      } else if (state.deletionAnomaly) {
+        // The listing looks sane again — stop reporting a resolved anomaly.
+        delete state.deletionAnomaly;
+        stateMutated = true;
+      }
+      for (const removedPath of deletionsRefused ? [] : sync.removed) {
         if (shouldIgnore(removedPath, ignorePatterns)) continue;
         try {
           assertSyncRoot(config);
@@ -282,6 +323,10 @@ export function createRemotePoller(
                 log(`Conflict: ${removedPath} — remote deleted; kept local edit (pull-only, not re-uploaded)`);
               } else if (resolution === 'local') {
                 assertSyncRoot(config);
+                // Deliberately unconditional: the document is gone from the
+                // server, so there is no ETag to match against. The SDK has no
+                // "create only if absent" precondition, and sending the stale
+                // pre-deletion hash would fail every time.
                 await client.documents.put(config.vaultId, removedPath, localContent);
                 state.local[removedPath] = localState;
                 state.remote[removedPath] = buildRemoteFileState(
@@ -298,7 +343,7 @@ export function createRemotePoller(
                 conflictFile = createConflictFile(config.localPath, removedPath, localContent, 'local');
                 assertSyncRoot(config);
                 const mutationTarget = resolveWithinSyncRoot(config.localPath, removedPath);
-                onLocalWrite?.(removedPath);
+                onLocalWrite?.(removedPath, null);
                 fs.unlinkSync(mutationTarget);
                 delete state.local[removedPath];
                 delete state.remote[removedPath];
@@ -310,7 +355,7 @@ export function createRemotePoller(
               continue;
             }
 
-            onLocalWrite?.(removedPath);
+            onLocalWrite?.(removedPath, null);
             fs.unlinkSync(resolveWithinSyncRoot(config.localPath, removedPath));
             log(`Deleted local: ${removedPath} (removed from remote)`);
             changes++;
@@ -329,13 +374,18 @@ export function createRemotePoller(
       // Only advance the list ETag once every path in this batch has been applied.
       // Committing it while a document still failed would make the next poll 304 and
       // silently drop that document from the change feed for good.
-      if (failedPaths.length === 0 && !listEtagInvalidated) {
+      if (failedPaths.length === 0 && !listEtagInvalidated && !deletionsRefused) {
         state.remoteListEtag = sync.listEtag;
         stateMutated = true;
       } else if (failedPaths.length > 0) {
         log(
           `Holding list ETag: ${failedPaths.length} path(s) failed this poll and will be retried (${failedPaths.slice(0, 5).join(', ')})`,
         );
+      } else if (deletionsRefused) {
+        // Committing the ETag would make the next poll 304 and drop the refused
+        // deletions from the feed for good, hiding the anomaly instead of
+        // re-raising it once the listing recovers.
+        log('Holding list ETag: a deletion batch was refused and will be re-evaluated on the next poll');
       }
 
       // Save even on a partial failure so the documents that did succeed are not

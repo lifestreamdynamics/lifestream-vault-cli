@@ -169,6 +169,27 @@ describe('config', () => {
       expect(mockedFs.mkdirSync).toHaveBeenCalledWith(CONFIG_DIR, { recursive: true, mode: 0o700 });
     });
 
+    it('narrows an already-existing config back to 0600', () => {
+      // writeFileSync's `mode` applies only at creation, so a config written by
+      // an older CLI keeps its 0644 — and that file holds apiKey/accessToken
+      // whenever the keychain and the encrypted store are both unavailable.
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('{}');
+
+      saveConfig({ apiKey: 'lsv_k_newkey' });
+
+      expect(mockedFs.chmodSync).toHaveBeenCalledWith(CONFIG_FILE, 0o600);
+    });
+
+    it('does not fail the save when the filesystem has no POSIX modes', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('{}');
+      mockedFs.chmodSync.mockImplementation(() => { throw new Error('EPERM'); });
+
+      expect(() => saveConfig({ apiKey: 'lsv_k_newkey' })).not.toThrow();
+      expect(mockedFs.writeFileSync).toHaveBeenCalled();
+    });
+
     it('should merge with existing config', () => {
       mockedFs.existsSync.mockReturnValueOnce(true) // CONFIG_DIR exists
         .mockReturnValueOnce(true); // CONFIG_FILE exists

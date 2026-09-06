@@ -2,7 +2,9 @@
  * Diff generation for sync operations.
  * Compares local and remote file states to determine what actions are needed.
  */
-import type { FileState, SyncState, SyncMode } from './types.js';
+import type { FileState, SyncState, SyncMode, DeletionAnomaly } from './types.js';
+import { assessDeletions } from './mass-delete-guard.js';
+import { assertNoPathCollisions } from './path-collision.js';
 
 export type SyncAction = 'create' | 'update' | 'delete';
 export type SyncDirection = 'upload' | 'download';
@@ -35,6 +37,19 @@ export interface SyncDiff {
   deletes: SyncDiffEntry[];
   /** Total bytes to transfer */
   totalBytes: number;
+  /**
+   * Set when the mass-delete guard refused this run's deletion batch. The
+   * deletions are absent from `deletes`; every create/update still applies.
+   */
+  deletionAnomaly?: DeletionAnomaly;
+}
+
+export interface PullDiffOptions {
+  /**
+   * Apply the deletion batch even when the mass-delete guard would refuse it
+   * (`lsvault sync pull --allow-mass-delete`). Never set by the daemon.
+   */
+  allowMassDelete?: boolean;
 }
 
 /**
@@ -45,7 +60,10 @@ export function computePullDiff(
   localFiles: Record<string, FileState>,
   remoteFiles: Record<string, FileState>,
   lastState: SyncState,
+  options: PullDiffOptions = {},
 ): SyncDiff {
+  assertNoPathCollisions([...Object.keys(remoteFiles), ...Object.keys(localFiles)]);
+
   const downloads: SyncDiffEntry[] = [];
   const deletes: SyncDiffEntry[] = [];
 
@@ -57,6 +75,11 @@ export function computePullDiff(
     if (!local) {
       // File exists remotely but not locally
       if (lastState.local[docPath]) {
+        // A local delete the server refused (403, admin-only in a team vault)
+        // is not a document waiting to be restored — restoring it here is what
+        // turns a permanent rejection into an endless delete/restore loop. Leave
+        // it absent until the marker is cleared.
+        if (lastState.deniedDeletes?.[docPath]) continue;
         // Was previously synced but deleted locally — remote wins on pull
         downloads.push({
           path: docPath,
@@ -101,9 +124,11 @@ export function computePullDiff(
   }
 
   // Files deleted from remote since last sync
-  for (const docPath of Object.keys(lastState.remote)) {
+  const trackedRemotePaths = Object.keys(lastState.remote);
+  const candidateDeletes: SyncDiffEntry[] = [];
+  for (const docPath of trackedRemotePaths) {
     if (!remoteFiles[docPath] && localFiles[docPath]) {
-      deletes.push({
+      candidateDeletes.push({
         path: docPath,
         action: 'delete',
         direction: 'download',
@@ -113,8 +138,24 @@ export function computePullDiff(
     }
   }
 
+  // A short remote listing is indistinguishable from a bulk delete, and acting
+  // on the wrong one is unrecoverable. Creates and updates still apply — only
+  // the destructive half is withheld.
+  let deletionAnomaly: DeletionAnomaly | undefined;
+  const assessment = assessDeletions(candidateDeletes.length, trackedRemotePaths.length);
+  if (assessment.allow || options.allowMassDelete) {
+    deletes.push(...candidateDeletes);
+  } else {
+    deletionAnomaly = {
+      detectedAt: new Date().toISOString(),
+      removedCount: candidateDeletes.length,
+      knownCount: trackedRemotePaths.length,
+      reason: assessment.reason ?? 'Deletion batch refused by the mass-delete guard.',
+    };
+  }
+
   const totalBytes = downloads.reduce((sum, d) => sum + d.sizeBytes, 0);
-  return { uploads: [], downloads, deletes, totalBytes };
+  return { uploads: [], downloads, deletes, totalBytes, ...(deletionAnomaly ? { deletionAnomaly } : {}) };
 }
 
 /**
@@ -126,6 +167,8 @@ export function computePushDiff(
   remoteFiles: Record<string, FileState>,
   lastState: SyncState,
 ): SyncDiff {
+  assertNoPathCollisions([...Object.keys(remoteFiles), ...Object.keys(localFiles)]);
+
   const uploads: SyncDiffEntry[] = [];
   const deletes: SyncDiffEntry[] = [];
 

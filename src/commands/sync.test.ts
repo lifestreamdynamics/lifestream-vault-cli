@@ -77,6 +77,7 @@ vi.mock('../sync/state.js', () => ({
   saveSyncState: vi.fn(),
   hashFileContent: vi.fn(() => 'hash'),
   buildRemoteFileState: vi.fn(),
+  pruneDeniedDeletes: vi.fn(() => []),
 }));
 
 // Mock sync engine module
@@ -108,7 +109,7 @@ vi.mock('../client.js', () => ({
 }));
 
 import { createSyncConfig, deleteSyncConfig, loadSyncConfigs, trustSyncRoot } from '../sync/config.js';
-import { deleteSyncState } from '../sync/state.js';
+import { deleteSyncState, saveSyncState, loadSyncState } from '../sync/state.js';
 import { scanLocalFiles, scanRemoteFiles, computePullDiff, computePushDiff, executePull, executePush } from '../sync/engine.js';
 import { assertSyncRoot, prepareSyncRoot } from '../sync/root-marker.js';
 
@@ -338,6 +339,141 @@ describe('sync commands', () => {
     });
   });
 
+  describe('sync resolve', () => {
+    let root: string;
+
+    beforeEach(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'lsvault-resolve-'));
+      mockConfigs.push({
+        id: 'resolve-1', vaultId: 'vault-1', localPath: root, mode: 'sync',
+        onConflict: 'newer', ignore: [], lastSyncAt: '1970-01-01T00:00:00.000Z',
+        autoSync: false, rootMarkerVersion: 1,
+      });
+    });
+
+    afterEach(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('--use remote writes atomically and keeps a backup of the local version', async () => {
+      // `--use remote` is a one-way door, and the file being resolved is by
+      // definition one the user edited. The plain writeFileSync here was also
+      // the last non-atomic local write in the sync engine.
+      fs.writeFileSync(path.join(root, 'note.md'), '# my local version', 'utf-8');
+      sdkMock.documents.get.mockResolvedValue({ content: '# the remote version' } as never);
+
+      await program.parseAsync([
+        'node', 'cli', 'sync', 'resolve', 'resolve-1', 'note.md', '--use', 'remote',
+      ]);
+
+      expect(process.exitCode).toBeUndefined();
+      expect(fs.readFileSync(path.join(root, 'note.md'), 'utf-8')).toBe('# the remote version');
+      const backups = fs.readdirSync(root).filter(f => f.includes('.conflicted.local.'));
+      expect(backups).toHaveLength(1);
+      expect(fs.readFileSync(path.join(root, backups[0]), 'utf-8')).toBe('# my local version');
+      // No temp file survives the write.
+      expect(fs.readdirSync(root).some(f => f.includes('.tmp.'))).toBe(false);
+    });
+
+    it('--use remote makes no backup when the two sides already agree', async () => {
+      fs.writeFileSync(path.join(root, 'note.md'), '# same', 'utf-8');
+      sdkMock.documents.get.mockResolvedValue({ content: '# same' } as never);
+
+      await program.parseAsync([
+        'node', 'cli', 'sync', 'resolve', 'resolve-1', 'note.md', '--use', 'remote',
+      ]);
+
+      expect(fs.readdirSync(root).filter(f => f.includes('.conflicted.'))).toHaveLength(0);
+    });
+
+    it('--use local conditions the overwrite on the last-known remote hash', async () => {
+      // Resolving a stale conflict must not destroy an edit that arrived after
+      // the conflict was recorded; a 412 is the right answer there.
+      fs.writeFileSync(path.join(root, 'note.md'), '# keep mine', 'utf-8');
+      vi.mocked(loadSyncState).mockReturnValue({
+        syncId: 'resolve-1', local: {},
+        remote: { 'note.md': { path: 'note.md', hash: 'remote-hash', mtime: '', size: 1 } },
+        updatedAt: '',
+      });
+
+      await program.parseAsync([
+        'node', 'cli', 'sync', 'resolve', 'resolve-1', 'note.md', '--use', 'local',
+      ]);
+
+      expect(sdkMock.documents.put).toHaveBeenCalledWith(
+        'vault-1', 'note.md', '# keep mine', { ifMatch: 'remote-hash' },
+      );
+    });
+
+    it('--use local sends no precondition when no remote hash is known', async () => {
+      fs.writeFileSync(path.join(root, 'note.md'), '# keep mine', 'utf-8');
+
+      await program.parseAsync([
+        'node', 'cli', 'sync', 'resolve', 'resolve-1', 'note.md', '--use', 'local',
+      ]);
+
+      expect(sdkMock.documents.put).toHaveBeenCalledWith('vault-1', 'note.md', '# keep mine', undefined);
+    });
+  });
+
+  describe('sync status persistent warnings', () => {
+    beforeEach(() => {
+      mockConfigs.push({
+        id: 'status-1', vaultId: 'vault-1', localPath: '/tmp/test',
+        mode: 'sync', onConflict: 'newer', ignore: [],
+        lastSyncAt: '1970-01-01T00:00:00.000Z', autoSync: false,
+      });
+    });
+
+    it('surfaces a recorded deletion anomaly, not just the run that found it', async () => {
+      // The daemon has no operator watching its log, so a refusal has to stay
+      // visible somewhere the user actually looks.
+      vi.mocked(loadSyncState).mockReturnValue({
+        syncId: 'status-1', local: {}, remote: {}, updatedAt: '',
+        deletionAnomaly: {
+          detectedAt: '2026-09-06T00:00:00.000Z', removedCount: 50, knownCount: 50,
+          reason: 'the remote listing no longer contains any of the 50 document(s)',
+        },
+      });
+
+      await program.parseAsync(['node', 'cli', 'sync', 'status', 'status-1', '--output', 'json']);
+
+      const jsonOutput = outputSpy.stdout.find(l => l.includes('"deletionAnomaly"'));
+      expect(jsonOutput).toBeDefined();
+      expect(JSON.parse(jsonOutput!).deletionAnomaly.removedCount).toBe(50);
+    });
+
+    it('lists deletions the server refused so the user knows why they keep coming back', async () => {
+      vi.mocked(loadSyncState).mockReturnValue({
+        syncId: 'status-1', local: {}, remote: {}, updatedAt: '',
+        deniedDeletes: {
+          'team/report.md': { deniedAt: '2026-09-01T00:00:00.000Z', reason: 'requires the admin role' },
+        },
+      });
+
+      await program.parseAsync(['node', 'cli', 'sync', 'status', 'status-1', '--output', 'json']);
+
+      const jsonOutput = outputSpy.stdout.find(l => l.includes('"deniedDeletes"'));
+      expect(jsonOutput).toBeDefined();
+      expect(JSON.parse(jsonOutput!).deniedDeletes).toEqual([
+        { path: 'team/report.md', deniedAt: '2026-09-01T00:00:00.000Z', reason: 'requires the admin role' },
+      ]);
+    });
+
+    it('says nothing when the sync is healthy', async () => {
+      vi.mocked(loadSyncState).mockReturnValue({
+        syncId: 'status-1', local: {}, remote: {}, updatedAt: '',
+      });
+
+      await program.parseAsync(['node', 'cli', 'sync', 'status', 'status-1', '--output', 'json']);
+
+      const jsonOutput = outputSpy.stdout.find(l => l.startsWith('{'));
+      const parsed = JSON.parse(jsonOutput!);
+      expect(parsed.deletionAnomaly).toBeUndefined();
+      expect(parsed.deniedDeletes).toBeUndefined();
+    });
+  });
+
   describe('sync watch shutdown', () => {
     it('waits for an in-flight poll and exits nonzero when its bounded drain fails', async () => {
       mockConfigs.push({
@@ -539,6 +675,72 @@ describe('sync commands', () => {
       const parsed = JSON.parse(jsonOutput!);
       expect(parsed.unchanged).toBe(2);
       expect(parsed.downloaded).toBe(1);
+    });
+  });
+
+  describe('sync pull — mass-delete guard reporting', () => {
+    beforeEach(() => {
+      mockConfigs.push({
+        id: 'pull-1', vaultId: 'vault-1', localPath: '/tmp/test',
+        mode: 'pull', onConflict: 'newer', ignore: [],
+        lastSyncAt: '1970-01-01T00:00:00.000Z', autoSync: false,
+      });
+    });
+
+    const anomaly = {
+      detectedAt: '2026-09-06T00:00:00.000Z',
+      removedCount: 50,
+      knownCount: 50,
+      reason: 'the remote listing no longer contains any of the 50 document(s) this sync was tracking.',
+    };
+
+    it('warns about a refused deletion batch and records it in the sync state', async () => {
+      vi.mocked(computePullDiff).mockReturnValue({
+        downloads: [], deletes: [], uploads: [], totalBytes: 0, deletionAnomaly: anomaly,
+      });
+
+      await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-1']);
+
+      expect(outputSpy.stderr.join('')).toContain('Refused 50 deletion(s)');
+      expect(outputSpy.stderr.join('')).toContain('--allow-mass-delete');
+      const saved = vi.mocked(saveSyncState).mock.calls.at(-1)?.[0];
+      expect(saved?.deletionAnomaly).toEqual(anomaly);
+    });
+
+    it('threads --allow-mass-delete into the diff', async () => {
+      await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-1', '--allow-mass-delete']);
+
+      expect(computePullDiff).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), expect.anything(), { allowMassDelete: true },
+      );
+    });
+
+    it('does not set the flag by default', async () => {
+      await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-1']);
+
+      expect(computePullDiff).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), expect.anything(), { allowMassDelete: false },
+      );
+    });
+
+    it('reports the conflict copies executePull made while deleting', async () => {
+      // Without the 7th argument wired, these copies were made and never mentioned.
+      vi.mocked(computePullDiff).mockReturnValue({
+        downloads: [], uploads: [], totalBytes: 0,
+        deletes: [{ path: 'notes.md', action: 'delete', direction: 'download', sizeBytes: 0, reason: 'Deleted from remote' }],
+      });
+      vi.mocked(executePull).mockImplementation(async (
+        _client: unknown, _config: unknown, _diff: unknown, _onProgress?: unknown,
+        _concurrency?: unknown, _onThrottle?: unknown,
+        onConflict?: (docPath: string, conflictFile: string) => void,
+      ) => {
+        onConflict?.('notes.md', 'notes.conflicted.local.2026-09-06.md');
+        return { filesDownloaded: 0, filesDeleted: 1, filesUploaded: 0, filesSkipped: 0, bytesTransferred: 0, errors: [], failed: false };
+      });
+
+      await program.parseAsync(['node', 'cli', 'sync', 'pull', 'pull-1']);
+
+      expect(outputSpy.stderr.join('')).toContain('notes.conflicted.local.2026-09-06.md');
     });
   });
 
