@@ -68,6 +68,41 @@ describe('config commands', () => {
       expect(mSetProfileValue).toHaveBeenCalledWith('prod', 'apiKey', 'lsv_k_abc');
       spy.restore();
     });
+
+    // `auth login --api-url` validates before persisting. This command is the other
+    // way the same value reaches the profile store; an http:// endpoint accepted here
+    // sends the password on the next login and the bearer token on every command after.
+    it('refuses a plaintext http:// apiUrl and writes nothing', async () => {
+      const spy = spyOutput();
+      const program = createProgram();
+
+      await program.parseAsync(['node', 'lsvault', 'config', 'set', 'apiUrl', 'http://vault.example.com']);
+
+      expect(mSetProfileValue).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      process.exitCode = 0;
+      spy.restore();
+    });
+
+    it('allows http:// on loopback, which is the dev server', async () => {
+      const spy = spyOutput();
+      const program = createProgram();
+
+      await program.parseAsync(['node', 'lsvault', 'config', 'set', 'apiUrl', 'http://localhost:4660']);
+
+      expect(mSetProfileValue).toHaveBeenCalledWith('default', 'apiUrl', 'http://localhost:4660');
+      spy.restore();
+    });
+
+    it('does not validate keys other than apiUrl', async () => {
+      const spy = spyOutput();
+      const program = createProgram();
+
+      await program.parseAsync(['node', 'lsvault', 'config', 'set', 'apiKey', 'not-a-url']);
+
+      expect(mSetProfileValue).toHaveBeenCalledWith('default', 'apiKey', 'not-a-url');
+      spy.restore();
+    });
   });
 
   describe('config get', () => {

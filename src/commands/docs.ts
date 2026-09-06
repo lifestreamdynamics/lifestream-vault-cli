@@ -6,13 +6,7 @@ import { createOutput, handleError } from '../utils/output.js';
 import { getCredentialManager } from '../config.js';
 import { confirmAction } from '../utils/confirm.js';
 import { resolveVaultId } from '../utils/resolve-vault.js';
-
-/** Structured HTTP status attached by the SDK (`statusCode`) or a fetch-style `status`. */
-function getStatusCode(err: unknown): number | undefined {
-  if (!err || typeof err !== 'object') return undefined;
-  const code = (err as { statusCode?: unknown }).statusCode ?? (err as { status?: unknown }).status;
-  return typeof code === 'number' ? code : undefined;
-}
+import { getStatusCode } from '../utils/http-status.js';
 
 /**
  * Turn a 403 on a move into a message that says what to do about it.

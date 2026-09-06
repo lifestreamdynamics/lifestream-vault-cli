@@ -14,6 +14,7 @@ import { atomicWriteFileSync, sweepOrphanedTempFiles } from './atomic-write.js';
 import { assertSyncRoot } from './root-marker.js';
 import { resolveWithinSyncRoot } from './safe-path.js';
 import { createConflictFile } from './conflict.js';
+import { getStatusCode } from '../utils/http-status.js';
 
 export { sweepOrphanedTempFiles };
 
@@ -625,13 +626,6 @@ class SyncPermissionError extends Error {
     super(message);
     this.name = 'SyncPermissionError';
   }
-}
-
-/** Structured HTTP status attached by the SDK (`statusCode`) or a fetch-style `status`. */
-function getStatusCode(err: unknown): number | undefined {
-  if (!err || typeof err !== 'object') return undefined;
-  const code = (err as { statusCode?: unknown }).statusCode ?? (err as { status?: unknown }).status;
-  return typeof code === 'number' ? code : undefined;
 }
 
 /**

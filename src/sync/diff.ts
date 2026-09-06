@@ -59,8 +59,6 @@ export interface DiffOptions {
   fold?: PathFoldOptions;
 }
 
-/** @deprecated Use {@link DiffOptions}; kept as the pull-side alias. */
-export type PullDiffOptions = DiffOptions;
 
 /**
  * Apply the mass-delete guard to a batch of listing-derived deletions.
