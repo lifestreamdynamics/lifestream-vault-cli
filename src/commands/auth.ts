@@ -183,8 +183,12 @@ EXAMPLES
           timeout: getHttpTimeoutMs(),
           refreshBufferMs: Number.MAX_SAFE_INTEGER, // Force immediate refresh
           onTokenRefresh: async (tokens) => {
+            // The server rotates the refresh token on every refresh and
+            // deletes the one presented, so the rotated token must be stored
+            // alongside the access token or the next refresh fails.
             await cm.saveCredentials({
               accessToken: tokens.accessToken,
+              ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
             });
           },
         });

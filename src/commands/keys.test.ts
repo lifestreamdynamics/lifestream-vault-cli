@@ -114,6 +114,24 @@ describe('keys commands', () => {
   });
 
   describe('keys create', () => {
+    it('prints the key, keyPrefix and scopes from the SDK\'s normalized create result', async () => {
+      // SDK create() now unwraps the API's { apiKey, fullKey } envelope.
+      sdkMock.apiKeys.create.mockResolvedValue({
+        id: 'k9', name: 'Real Shape', keyPrefix: 'ab12cd34', prefix: 'ab12cd34', scopes: ['read'],
+        vaultId: null, expiresAt: null, isActive: true, lastUsedAt: null,
+        createdAt: '2024-01-01',
+        key: 'lsv_k_ab12cd34rest',
+      });
+
+      await program.parseAsync(['node', 'cli', 'keys', 'create', 'Real Shape', '--scopes', 'read']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('lsv_k_ab12cd34rest');
+      expect(stdout).toContain('Prefix: ab12cd34');
+      expect(stdout).toContain('Scopes: read');
+      expect(process.exitCode).toBeUndefined();
+    });
+
     it('should create an API key with default scopes', async () => {
       sdkMock.apiKeys.create.mockResolvedValue({
         id: 'k1', name: 'New Key', prefix: 'lsv_k_ab', scopes: ['read', 'write'],
