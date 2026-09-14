@@ -1,4 +1,4 @@
-import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
+import { LifestreamVaultClient, type AuthTokens } from '@lifestreamdynamics/vault-sdk';
 import { loadConfig, loadConfigAsync, getCredentialManager } from './config.js';
 
 const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
@@ -14,6 +14,23 @@ export function getHttpTimeoutMs(envValue = process.env.LSVAULT_HTTP_TIMEOUT_MS)
     throw new Error('LSVAULT_HTTP_TIMEOUT_MS must be between 1000 and 300000 milliseconds (1-300 seconds).');
   }
   return timeout;
+}
+
+/**
+ * Persist tokens from an automatic refresh. The server rotates the refresh
+ * token and invalidates the presented one, so the new refresh token must be
+ * stored too — keeping only the access token strands the next process with a
+ * dead refresh token. Best-effort: a storage failure must not fail the request.
+ */
+async function persistRefreshedTokens(tokens: AuthTokens): Promise<void> {
+  try {
+    await getCredentialManager().saveCredentials({
+      accessToken: tokens.accessToken,
+      ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+    });
+  } catch {
+    // Best-effort persistence; don't break the request
+  }
 }
 
 /**
@@ -34,17 +51,7 @@ export function getClient(): LifestreamVaultClient {
       accessToken: config.accessToken,
       refreshToken: config.refreshToken,
       timeout,
-      onTokenRefresh: async (tokens) => {
-        // Persist refreshed tokens to secure storage
-        try {
-          const cm = getCredentialManager();
-          await cm.saveCredentials({
-            accessToken: tokens.accessToken,
-          });
-        } catch {
-          // Best-effort persistence; don't break the request
-        }
-      },
+      onTokenRefresh: persistRefreshedTokens,
     });
   }
 
@@ -81,16 +88,7 @@ export async function getClientAsync(): Promise<LifestreamVaultClient> {
       accessToken: config.accessToken,
       refreshToken: config.refreshToken,
       timeout,
-      onTokenRefresh: async (tokens) => {
-        try {
-          const cm = getCredentialManager();
-          await cm.saveCredentials({
-            accessToken: tokens.accessToken,
-          });
-        } catch {
-          // Best-effort
-        }
-      },
+      onTokenRefresh: persistRefreshedTokens,
     });
   }
 
