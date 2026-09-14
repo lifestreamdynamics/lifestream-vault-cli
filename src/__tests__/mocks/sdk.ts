@@ -1,6 +1,7 @@
 import { vi } from 'vitest';
 
 export const createSDKMock = () => ({
+  renewSession: vi.fn(async () => ({ sessionId: null as string | null })),
   vaults: {
     list: vi.fn(),
     get: vi.fn(),

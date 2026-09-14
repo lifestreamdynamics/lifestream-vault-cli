@@ -1,12 +1,34 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
 import { writeFile } from 'node:fs/promises';
+import type { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
 import { getClientAsync } from '../client.js';
 import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import { formatBytes } from '../utils/format.js';
 import { promptPassword, readPasswordFromStdin } from '../utils/prompt.js';
 import { confirmAction } from '../utils/confirm.js';
+
+/**
+ * This CLI's server session id, or undefined if it cannot be learned.
+ *
+ * Stored credentials carry no session id, so the SDK renews the session to
+ * obtain one (the rotated tokens are persisted by the client's onTokenRefresh).
+ * Undefined for API-key auth, a login without a refresh token, or a failed
+ * refresh — in which case the session is not recoverable anyway.
+ */
+async function ownSessionId(client: LifestreamVaultClient): Promise<string | undefined> {
+  try {
+    const { sessionId } = await client.renewSession();
+    return sessionId ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function warnSignedOut(out: ReturnType<typeof createOutput>): void {
+  out.warn('This CLI session could not be identified, so it was signed out along with the others. Run "lsvault auth login" to sign in again.');
+}
 
 export function registerUserCommands(program: Command): void {
   const user = program.command('user').description('View account details and storage usage');
@@ -107,8 +129,13 @@ export function registerUserCommands(program: Command): void {
       out.startSpinner('Changing password...');
       try {
         const client = await getClientAsync();
-        await client.user.changePassword({ currentPassword, newPassword });
+        // Learn this CLI's session id *before* the change: the server revokes
+        // every session except the one named, so without it the CLI's own
+        // stored tokens die with the rest.
+        const sessionId = await ownSessionId(client);
+        await client.user.changePassword({ currentPassword, newPassword }, sessionId);
         out.success('Password changed successfully', { changed: true });
+        if (!sessionId) warnSignedOut(out);
       } catch (err) {
         handleError(out, err, 'Failed to change password');
       }
@@ -297,8 +324,10 @@ export function registerUserCommands(program: Command): void {
       out.startSpinner('Revoking all sessions...');
       try {
         const client = await getClientAsync();
-        const result = await client.user.revokeAllSessions();
+        const sessionId = await ownSessionId(client);
+        const result = await client.user.revokeAllSessions(sessionId);
         out.success(result.message, { message: result.message });
+        if (!sessionId) warnSignedOut(out);
       } catch (err) {
         handleError(out, err, 'Failed to revoke sessions');
       }
