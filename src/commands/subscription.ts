@@ -25,13 +25,20 @@ export function registerSubscriptionCommands(program: Command): void {
             tier: data.subscription.tier,
             isActive: data.subscription.isActive,
             expiresAt: data.subscription.expiresAt,
+            status: data.subscription.status ?? 'active',
             ...data.usage,
           });
         } else {
           const s = data.subscription;
           process.stdout.write(`Plan:       ${chalk.green(s.tier)}\n`);
           process.stdout.write(`Active:     ${s.isActive ? chalk.green('yes') : chalk.red('no')}\n`);
-          process.stdout.write(`Expires:    ${s.expiresAt || chalk.dim('never')}\n`);
+          if (s.status === 'past_due') {
+            process.stdout.write(`Status:     ${chalk.yellow('payment failed')} — plan ends ${s.expiresAt}\n`);
+          } else if (s.status === 'cancelled') {
+            process.stdout.write(`Status:     ${chalk.yellow('cancelled')} — plan ends ${s.expiresAt}\n`);
+          } else {
+            process.stdout.write(`Expires:    ${s.expiresAt || chalk.dim('never')}\n`);
+          }
           process.stdout.write('\n');
           process.stdout.write(chalk.dim('Usage:') + '\n');
           process.stdout.write(`  Vaults:            ${data.usage.vaultCount}\n`);
@@ -121,8 +128,12 @@ EXAMPLES
         }
         out.startSpinner('Cancelling subscription...');
         const client = await getClientAsync();
-        await client.subscription.cancel(_opts.reason as string | undefined);
-        out.success('Subscription cancelled', { cancelled: true });
+        const result = await client.subscription.cancel(_opts.reason as string | undefined);
+        const accessUntil = result?.accessUntil ?? null;
+        out.success(
+          accessUntil ? `Subscription cancelled; your plan stays active until ${accessUntil}` : 'Subscription cancelled',
+          { cancelled: true, accessUntil },
+        );
       } catch (err) {
         handleError(out, err, 'Failed to cancel subscription');
       }
