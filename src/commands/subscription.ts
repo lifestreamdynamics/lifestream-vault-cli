@@ -32,10 +32,11 @@ export function registerSubscriptionCommands(program: Command): void {
           const s = data.subscription;
           process.stdout.write(`Plan:       ${chalk.green(s.tier)}\n`);
           process.stdout.write(`Active:     ${s.isActive ? chalk.green('yes') : chalk.red('no')}\n`);
+          const expiryClause = s.expiresAt ? ` — plan ends ${s.expiresAt}` : '';
           if (s.status === 'past_due') {
-            process.stdout.write(`Status:     ${chalk.yellow('payment failed')} — plan ends ${s.expiresAt}\n`);
+            process.stdout.write(`Status:     ${chalk.yellow('payment failed')}${expiryClause}\n`);
           } else if (s.status === 'cancelled') {
-            process.stdout.write(`Status:     ${chalk.yellow('cancelled')} — plan ends ${s.expiresAt}\n`);
+            process.stdout.write(`Status:     ${chalk.yellow('cancelled')}${expiryClause}\n`);
           } else {
             process.stdout.write(`Expires:    ${s.expiresAt || chalk.dim('never')}\n`);
           }
@@ -130,10 +131,16 @@ EXAMPLES
         const client = await getClientAsync();
         const result = await client.subscription.cancel(_opts.reason as string | undefined);
         const accessUntil = result?.accessUntil ?? null;
-        out.success(
-          accessUntil ? `Subscription cancelled; your plan stays active until ${accessUntil}` : 'Subscription cancelled',
-          { cancelled: true, accessUntil },
-        );
+        const message = accessUntil
+          ? `Subscription cancelled; your plan stays active until ${accessUntil}`
+          : 'Subscription cancelled';
+        // Only pass the data object in JSON mode: `success()` prints it as a key-value
+        // table in text mode, which would restate the date `message` already spells out.
+        if (flags.output === 'json') {
+          out.success(message, { cancelled: true, accessUntil });
+        } else {
+          out.success(message);
+        }
       } catch (err) {
         handleError(out, err, 'Failed to cancel subscription');
       }
