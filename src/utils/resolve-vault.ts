@@ -1,5 +1,15 @@
 import { getClientAsync } from '../client.js';
 
+// Deliberate duplicate of packages/api/src/utils/uuid.ts UUID_RE, and resolveVaultId
+// below is the CLI twin of vault.service.ts getByIdOrSlug — the same "a UUID means an
+// id, anything else is a slug" decision.
+//
+// It stays duplicated on purpose. The CLI is published standalone to npm and cannot
+// import from packages/api, nor from @lifestreamdynamics/vault-shared, which is
+// unpublished — depending on it breaks `npm install` for CLI users with an E404.
+// Resolving this properly is a packaging decision (publishing a primitives package),
+// not a code cleanup, so it is tracked in FINDINGS_OUTSIDE_SCOPE.md. If you change
+// this pattern, change it in both places.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**

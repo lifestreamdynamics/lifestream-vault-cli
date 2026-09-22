@@ -275,6 +275,18 @@ export function createOutput(flags: GlobalFlags): Output {
 }
 
 /**
+ * True for a raw timeout, or for an SDK `NetworkError` wrapping one via its
+ * `originalError` (the SDK rewraps ky/fetch failures, so the outer name is
+ * `NetworkError` and only the inner error carries `TimeoutError`).
+ */
+function isTimeoutError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'TimeoutError') return true;
+  const inner = (err as { originalError?: unknown }).originalError;
+  return inner instanceof Error && inner.name === 'TimeoutError';
+}
+
+/**
  * Standard error handler for commands.
  * Prints error to stderr and sets exit code.
  */
@@ -282,7 +294,10 @@ export function handleError(out: Output, err: unknown, spinnerMessage?: string):
   if (spinnerMessage) {
     out.failSpinner(spinnerMessage);
   }
-  const message = err instanceof Error ? err.message : String(err);
+  let message = err instanceof Error ? err.message : String(err);
+  if (isTimeoutError(err) || /\b(?:timed?\s*out|request timeout)\b/i.test(message)) {
+    message += '\nCheck connectivity or increase LSVAULT_HTTP_TIMEOUT_MS (1000-300000 milliseconds).';
+  }
   out.error(message);
   process.exitCode = 1;
 }

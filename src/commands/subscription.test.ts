@@ -164,9 +164,74 @@ describe('subscription commands', () => {
     });
   });
 
+  describe('subscription status — billing state', () => {
+    it('shows a failed payment and when the plan ends', async () => {
+      sdkMock.subscription.get.mockResolvedValue({
+        subscription: { tier: 'pro', expiresAt: '2026-09-22T00:00:00Z', isActive: true, status: 'past_due' },
+        usage: {
+          vaultCount: 1, totalStorageBytes: 0, apiCallsThisMonth: 0,
+          aiTokens: 0, hookExecutions: 0, webhookDeliveries: 0,
+        },
+      });
+
+      await program.parseAsync(['node', 'cli', 'subscription', 'status']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('payment failed');
+      expect(stdout).toContain('2026-09-22T00:00:00Z');
+    });
+
+    it('shows a failed payment with no expiry date without printing "null"', async () => {
+      sdkMock.subscription.get.mockResolvedValue({
+        subscription: { tier: 'pro', expiresAt: null, isActive: true, status: 'past_due' },
+        usage: {
+          vaultCount: 1, totalStorageBytes: 0, apiCallsThisMonth: 0,
+          aiTokens: 0, hookExecutions: 0, webhookDeliveries: 0,
+        },
+      });
+
+      await program.parseAsync(['node', 'cli', 'subscription', 'status']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('payment failed');
+      expect(stdout).not.toContain('null');
+    });
+
+    it('shows a cancelled subscription and when it stops being active', async () => {
+      sdkMock.subscription.get.mockResolvedValue({
+        subscription: { tier: 'pro', expiresAt: '2026-10-01T00:00:00Z', isActive: true, status: 'cancelled' },
+        usage: {
+          vaultCount: 1, totalStorageBytes: 0, apiCallsThisMonth: 0,
+          aiTokens: 0, hookExecutions: 0, webhookDeliveries: 0,
+        },
+      });
+
+      await program.parseAsync(['node', 'cli', 'subscription', 'status']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).toContain('cancelled');
+      expect(stdout).toContain('2026-10-01T00:00:00Z');
+    });
+
+    it('defaults JSON status to "active" when the server omits it', async () => {
+      sdkMock.subscription.get.mockResolvedValue({
+        subscription: { tier: 'pro', expiresAt: null, isActive: true },
+        usage: {
+          vaultCount: 1, totalStorageBytes: 0, apiCallsThisMonth: 0,
+          aiTokens: 0, hookExecutions: 0, webhookDeliveries: 0,
+        },
+      });
+
+      await program.parseAsync(['node', 'cli', 'subscription', 'status', '--output', 'json']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(JSON.parse(stdout)).toMatchObject({ status: 'active' });
+    });
+  });
+
   describe('subscription cancel', () => {
     it('should cancel with reason when --yes is provided', async () => {
-      sdkMock.subscription.cancel.mockResolvedValue(undefined);
+      sdkMock.subscription.cancel.mockResolvedValue({ message: 'Subscription cancelled', accessUntil: null });
 
       await program.parseAsync([
         'node', 'cli', 'subscription', 'cancel',
@@ -176,8 +241,46 @@ describe('subscription commands', () => {
       expect(sdkMock.subscription.cancel).toHaveBeenCalledWith('Too expensive');
     });
 
+    it('reports when a cancelled plan stops being active, on stderr (a status message, not piped data)', async () => {
+      sdkMock.subscription.cancel.mockResolvedValue({
+        message: 'Subscription cancelled',
+        accessUntil: '2026-10-01T00:00:00.000Z',
+      });
+
+      await program.parseAsync(['node', 'cli', 'subscription', 'cancel', '--yes']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('2026-10-01T00:00:00.000Z');
+      // Text mode must not also print the date via a key-value dump of the result.
+      const stdout = outputSpy.stdout.join('');
+      expect(stdout).not.toContain('2026-10-01T00:00:00.000Z');
+    });
+
+    it('reports plain cancellation text, with no date, when accessUntil is null', async () => {
+      sdkMock.subscription.cancel.mockResolvedValue({ message: 'Subscription cancelled', accessUntil: null });
+
+      await program.parseAsync(['node', 'cli', 'subscription', 'cancel', '--yes']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('Subscription cancelled');
+      expect(stderr).not.toContain('null');
+      expect(stderr).not.toMatch(/stays active until/);
+    });
+
+    it('emits { cancelled: true, accessUntil } as JSON', async () => {
+      sdkMock.subscription.cancel.mockResolvedValue({
+        message: 'Subscription cancelled',
+        accessUntil: '2026-10-01T00:00:00.000Z',
+      });
+
+      await program.parseAsync(['node', 'cli', 'subscription', 'cancel', '--yes', '--output', 'json']);
+
+      const stdout = outputSpy.stdout.join('');
+      expect(JSON.parse(stdout)).toEqual({ cancelled: true, accessUntil: '2026-10-01T00:00:00.000Z' });
+    });
+
     it('should cancel without reason when --yes is provided', async () => {
-      sdkMock.subscription.cancel.mockResolvedValue(undefined);
+      sdkMock.subscription.cancel.mockResolvedValue({ message: 'Subscription cancelled', accessUntil: null });
 
       await program.parseAsync(['node', 'cli', 'subscription', 'cancel', '--yes']);
 

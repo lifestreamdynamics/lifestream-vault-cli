@@ -10,6 +10,7 @@ import {
   listProfiles,
   deleteProfile,
 } from '../lib/profiles.js';
+import { validateApiUrl } from './auth.js';
 
 const SENSITIVE_KEY_PATTERN = /key|token|secret|password|credential/i;
 
@@ -39,7 +40,21 @@ EXAMPLES
   lsvault config set apiUrl http://localhost:4660 --profile dev`)
     .action((key: string, value: string, opts: { profile?: string }) => {
       const profile = resolveProfileName(opts.profile);
-      setProfileValue(profile, key, value);
+      // `--api-url` on `auth login` is validated before it is persisted; this is the
+      // other way the same value reaches the profile store, and it must not be the
+      // soft underbelly. An http:// endpoint here sends the password on the next
+      // login and the bearer token on every command after that.
+      let stored = value;
+      if (key === 'apiUrl') {
+        try {
+          stored = validateApiUrl(value);
+        } catch (err) {
+          process.stderr.write(chalk.red(err instanceof Error ? err.message : String(err)) + '\n');
+          process.exitCode = 1;
+          return;
+        }
+      }
+      setProfileValue(profile, key, stored);
       process.stdout.write(chalk.green(`Set ${chalk.bold(key)} in profile ${chalk.bold(profile)}`) + '\n');
     });
 

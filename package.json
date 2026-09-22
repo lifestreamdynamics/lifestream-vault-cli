@@ -1,6 +1,6 @@
 {
   "name": "@lifestreamdynamics/vault-cli",
-  "version": "1.4.7",
+  "version": "1.5.0",
   "description": "Command-line interface for Lifestream Vault",
   "engines": {
     "node": ">=22"
@@ -41,10 +41,10 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "node scripts/check-sdk-range.mjs && npm run build && npm test"
   },
   "dependencies": {
-    "@lifestreamdynamics/vault-sdk": "^2.2.0",
+    "@lifestreamdynamics/vault-sdk": "^2.3.0",
     "chalk": "^5.4.0",
     "chokidar": "^4.0.3",
     "commander": "^13.0.0",

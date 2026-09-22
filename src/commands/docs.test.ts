@@ -217,6 +217,23 @@ describe('docs commands', () => {
       expect(process.exitCode).toBe(1);
     });
 
+    it('explains a 403 as the admin-only move rule, with a way forward', async () => {
+      // POST /*path/move is owner/admin-only in a team vault (a move deletes the
+      // source path). A bare "Forbidden" leaves an editor guessing which of the
+      // vault, the document, or their token is at fault.
+      sdkMock.documents.move.mockRejectedValue(
+        Object.assign(new Error('Forbidden'), { statusCode: 403 }),
+      );
+
+      await program.parseAsync(['node', 'cli', 'docs', 'move', 'v1', 'a.md', 'b.md']);
+
+      const stderr = outputSpy.stderr.join('');
+      expect(stderr).toContain('owner or admin role');
+      expect(stderr).toContain('a.md to b.md');
+      expect(stderr).toContain('bulk-copy');
+      expect(process.exitCode).toBe(1);
+    });
+
     it('should skip the API call and print a preview when --dry-run is set', async () => {
       await program.parseAsync(['node', 'cli', 'docs', 'move', 'v1', 'old.md', 'new.md', '--dry-run']);
 
@@ -237,6 +254,21 @@ describe('docs commands', () => {
       expect(parsed.dryRun).toBe(true);
       expect(parsed.source).toBe('old.md');
       expect(parsed.destination).toBe('new.md');
+    });
+  });
+
+  describe('docs bulk-move', () => {
+    it('explains a 403 the same way as a single move', async () => {
+      sdkMock.documents.bulkMove.mockRejectedValue(
+        Object.assign(new Error('Forbidden'), { statusCode: 403 }),
+      );
+
+      await program.parseAsync([
+        'node', 'cli', 'docs', 'bulk-move', 'v1', '--paths', 'a.md,b.md', '--target', 'archive',
+      ]);
+
+      expect(outputSpy.stderr.join('')).toContain('owner or admin role');
+      expect(process.exitCode).toBe(1);
     });
   });
 

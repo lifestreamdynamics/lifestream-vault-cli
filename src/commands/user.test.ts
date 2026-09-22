@@ -104,6 +104,50 @@ describe('user commands', () => {
 
   // ── Password Change ─────────────────────────────────────────────────
 
+  describe('user password — keeps the CLI signed in', () => {
+    it('names its own session so the server revokes only the others', async () => {
+      mockedPromptPassword.mockResolvedValueOnce('oldpass').mockResolvedValueOnce('newpass');
+      sdkMock.renewSession.mockResolvedValue({ sessionId: 'cli-session' });
+      sdkMock.user.changePassword.mockResolvedValue(undefined);
+
+      await program.parseAsync(['node', 'cli', 'user', 'password']);
+
+      expect(sdkMock.user.changePassword).toHaveBeenCalledWith(
+        { currentPassword: 'oldpass', newPassword: 'newpass' },
+        'cli-session',
+      );
+      // The session id is learned before the change, not after (after, it is revoked).
+      expect(sdkMock.renewSession.mock.invocationCallOrder[0])
+        .toBeLessThan(sdkMock.user.changePassword.mock.invocationCallOrder[0]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('warns that this CLI was signed out too when its session cannot be identified', async () => {
+      mockedPromptPassword.mockResolvedValueOnce('oldpass').mockResolvedValueOnce('newpass');
+      sdkMock.renewSession.mockResolvedValue({ sessionId: null });
+      sdkMock.user.changePassword.mockResolvedValue(undefined);
+
+      await program.parseAsync(['node', 'cli', 'user', 'password']);
+
+      expect(sdkMock.user.changePassword).toHaveBeenCalledWith(
+        { currentPassword: 'oldpass', newPassword: 'newpass' },
+        undefined,
+      );
+      expect(outputSpy.stderr.join('')).toMatch(/lsvault auth login/);
+    });
+  });
+
+  describe('user sessions revoke-all — keeps the CLI signed in', () => {
+    it('passes its own session id', async () => {
+      sdkMock.renewSession.mockResolvedValue({ sessionId: 'cli-session' });
+      sdkMock.user.revokeAllSessions.mockResolvedValue({ message: '2 sessions revoked.' });
+
+      await program.parseAsync(['node', 'cli', 'user', 'sessions', 'revoke-all']);
+
+      expect(sdkMock.user.revokeAllSessions).toHaveBeenCalledWith('cli-session');
+    });
+  });
+
   describe('user password', () => {
     it('should change password using interactive prompts', async () => {
       mockedPromptPassword
@@ -116,7 +160,7 @@ describe('user commands', () => {
       expect(sdkMock.user.changePassword).toHaveBeenCalledWith({
         currentPassword: 'oldpass',
         newPassword: 'newpass',
-      });
+      }, undefined);
     });
 
     it('should change password using --password-stdin (two lines)', async () => {
@@ -130,7 +174,7 @@ describe('user commands', () => {
       expect(sdkMock.user.changePassword).toHaveBeenCalledWith({
         currentPassword: 'oldpass',
         newPassword: 'newpass',
-      });
+      }, undefined);
     });
 
     it('should error when current password is empty (non-TTY, no --password-stdin)', async () => {

@@ -25,13 +25,21 @@ export function registerSubscriptionCommands(program: Command): void {
             tier: data.subscription.tier,
             isActive: data.subscription.isActive,
             expiresAt: data.subscription.expiresAt,
+            status: data.subscription.status ?? 'active',
             ...data.usage,
           });
         } else {
           const s = data.subscription;
           process.stdout.write(`Plan:       ${chalk.green(s.tier)}\n`);
           process.stdout.write(`Active:     ${s.isActive ? chalk.green('yes') : chalk.red('no')}\n`);
-          process.stdout.write(`Expires:    ${s.expiresAt || chalk.dim('never')}\n`);
+          const expiryClause = s.expiresAt ? ` — plan ends ${s.expiresAt}` : '';
+          if (s.status === 'past_due') {
+            process.stdout.write(`Status:     ${chalk.yellow('payment failed')}${expiryClause}\n`);
+          } else if (s.status === 'cancelled') {
+            process.stdout.write(`Status:     ${chalk.yellow('cancelled')}${expiryClause}\n`);
+          } else {
+            process.stdout.write(`Expires:    ${s.expiresAt || chalk.dim('never')}\n`);
+          }
           process.stdout.write('\n');
           process.stdout.write(chalk.dim('Usage:') + '\n');
           process.stdout.write(`  Vaults:            ${data.usage.vaultCount}\n`);
@@ -121,8 +129,18 @@ EXAMPLES
         }
         out.startSpinner('Cancelling subscription...');
         const client = await getClientAsync();
-        await client.subscription.cancel(_opts.reason as string | undefined);
-        out.success('Subscription cancelled', { cancelled: true });
+        const result = await client.subscription.cancel(_opts.reason as string | undefined);
+        const accessUntil = result?.accessUntil ?? null;
+        const message = accessUntil
+          ? `Subscription cancelled; your plan stays active until ${accessUntil}`
+          : 'Subscription cancelled';
+        // Only pass the data object in JSON mode: `success()` prints it as a key-value
+        // table in text mode, which would restate the date `message` already spells out.
+        if (flags.output === 'json') {
+          out.success(message, { cancelled: true, accessUntil });
+        } else {
+          out.success(message);
+        }
       } catch (err) {
         handleError(out, err, 'Failed to cancel subscription');
       }

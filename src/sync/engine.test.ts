@@ -1,10 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'node:fs';
+import { NotFoundError } from '@lifestreamdynamics/vault-sdk';
 
 vi.mock('node:fs');
+vi.mock('./root-marker.js', () => ({ assertSyncRoot: vi.fn(), SYNC_ROOT_MARKER: '.lsvault-sync-root' }));
 const mockedFs = vi.mocked(fs);
+import { assertSyncRoot } from './root-marker.js';
 
 // Mock config/state modules
+vi.mock('./conflict.js', () => ({
+  createConflictFile: vi.fn(() => 'notes.conflicted.local.1970-01-01.md'),
+}));
+
 vi.mock('./state.js', () => ({
   loadSyncState: vi.fn(() => ({
     syncId: 'sync-1',
@@ -37,9 +44,12 @@ import {
   executePull,
   executePush,
   sweepOrphanedTempFiles,
+  isRetryableSyncError,
 } from './engine.js';
 import { computePullDiff, computePushDiff } from './diff.js';
 import { loadSyncState, saveSyncState } from './state.js';
+import { createConflictFile } from './conflict.js';
+const mockedCreateConflictFile = vi.mocked(createConflictFile);
 import { updateLastSync } from './config.js';
 import type { SyncConfig, SyncState, FileState } from './types.js';
 
@@ -60,6 +70,7 @@ function makeConfig(overrides: Partial<SyncConfig> = {}): SyncConfig {
 describe('sync engine', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedFs.lstatSync.mockImplementation(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); });
   });
 
   describe('scanLocalFiles', () => {
@@ -286,18 +297,26 @@ describe('sync engine', () => {
     });
 
     it('should detect remote deletions', () => {
+      // A tracked set large enough that one deletion sits below the mass-delete
+      // guard's threshold — the guard is exercised separately below.
+      const tracked: Record<string, FileState> = {};
+      for (let i = 0; i < 20; i++) {
+        tracked[`keep-${i}.md`] = { path: `keep-${i}.md`, hash: 'x', mtime: '', size: 5 };
+      }
       const lastState: SyncState = {
         syncId: 's1',
         local: {},
-        remote: { 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
+        remote: { ...tracked, 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
         updatedAt: '',
       };
       const diff = computePullDiff(
-        { 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
-        {},
+        { ...tracked, 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
+        tracked,
         lastState,
       );
       expect(diff.deletes).toHaveLength(1);
+      expect(diff.deletes[0].path).toBe('deleted.md');
+      expect(diff.deletionAnomaly).toBeUndefined();
     });
 
     it('should return empty diff when nothing changed', () => {
@@ -394,18 +413,26 @@ describe('sync engine', () => {
     });
 
     it('should detect local deletions', () => {
+      // A tracked set large enough that one deletion sits below the mass-delete
+      // guard's threshold — the guard is exercised separately below.
+      const tracked: Record<string, FileState> = {};
+      for (let i = 0; i < 20; i++) {
+        tracked[`keep-${i}.md`] = { path: `keep-${i}.md`, hash: 'x', mtime: '', size: 5 };
+      }
       const lastState: SyncState = {
         syncId: 's1',
-        local: { 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
+        local: { ...tracked, 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
         remote: {},
         updatedAt: '',
       };
       const diff = computePushDiff(
-        {},
-        { 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
+        tracked,
+        { ...tracked, 'deleted.md': { path: 'deleted.md', hash: 'x', mtime: '', size: 5 } },
         lastState,
       );
       expect(diff.deletes).toHaveLength(1);
+      expect(diff.deletes[0].path).toBe('deleted.md');
+      expect(diff.deletionAnomaly).toBeUndefined();
     });
 
     it('should upload all local files when remote is empty', () => {
@@ -468,7 +495,7 @@ describe('sync engine', () => {
 
       expect(result.filesDownloaded).toBe(1);
       expect(result.errors).toHaveLength(0);
-      expect(mockedFs.writeFileSync).toHaveBeenCalled();
+      expect(mockedFs.writeSync).toHaveBeenCalled();
       expect(saveSyncState).toHaveBeenCalled();
       expect(updateLastSync).toHaveBeenCalledWith('sync-1');
     });
@@ -495,6 +522,144 @@ describe('sync engine', () => {
       expect(result.filesDownloaded).toBe(0);
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0].error).toContain('quota exceeded');
+    });
+
+    it('holds back deletes when any download in the same run failed', async () => {
+      // The delete list comes from a diff snapshot. Once a transfer in the same run
+      // has failed, that snapshot is no longer known to hold, so acting on its deletes
+      // can remove a file whose remote counterpart was never successfully read.
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [
+          { path: 'fail.md', action: 'create' as const, direction: 'download' as const, sizeBytes: 10, reason: 'New' },
+        ],
+        deletes: [
+          { path: 'gone.md', action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Removed remotely' },
+        ],
+        totalBytes: 10,
+      };
+
+      const mockClient = {
+        documents: {
+          // An ordinary transient failure — not quota, not a 429.
+          get: vi.fn().mockRejectedValue(new Error('socket hang up')),
+        },
+      } as any;
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const result = await executePull(mockClient, config, diff);
+
+      expect(result.filesDeleted).toBe(0);
+      expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+      expect(result.errors.map(e => e.path)).toContain('gone.md');
+      expect(result.errors.find(e => e.path === 'gone.md')?.error).toContain('fail.md');
+    });
+
+    it('still applies deletes when every download succeeded', async () => {
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [
+          { path: 'ok.md', action: 'create' as const, direction: 'download' as const, sizeBytes: 10, reason: 'New' },
+        ],
+        deletes: [
+          { path: 'gone.md', action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Removed remotely' },
+        ],
+        totalBytes: 10,
+      };
+
+      const mockClient = {
+        documents: {
+          get: vi.fn().mockResolvedValue({ content: '# ok', document: { path: 'ok.md' } }),
+        },
+      } as any;
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const result = await executePull(mockClient, config, diff);
+
+      expect(result.filesDownloaded).toBe(1);
+      expect(result.filesDeleted).toBe(1);
+    });
+
+    it('rejects traversal downloads before network or filesystem access', async () => {
+      const diff = {
+        uploads: [],
+        downloads: [
+          { path: '../outside.md', action: 'create' as const, direction: 'download' as const, sizeBytes: 10, reason: 'remote' },
+        ],
+        deletes: [],
+        totalBytes: 10,
+      };
+      const get = vi.fn();
+
+      const result = await executePull({ documents: { get } } as any, makeConfig(), diff);
+
+      expect(result.filesDownloaded).toBe(0);
+      expect(result.errors[0].error).toMatch(/Unsafe/);
+      expect(get).not.toHaveBeenCalled();
+      expect(mockedFs.writeSync).not.toHaveBeenCalled();
+    });
+
+    it('preserves a locally-modified file as a conflict copy before deleting it', async () => {
+      // The pull diff emits this delete purely because the document vanished
+      // remotely; it never compares the local file against last-known state.
+      // Without a guard, a local edit the user has not pushed is destroyed.
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [],
+        deletes: [
+          { path: 'notes.md', action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Deleted remotely' },
+        ],
+        totalBytes: 0,
+      };
+
+      vi.mocked(loadSyncState).mockReturnValueOnce({
+        syncId: 'sync-1',
+        // Last sync saw this content; the file on disk now differs.
+        local: { 'notes.md': { path: 'notes.md', hash: 'hash-OLD', mtime: '', size: 3 } },
+        remote: {},
+        updatedAt: '1970-01-01T00:00:00.000Z',
+      } as never);
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('MY UNSAVED EDIT' as never);
+
+      const onConflict = vi.fn();
+      const result = await executePull({} as any, config, diff, undefined, undefined, undefined, onConflict);
+
+      expect(mockedCreateConflictFile).toHaveBeenCalledWith(
+        config.localPath, 'notes.md', 'MY UNSAVED EDIT', 'local',
+      );
+      expect(onConflict).toHaveBeenCalledWith('notes.md', expect.any(String));
+      expect(result.filesDeleted).toBe(1);
+      expect(mockedFs.unlinkSync).toHaveBeenCalled();
+    });
+
+    it('deletes without a conflict copy when the local file is unchanged since last sync', async () => {
+      const config = makeConfig();
+      const diff = {
+        uploads: [],
+        downloads: [],
+        deletes: [
+          { path: 'notes.md', action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Deleted remotely' },
+        ],
+        totalBytes: 0,
+      };
+
+      vi.mocked(loadSyncState).mockReturnValueOnce({
+        syncId: 'sync-1',
+        local: { 'notes.md': { path: 'notes.md', hash: 'hash-UNCHANGED', mtime: '', size: 9 } },
+        remote: {},
+        updatedAt: '1970-01-01T00:00:00.000Z',
+      } as never);
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('UNCHANGED' as never);
+
+      await executePull({} as any, config, diff);
+
+      expect(mockedCreateConflictFile).not.toHaveBeenCalled();
+      expect(mockedFs.unlinkSync).toHaveBeenCalled();
     });
 
     it('should delete local files on remote deletion', async () => {
@@ -568,7 +733,7 @@ describe('sync engine', () => {
       expect(callArgs[2]).toBeUndefined(); // no options → no ifNoneMatch
 
       // The file must be written
-      expect(mockedFs.writeFileSync).toHaveBeenCalled();
+      expect(mockedFs.writeSync).toHaveBeenCalled();
     });
 
     it('update entry with remoteHash and existing local file uses conditional GET (ifNoneMatch)', async () => {
@@ -611,7 +776,7 @@ describe('sync engine', () => {
         'cached.md',
         { ifNoneMatch: '"abc123"' },
       );
-      expect(mockedFs.writeFileSync).toHaveBeenCalled();
+      expect(mockedFs.writeSync).toHaveBeenCalled();
     });
 
     it('issues unconditional GET when no remoteHash on the entry', async () => {
@@ -687,8 +852,8 @@ describe('sync engine', () => {
       expect(result.filesDownloaded).toBe(1);
       expect(result.errors).toHaveLength(0);
 
-      // writeFileSync must NOT be called (no write on 304)
-      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+      // No write at all on 304
+      expect(mockedFs.writeSync).not.toHaveBeenCalled();
       expect(mockedFs.renameSync).not.toHaveBeenCalled();
 
       // readFileSync IS called to retrieve local content for state hash
@@ -723,6 +888,7 @@ describe('sync engine', () => {
 
       expect(result.filesUploaded).toBe(1);
       expect(result.errors).toHaveLength(0);
+      expect(result.failed).toBe(false);
       expect(mockClient.documents.put).toHaveBeenCalledWith('vault-1', 'local.md', '# Local content');
       expect(saveSyncState).toHaveBeenCalled();
       expect(updateLastSync).toHaveBeenCalledWith('sync-1');
@@ -777,8 +943,483 @@ describe('sync engine', () => {
       const result = await executePush(mockClient, config, diff, undefined, 1);
 
       expect(result.filesUploaded).toBe(0);
+      expect(mockClient.documents.put).toHaveBeenCalledTimes(1);
+      // The quota failure itself plus the two uploads that were never attempted.
+      expect(result.errors).toHaveLength(3);
+      expect(result.errors[0]).toEqual({ path: 'a.md', error: 'storage limit exceeded', retryable: false });
+      expect(result.errors.slice(1)).toEqual([
+        { path: 'b.md', error: expect.stringMatching(/Skipped.*quota/), retryable: true },
+        { path: 'c.md', error: expect.stringMatching(/Skipped.*quota/), retryable: true },
+      ]);
+      expect(result.filesSkipped).toBe(2);
+      expect(result.failed).toBe(true);
+    });
+
+    it('does not run remote deletes after submission stopped, and records them as skipped', async () => {
+      const diff = {
+        uploads: [
+          { path: 'a.md', action: 'create' as const, direction: 'upload' as const, sizeBytes: 50, reason: 'New' },
+        ],
+        downloads: [],
+        deletes: [
+          { path: 'gone.md', action: 'delete' as const, direction: 'upload' as const, sizeBytes: 0, reason: 'Deleted locally' },
+        ],
+        totalBytes: 50,
+      };
+      const mockClient = {
+        documents: {
+          put: vi.fn().mockRejectedValue(Object.assign(new Error('Rate limit exceeded'), { statusCode: 429 })),
+          delete: vi.fn(),
+        },
+      } as any;
+      mockedFs.readFileSync.mockReturnValue('content');
+
+      const result = await executePush(mockClient, makeConfig(), diff, undefined, 1);
+
+      expect(mockClient.documents.delete).not.toHaveBeenCalled();
+      expect(result.filesDeleted).toBe(0);
+      expect(result.filesSkipped).toBe(1);
+      expect(result.errors.map(e => e.path)).toEqual(['a.md', 'gone.md']);
+      expect(result.errors[1].error).toMatch(/Skipped.*rate limit/);
+    });
+
+    it('does not retry a permanent 4xx rejection', async () => {
+      const diff = {
+        uploads: [{ path: 'a.md', action: 'create' as const, direction: 'upload' as const, sizeBytes: 5, reason: 'New' }],
+        downloads: [], deletes: [], totalBytes: 5,
+      };
+      const put = vi.fn().mockRejectedValue(Object.assign(new Error('Conflict'), { statusCode: 409 }));
+      mockedFs.readFileSync.mockReturnValue('content');
+
+      const result = await executePush({ documents: { put } } as any, makeConfig(), diff);
+
+      expect(put).toHaveBeenCalledTimes(1);
+      expect(result.errors[0]).toEqual(expect.objectContaining({ path: 'a.md', retryable: false }));
+    });
+
+    it('explains an admin-only 403 on a team-vault delete', async () => {
+      const diff = {
+        uploads: [], downloads: [],
+        deletes: [{ path: 'team/doc.md', action: 'delete' as const, direction: 'upload' as const, sizeBytes: 0, reason: 'Deleted locally' }],
+        totalBytes: 0,
+      };
+      const del = vi.fn().mockRejectedValue(Object.assign(new Error('Permission denied'), { statusCode: 403 }));
+
+      const result = await executePush({ documents: { delete: del } } as any, makeConfig(), diff);
+
+      expect(del).toHaveBeenCalledTimes(1);
+      expect(result.errors[0].error).toMatch(/forbidden \(403\).*admin role.*not propagated/);
+      expect(result.errors[0].retryable).toBe(false);
+      expect(result.failed).toBe(true);
+    });
+
+    it('an untrusted root prevents the remote delete', async () => {
+      vi.mocked(assertSyncRoot)
+        .mockImplementationOnce(() => undefined)              // executeSyncOperation entry
+        .mockImplementationOnce(() => { throw new Error('Sync root marker is missing'); }); // deleteFile
+      const diff = {
+        uploads: [], downloads: [],
+        deletes: [{ path: 'old.md', action: 'delete' as const, direction: 'upload' as const, sizeBytes: 0, reason: 'Deleted locally' }],
+        totalBytes: 0,
+      };
+      const del = vi.fn();
+
+      const result = await executePush({ documents: { delete: del } } as any, makeConfig(), diff);
+
+      expect(del).not.toHaveBeenCalled();
+      expect(result.filesDeleted).toBe(0);
+      expect(result.errors[0].error).toMatch(/marker is missing/);
+    });
+  });
+
+  describe('executePush conditional writes', () => {
+    // These tests drive the REAL computePushDiff into executePush. Hand-building a
+    // diff entry with remoteHash set is what let the precondition ship as dead code:
+    // computePushDiff never populated the field, so executePush always took its
+    // unconditional branch while fixture-based tests passed.
+    it('sends a precondition derived from a real push diff, not a hand-built entry', async () => {
+      const localFiles = {
+        'notes/changed.md': { path: 'notes/changed.md', hash: 'local-new', mtime: 'm', size: 10 },
+      };
+      const remoteFiles = {
+        'notes/changed.md': { path: 'notes/changed.md', hash: 'remote-observed', mtime: 'm', size: 10 },
+      };
+      const lastState = {
+        syncId: 'sync-1',
+        local: { 'notes/changed.md': { path: 'notes/changed.md', hash: 'local-old', mtime: 'm', size: 10 } },
+        remote: { 'notes/changed.md': { path: 'notes/changed.md', hash: 'remote-observed', mtime: 'm', size: 10 } },
+        updatedAt: '',
+      } as any;
+
+      const diff = computePushDiff(localFiles as any, remoteFiles as any, lastState);
+      expect(diff.uploads).toHaveLength(1);
+
+      const put = vi.fn().mockResolvedValue({});
+      mockedFs.readFileSync.mockReturnValue('# Local content' as any);
+
+      await executePush({ documents: { put } } as any, makeConfig(), diff);
+
+      expect(put).toHaveBeenCalledWith('vault-1', 'notes/changed.md', '# Local content', {
+        ifMatch: 'remote-observed',
+      });
+    });
+
+    it('sends a precondition on a delete derived from a real push diff', async () => {
+      // Padded so this single deletion stays under the mass-delete threshold;
+      // the test is about the If-Match, not the guard.
+      const tracked: Record<string, FileState> = {};
+      for (let i = 0; i < 20; i++) {
+        tracked[`keep-${i}.md`] = { path: `keep-${i}.md`, hash: 'x', mtime: '', size: 5 };
+      }
+      const lastState = {
+        syncId: 'sync-1',
+        local: { ...tracked, 'notes/gone.md': { path: 'notes/gone.md', hash: 'h', mtime: 'm', size: 5 } },
+        remote: { 'notes/gone.md': { path: 'notes/gone.md', hash: 'remote-observed', mtime: 'm', size: 5 } },
+        updatedAt: '',
+      } as any;
+
+      const diff = computePushDiff(
+        tracked as any,
+        { ...tracked, 'notes/gone.md': { path: 'notes/gone.md', hash: 'remote-observed', mtime: 'm', size: 5 } } as any,
+        lastState,
+      );
+      expect(diff.deletes).toHaveLength(1);
+
+      const del = vi.fn().mockResolvedValue(undefined);
+
+      await executePush({ documents: { delete: del } } as any, makeConfig(), diff);
+
+      expect(del).toHaveBeenCalledWith('vault-1', 'notes/gone.md', { ifMatch: 'remote-observed' });
+    });
+
+    it('sends the diff-observed remote hash as If-Match on an update', async () => {
+      const diff = {
+        uploads: [
+          { path: 'local.md', action: 'update' as const, direction: 'upload' as const, sizeBytes: 10, reason: 'Changed', remoteHash: 'remote-hash-at-diff-time' },
+        ],
+        deletes: [],
+        downloads: [],
+        totalBytes: 10,
+      };
+      const put = vi.fn().mockResolvedValue({});
+      mockedFs.readFileSync.mockReturnValue('# Local content' as any);
+
+      await executePush({ documents: { put } } as any, makeConfig(), diff);
+
+      expect(put).toHaveBeenCalledWith('vault-1', 'local.md', '# Local content', {
+        ifMatch: 'remote-hash-at-diff-time',
+      });
+    });
+
+    it('sends no precondition for a create, which has no remote counterpart', async () => {
+      const diff = {
+        uploads: [
+          { path: 'new.md', action: 'create' as const, direction: 'upload' as const, sizeBytes: 10, reason: 'New' },
+        ],
+        deletes: [],
+        downloads: [],
+        totalBytes: 10,
+      };
+      const put = vi.fn().mockResolvedValue({});
+      mockedFs.readFileSync.mockReturnValue('# New' as any);
+
+      await executePush({ documents: { put } } as any, makeConfig(), diff);
+
+      expect(put).toHaveBeenCalledWith('vault-1', 'new.md', '# New');
+    });
+
+    it('reports a 412 as a non-retryable conflict instead of retrying the write', async () => {
+      const diff = {
+        uploads: [
+          { path: 'raced.md', action: 'update' as const, direction: 'upload' as const, sizeBytes: 10, reason: 'Changed', remoteHash: 'stale' },
+        ],
+        deletes: [],
+        downloads: [],
+        totalBytes: 10,
+      };
+      const put = vi.fn().mockRejectedValue(
+        Object.assign(new Error('Precondition failed'), { statusCode: 412 }),
+      );
+      mockedFs.readFileSync.mockReturnValue('# Local content' as any);
+
+      const result = await executePush({ documents: { put } } as any, makeConfig(), diff);
+
+      // Retrying a precondition failure either keeps failing or, if forced past it,
+      // performs the very overwrite the precondition prevents.
+      expect(put).toHaveBeenCalledTimes(1);
+      expect(result.filesUploaded).toBe(0);
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].path).toBe('a.md');
+      expect(result.errors[0].retryable).toBe(false);
+      expect(result.errors[0].error).toContain('changed on the server');
+    });
+
+    it('guards the remote delete with the same precondition', async () => {
+      const diff = {
+        uploads: [],
+        downloads: [],
+        deletes: [
+          { path: 'gone.md', action: 'delete' as const, direction: 'upload' as const, sizeBytes: 0, reason: 'Deleted locally', remoteHash: 'remote-hash-at-diff-time' },
+        ],
+        totalBytes: 0,
+      };
+      const del = vi.fn().mockResolvedValue(undefined);
+
+      await executePush({ documents: { delete: del } } as any, makeConfig(), diff);
+
+      expect(del).toHaveBeenCalledWith('vault-1', 'gone.md', {
+        ifMatch: 'remote-hash-at-diff-time',
+      });
+    });
+  });
+
+  describe('executePull root safety', () => {
+    it('an untrusted root prevents the local delete', async () => {
+      vi.mocked(assertSyncRoot)
+        .mockImplementationOnce(() => undefined)
+        .mockImplementationOnce(() => { throw new Error('Sync root marker is missing'); });
+      const diff = {
+        uploads: [], downloads: [],
+        deletes: [{ path: 'old.md', action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Deleted remotely' }],
+        totalBytes: 0,
+      };
+      mockedFs.existsSync.mockReturnValue(true);
+
+      const result = await executePull({} as any, makeConfig(), diff);
+
+      expect(mockedFs.unlinkSync).not.toHaveBeenCalled();
+      expect(result.filesDeleted).toBe(0);
+      expect(result.errors[0].error).toMatch(/marker is missing/);
+    });
+  });
+
+  describe('executePull conflict backup', () => {
+    /** A pull diff whose only work is deleting one locally-present document. */
+    function deleteOnly(docPath = 'notes.md') {
+      return {
+        uploads: [],
+        downloads: [],
+        deletes: [
+          { path: docPath, action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Deleted from remote' },
+        ],
+        totalBytes: 0,
+      };
+    }
+
+    it('backs up the local file when there is NO last-known hash for it', async () => {
+      // The absent entry is the case where we know least about the file, and it
+      // used to be exactly the condition under which the backup was skipped.
+      // The remote poller has always treated it as "changed"; the engine now agrees.
+      const config = makeConfig();
+      vi.mocked(loadSyncState).mockReturnValueOnce({
+        syncId: 'sync-1', local: {}, remote: {}, updatedAt: '1970-01-01T00:00:00.000Z',
+      } as never);
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('CONTENT OF UNKNOWN PROVENANCE' as never);
+
+      const onConflict = vi.fn();
+      const result = await executePull({} as any, config, deleteOnly(), undefined, undefined, undefined, onConflict);
+
+      expect(mockedCreateConflictFile).toHaveBeenCalledWith(
+        config.localPath, 'notes.md', 'CONTENT OF UNKNOWN PROVENANCE', 'local',
+      );
+      expect(onConflict).toHaveBeenCalledWith('notes.md', expect.any(String));
+      expect(result.filesDeleted).toBe(1);
+      expect(mockedFs.unlinkSync).toHaveBeenCalled();
+    });
+
+    it('skips the backup only when the file provably matches the last sync', async () => {
+      const config = makeConfig();
+      vi.mocked(loadSyncState).mockReturnValueOnce({
+        syncId: 'sync-1',
+        local: { 'notes.md': { path: 'notes.md', hash: 'hash-UNCHANGED', mtime: '', size: 9 } },
+        remote: {},
+        updatedAt: '1970-01-01T00:00:00.000Z',
+      } as never);
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('UNCHANGED' as never);
+
+      const onConflict = vi.fn();
+      await executePull({} as any, config, deleteOnly(), undefined, undefined, undefined, onConflict);
+
+      expect(mockedCreateConflictFile).not.toHaveBeenCalled();
+      expect(onConflict).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('executePush delete of an already-deleted document', () => {
+    function deleteEntry(remoteHash?: string) {
+      return {
+        uploads: [], downloads: [],
+        deletes: [{
+          path: 'gone.md', action: 'delete' as const, direction: 'upload' as const,
+          sizeBytes: 0, reason: 'Deleted locally', ...(remoteHash ? { remoteHash } : {}),
+        }],
+        totalBytes: 0,
+      };
+    }
+
+    it('treats a 412 whose document is already absent as success', async () => {
+      // assertIfMatch answers 412 for both "the document moved on" and "the
+      // document is gone", distinguishable only by prose we must not parse.
+      // Without the follow-up probe the path wedges every later push forever.
+      const deleteFn = vi.fn().mockRejectedValue(Object.assign(new Error('Precondition Failed'), { statusCode: 412 }));
+      const get = vi.fn().mockRejectedValue(new NotFoundError('Document', 'gone.md'));
+      const client = { documents: { delete: deleteFn, get } } as any;
+
+      const result = await executePush(client, makeConfig(), deleteEntry('abc123'));
+
+      expect(get).toHaveBeenCalledWith('vault-1', 'gone.md');
+      expect(result.filesDeleted).toBe(1);
+      expect(result.errors).toHaveLength(0);
+      // State must be cleared, exactly as for a real delete, or the diff replans it.
+      const saved = vi.mocked(saveSyncState).mock.calls.at(-1)?.[0] as SyncState;
+      expect(saved.local['gone.md']).toBeUndefined();
+      expect(saved.remote['gone.md']).toBeUndefined();
+    });
+
+    it('still reports a 412 whose document is present as a precondition failure', async () => {
+      const deleteFn = vi.fn().mockRejectedValue(Object.assign(new Error('Precondition Failed'), { statusCode: 412 }));
+      const get = vi.fn().mockResolvedValue({ content: '# still here', document: { path: 'gone.md' } });
+      const client = { documents: { delete: deleteFn, get } } as any;
+
+      const result = await executePush(client, makeConfig(), deleteEntry('abc123'));
+
+      expect(result.filesDeleted).toBe(0);
+      expect(result.errors[0].error).toMatch(/changed on the server/);
+      expect(result.errors[0].retryable).toBe(false);
+    });
+
+    it('does not swallow a 412 when the probe itself fails', async () => {
+      // A network failure on the probe leaves the remote state unknown; the
+      // original precondition failure must stand.
+      const deleteFn = vi.fn().mockRejectedValue(Object.assign(new Error('Precondition Failed'), { statusCode: 412 }));
+      const get = vi.fn().mockRejectedValue(new Error('socket hang up'));
+      const client = { documents: { delete: deleteFn, get } } as any;
+
+      const result = await executePush(client, makeConfig(), deleteEntry('abc123'));
+
+      expect(result.filesDeleted).toBe(0);
+      expect(result.errors[0].error).toMatch(/changed on the server/);
+    });
+  });
+
+  describe('executePush denied deletes', () => {
+    it('records a 403 delete in the sync state so pull stops restoring the file', async () => {
+      // Document DELETE is admin-only in a team vault. Without the marker the
+      // push fails, the pull phase restores the file, the watcher deletes it
+      // again — a loop that never terminates.
+      const deleteFn = vi.fn().mockRejectedValue(Object.assign(new Error('Forbidden'), { statusCode: 403 }));
+      const client = { documents: { delete: deleteFn } } as any;
+      const diff = {
+        uploads: [], downloads: [],
+        deletes: [{ path: 'team.md', action: 'delete' as const, direction: 'upload' as const, sizeBytes: 0, reason: 'Deleted locally' }],
+        totalBytes: 0,
+      };
+
+      const result = await executePush(client, makeConfig(), diff);
+
+      expect(result.errors[0].retryable).toBe(false);
+      const saved = vi.mocked(saveSyncState).mock.calls.at(-1)?.[0] as SyncState;
+      expect(saved.deniedDeletes?.['team.md']).toBeDefined();
+      expect(saved.deniedDeletes?.['team.md'].reason).toMatch(/admin role/);
+    });
+
+    it('clears the marker once the deletion finally succeeds', async () => {
+      vi.mocked(loadSyncState).mockReturnValueOnce({
+        syncId: 'sync-1', local: {}, remote: {},
+        deniedDeletes: { 'team.md': { deniedAt: '2026-09-01T00:00:00.000Z', reason: 'forbidden' } },
+        updatedAt: '',
+      } as never);
+      const client = { documents: { delete: vi.fn().mockResolvedValue(undefined) } } as any;
+      const diff = {
+        uploads: [], downloads: [],
+        deletes: [{ path: 'team.md', action: 'delete' as const, direction: 'upload' as const, sizeBytes: 0, reason: 'Deleted locally' }],
+        totalBytes: 0,
+      };
+
+      await executePush(client, makeConfig(), diff);
+
+      const saved = vi.mocked(saveSyncState).mock.calls.at(-1)?.[0] as SyncState;
+      expect(saved.deniedDeletes?.['team.md']).toBeUndefined();
+    });
+
+    it('does not record a pull-side local delete as a denied remote delete', async () => {
+      // Only an upload-direction delete talks to the server. A 403 surfacing on
+      // the download side would be about the local filesystem.
+      vi.mocked(loadSyncState).mockReturnValueOnce({
+        syncId: 'sync-1', local: {}, remote: {}, updatedAt: '',
+      } as never);
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.unlinkSync.mockImplementationOnce(() => {
+        throw Object.assign(new Error('EACCES'), { statusCode: 403 });
+      });
+      const diff = {
+        uploads: [], downloads: [],
+        deletes: [{ path: 'local.md', action: 'delete' as const, direction: 'download' as const, sizeBytes: 0, reason: 'Deleted from remote' }],
+        totalBytes: 0,
+      };
+
+      await executePull({} as any, makeConfig(), diff);
+
+      const saved = vi.mocked(saveSyncState).mock.calls.at(-1)?.[0] as SyncState;
+      expect(saved.deniedDeletes).toBeUndefined();
+    });
+  });
+
+  describe('empty remote hashes are not preconditions', () => {
+    it('omits If-Match on an upload whose observed remote hash is empty', async () => {
+      // scanRemoteFiles falls back to '' for a path the server called unchanged
+      // that the persisted state has no entry for. `If-Match: ""` matches
+      // nothing, so sending it would 412 every such write unconditionally.
+      const put = vi.fn().mockResolvedValue({});
+      const client = { documents: { put } } as any;
+      mockedFs.readFileSync.mockReturnValue('# body' as never);
+      const diff = {
+        uploads: [{
+          path: 'unknown.md', action: 'update' as const, direction: 'upload' as const,
+          sizeBytes: 6, reason: 'Local file updated', remoteHash: '',
+        }],
+        downloads: [], deletes: [], totalBytes: 6,
+      };
+
+      await executePush(client, makeConfig(), diff);
+
+      expect(put).toHaveBeenCalledWith('vault-1', 'unknown.md', '# body');
+    });
+
+    it('omits If-Match on a delete whose observed remote hash is empty', async () => {
+      const deleteFn = vi.fn().mockResolvedValue(undefined);
+      const client = { documents: { delete: deleteFn } } as any;
+      const diff = {
+        uploads: [], downloads: [],
+        deletes: [{
+          path: 'unknown.md', action: 'delete' as const, direction: 'upload' as const,
+          sizeBytes: 0, reason: 'Deleted locally', remoteHash: '',
+        }],
+        totalBytes: 0,
+      };
+
+      await executePush(client, makeConfig(), diff);
+
+      expect(deleteFn).toHaveBeenCalledWith('vault-1', 'unknown.md');
+    });
+
+    it('issues an unconditional GET on a download whose remote hash is empty', async () => {
+      const get = vi.fn().mockResolvedValue({ content: '# body', document: { path: 'unknown.md' } });
+      const client = { documents: { get } } as any;
+      mockedFs.existsSync.mockReturnValue(true);
+      const diff = {
+        uploads: [],
+        downloads: [{
+          path: 'unknown.md', action: 'update' as const, direction: 'download' as const,
+          sizeBytes: 6, reason: 'Remote file updated', remoteHash: '',
+        }],
+        deletes: [], totalBytes: 6,
+      };
+
+      await executePull(client, makeConfig(), diff);
+
+      expect(get).toHaveBeenCalledWith('vault-1', 'unknown.md');
     });
   });
 
@@ -935,5 +1576,25 @@ describe('isThrottleError', () => {
     expect(isThrottleError('Unauthorized')).toBe(false);
     expect(isThrottleError('')).toBe(false);
     expect(isThrottleError({ statusCode: 403 })).toBe(false);
+  });
+});
+
+describe('isRetryableSyncError', () => {
+  it('treats every HTTP status as already handled (4xx permanent, 5xx/429 retried by the SDK)', () => {
+    for (const statusCode of [400, 401, 403, 404, 409, 429, 500, 502, 503]) {
+      expect(isRetryableSyncError(Object.assign(new Error(`HTTP ${statusCode}`), { statusCode }))).toBe(false);
+    }
+    expect(isRetryableSyncError({ status: 500 })).toBe(false);
+  });
+
+  it('treats quota and permission messages without a status as permanent', () => {
+    expect(isRetryableSyncError(new Error('storage limit exceeded'))).toBe(false);
+    expect(isRetryableSyncError(new Error('Permission denied'))).toBe(false);
+    expect(isRetryableSyncError(new Error('HTTP 429 Too Many Requests'))).toBe(false);
+  });
+
+  it('retries only status-less network failures', () => {
+    expect(isRetryableSyncError(new Error('ECONNRESET'))).toBe(true);
+    expect(isRetryableSyncError(new Error('Network request failed'))).toBe(true);
   });
 });

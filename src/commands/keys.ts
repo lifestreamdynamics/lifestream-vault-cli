@@ -5,6 +5,11 @@ import { addGlobalFlags, resolveFlags } from '../utils/flags.js';
 import { createOutput, handleError } from '../utils/output.js';
 import type { CreateApiKeyParams, UpdateApiKeyParams } from '@lifestreamdynamics/vault-sdk';
 
+/** The API names this field `keyPrefix`; SDKs before the fix exposed only `prefix`. */
+function displayPrefix(key: { keyPrefix?: string; prefix?: string }): string {
+  return key.keyPrefix ?? key.prefix ?? '';
+}
+
 export function registerKeyCommands(program: Command): void {
   const keys = program.command('keys')
     .description('Create, list, update, and revoke API keys (requires JWT auth — use "lsvault auth login" first)')
@@ -23,8 +28,8 @@ export function registerKeyCommands(program: Command): void {
         out.list(
           apiKeys.map(key => ({
             name: key.name,
-            prefix: key.prefix,
-            scopes: key.scopes.join(', '),
+            prefix: displayPrefix(key),
+            scopes: (key.scopes ?? []).join(', '),
             isActive: key.isActive,
             expiresAt: key.expiresAt || null,
             lastUsedAt: key.lastUsedAt || null,
@@ -67,8 +72,8 @@ export function registerKeyCommands(program: Command): void {
         out.record({
           id: key.id,
           name: key.name,
-          prefix: key.prefix,
-          scopes: key.scopes.join(', '),
+          prefix: displayPrefix(key),
+          scopes: (key.scopes ?? []).join(', '),
           isActive: key.isActive,
           vaultId: key.vaultId || null,
           expiresAt: key.expiresAt || null,
@@ -107,14 +112,15 @@ EXAMPLES
         const apiKey = await client.apiKeys.create(params);
         out.stopSpinner();
 
+        const scopes = (apiKey.scopes ?? []).join(', ');
         if (flags.output === 'json') {
-          out.record({ key: apiKey.key, name: apiKey.name, prefix: apiKey.prefix, scopes: apiKey.scopes.join(', ') });
+          out.record({ key: apiKey.key, name: apiKey.name, prefix: displayPrefix(apiKey), scopes });
         } else {
           out.warn('\nIMPORTANT: Save this key securely. It cannot be retrieved later.\n');
           process.stdout.write(chalk.green.bold(`API Key: ${apiKey.key}\n`));
           process.stdout.write(`\nName:   ${apiKey.name}\n`);
-          process.stdout.write(`Prefix: ${apiKey.prefix}\n`);
-          process.stdout.write(`Scopes: ${apiKey.scopes.join(', ')}\n`);
+          process.stdout.write(`Prefix: ${displayPrefix(apiKey)}\n`);
+          process.stdout.write(`Scopes: ${scopes}\n`);
         }
       } catch (err) {
         handleError(out, err, 'Failed to create API key');

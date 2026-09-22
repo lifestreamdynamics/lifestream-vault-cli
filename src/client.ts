@@ -1,5 +1,37 @@
-import { LifestreamVaultClient } from '@lifestreamdynamics/vault-sdk';
+import { LifestreamVaultClient, type AuthTokens } from '@lifestreamdynamics/vault-sdk';
 import { loadConfig, loadConfigAsync, getCredentialManager } from './config.js';
+
+const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
+
+/** Resolve the SDK request timeout from the environment (1-300 seconds). */
+export function getHttpTimeoutMs(envValue = process.env.LSVAULT_HTTP_TIMEOUT_MS): number {
+  if (envValue === undefined || envValue === '') return DEFAULT_HTTP_TIMEOUT_MS;
+  if (!/^\d+$/.test(envValue)) {
+    throw new Error('LSVAULT_HTTP_TIMEOUT_MS must be an integer from 1000 to 300000 milliseconds (1-300 seconds).');
+  }
+  const timeout = Number(envValue);
+  if (!Number.isSafeInteger(timeout) || timeout < 1_000 || timeout > 300_000) {
+    throw new Error('LSVAULT_HTTP_TIMEOUT_MS must be between 1000 and 300000 milliseconds (1-300 seconds).');
+  }
+  return timeout;
+}
+
+/**
+ * Persist tokens from an automatic refresh. The server rotates the refresh
+ * token and invalidates the presented one, so the new refresh token must be
+ * stored too — keeping only the access token strands the next process with a
+ * dead refresh token. Best-effort: a storage failure must not fail the request.
+ */
+async function persistRefreshedTokens(tokens: AuthTokens): Promise<void> {
+  try {
+    await getCredentialManager().saveCredentials({
+      accessToken: tokens.accessToken,
+      ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+    });
+  } catch {
+    // Best-effort persistence; don't break the request
+  }
+}
 
 /**
  * Create an SDK client from CLI configuration.
@@ -10,6 +42,7 @@ import { loadConfig, loadConfigAsync, getCredentialManager } from './config.js';
  */
 export function getClient(): LifestreamVaultClient {
   const config = loadConfig();
+  const timeout = getHttpTimeoutMs();
 
   // JWT auth mode: use access + refresh tokens
   if (config.accessToken) {
@@ -17,17 +50,8 @@ export function getClient(): LifestreamVaultClient {
       baseUrl: config.apiUrl,
       accessToken: config.accessToken,
       refreshToken: config.refreshToken,
-      onTokenRefresh: async (tokens) => {
-        // Persist refreshed tokens to secure storage
-        try {
-          const cm = getCredentialManager();
-          await cm.saveCredentials({
-            accessToken: tokens.accessToken,
-          });
-        } catch {
-          // Best-effort persistence; don't break the request
-        }
-      },
+      timeout,
+      onTokenRefresh: persistRefreshedTokens,
     });
   }
 
@@ -36,6 +60,7 @@ export function getClient(): LifestreamVaultClient {
     return new LifestreamVaultClient({
       baseUrl: config.apiUrl,
       apiKey: config.apiKey,
+      timeout,
     });
   }
 
@@ -55,22 +80,15 @@ export function getClient(): LifestreamVaultClient {
  */
 export async function getClientAsync(): Promise<LifestreamVaultClient> {
   const config = await loadConfigAsync();
+  const timeout = getHttpTimeoutMs();
 
   if (config.accessToken) {
     return new LifestreamVaultClient({
       baseUrl: config.apiUrl,
       accessToken: config.accessToken,
       refreshToken: config.refreshToken,
-      onTokenRefresh: async (tokens) => {
-        try {
-          const cm = getCredentialManager();
-          await cm.saveCredentials({
-            accessToken: tokens.accessToken,
-          });
-        } catch {
-          // Best-effort
-        }
-      },
+      timeout,
+      onTokenRefresh: persistRefreshedTokens,
     });
   }
 
@@ -78,6 +96,7 @@ export async function getClientAsync(): Promise<LifestreamVaultClient> {
     return new LifestreamVaultClient({
       baseUrl: config.apiUrl,
       apiKey: config.apiKey,
+      timeout,
     });
   }
 

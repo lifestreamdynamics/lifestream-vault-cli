@@ -274,4 +274,26 @@ describe('handleError', () => {
     expect(output).toContain('string error');
     expect(process.exitCode).toBe(1);
   });
+
+  it('adds the timeout hint when an SDK NetworkError wraps a TimeoutError', () => {
+    const out = createOutput({
+      output: 'text', verbose: false, quiet: false, noColor: true, dryRun: false,
+    });
+    const inner = new Error('The operation was aborted');
+    inner.name = 'TimeoutError';
+    const wrapped = Object.assign(new Error('Network request failed'), { name: 'NetworkError', originalError: inner });
+    handleError(out, wrapped);
+    const output = stderrChunks.join('');
+    expect(output).toContain('Network request failed');
+    expect(output).toContain('LSVAULT_HTTP_TIMEOUT_MS');
+  });
+
+  it('does not add the timeout hint for an unrelated NetworkError', () => {
+    const out = createOutput({
+      output: 'text', verbose: false, quiet: false, noColor: true, dryRun: false,
+    });
+    const wrapped = Object.assign(new Error('Network request failed'), { name: 'NetworkError', originalError: new Error('ECONNREFUSED') });
+    handleError(out, wrapped);
+    expect(stderrChunks.join('')).not.toContain('LSVAULT_HTTP_TIMEOUT_MS');
+  });
 });

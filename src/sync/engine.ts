@@ -3,13 +3,18 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { NotFoundError } from '@lifestreamdynamics/vault-sdk';
 import type { LifestreamVaultClient, SyncListKnownState, DocumentGetResult, DocumentWithContent } from '@lifestreamdynamics/vault-sdk';
 import type { SyncConfig, SyncState, FileState } from './types.js';
 import { loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from './state.js';
 import { updateLastSync } from './config.js';
-import { resolveIgnorePatterns, shouldIgnore } from './ignore.js';
+import { shouldIgnore } from './ignore.js';
 import { computePullDiff, computePushDiff, type SyncDiff, type SyncDiffEntry } from './diff.js';
 import { atomicWriteFileSync, sweepOrphanedTempFiles } from './atomic-write.js';
+import { assertSyncRoot } from './root-marker.js';
+import { resolveWithinSyncRoot } from './safe-path.js';
+import { createConflictFile } from './conflict.js';
+import { getStatusCode } from '../utils/http-status.js';
 
 export { sweepOrphanedTempFiles };
 
@@ -24,12 +29,28 @@ export interface SyncProgress {
 
 export type ProgressCallback = (progress: SyncProgress) => void;
 
+export interface SyncOperationError {
+  path: string;
+  error: string;
+  /**
+   * True when a later run may succeed without operator action (network
+   * failure, exhausted rate limit, an operation skipped after such a failure).
+   * False for permanent rejections such as 400/401/403/404/409 or a quota
+   * limit, which recur identically until something changes.
+   */
+  retryable: boolean;
+}
+
 export interface SyncResult {
   filesUploaded: number;
   filesDownloaded: number;
   filesDeleted: number;
+  /** Operations that were planned but never attempted because an earlier failure stopped submission. */
+  filesSkipped: number;
   bytesTransferred: number;
-  errors: Array<{ path: string; error: string }>;
+  errors: SyncOperationError[];
+  /** True when one or more requested transfers/deletions failed or were skipped. */
+  failed: boolean;
 }
 
 /**
@@ -157,7 +178,22 @@ export async function scanRemoteFiles(
     }
   }
 
+  // No collision check here: this function has no sync root to measure the
+  // filesystem's folding against, and computePullDiff/computePushDiff already
+  // check the union of these paths with the local set, which is a superset.
   return { files, listEtag: sync.listEtag, vaultUnchanged: false };
+}
+
+/**
+ * True when a hash is usable as an `If-Match` precondition.
+ *
+ * `scanRemoteFiles` falls back to an empty hash for a path the server listed as
+ * unchanged but that the persisted state has no entry for. `If-Match: ""` never
+ * matches anything, so sending it would turn every such write into an
+ * unconditional 412.
+ */
+function hasPrecondition(hash: string | undefined): hash is string {
+  return hash !== undefined && hash !== '';
 }
 
 /**
@@ -219,23 +255,44 @@ async function executeSyncOperation(
   concurrency: number = DEFAULT_TRANSFER_CONCURRENCY,
   onThrottle?: ThrottleCallback,
 ): Promise<SyncResult> {
+  assertSyncRoot(config);
   const result: SyncResult = {
     filesUploaded: 0,
     filesDownloaded: 0,
     filesDeleted: 0,
+    filesSkipped: 0,
     bytesTransferred: 0,
     errors: [],
+    failed: false,
   };
 
   const state = loadSyncState(config.id);
   const allOps = [...handlers.transfers, ...handlers.deletes];
   let current = 0;
-  // Once a quota error is hit anywhere in the pool we stop submitting new
-  // work but let in-flight transfers drain to keep state consistent.
+  // Once a quota or exhausted-throttle error is hit anywhere in the pool we
+  // stop submitting new work but let in-flight transfers drain to keep state
+  // consistent. Everything not yet attempted is recorded as skipped so the
+  // caller can see the run was incomplete.
   let stopSubmitting = false;
+  let stopReason = '';
+  // Set by ANY failed transfer, not just quota/throttle. The delete list was computed
+  // from a diff snapshot; once a transfer in that same run has failed we no longer know
+  // the snapshot still holds, and acting on its deletes can remove a file whose remote
+  // counterpart we were never able to read. Transfers continue (a single transient
+  // failure should not abort the whole pull), but deletes are held back.
+  let transferFailed = false;
+  let deleteHoldReason = '';
+
+  function recordSkipped(entry: SyncDiffEntry): void {
+    result.filesSkipped++;
+    result.errors.push({
+      path: entry.path,
+      error: `Skipped: not attempted after ${stopReason || deleteHoldReason || 'an earlier failure'}`,
+      retryable: true,
+    });
+  }
 
   async function runOne(entry: SyncDiffEntry): Promise<void> {
-    if (stopSubmitting) return;
     current++;
     onProgress?.({
       phase: 'transferring',
@@ -265,14 +322,18 @@ async function executeSyncOperation(
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      result.errors.push({ path: entry.path, error: message });
+      result.errors.push({ path: entry.path, error: message, retryable: isRetryableSyncError(err) });
+      transferFailed = true;
+      deleteHoldReason = `a failed transfer (${entry.path})`;
       if (isQuotaError(message)) {
         stopSubmitting = true;
+        stopReason = 'a quota error';
       }
       // 429 errors that reach here have already exhausted SDK-level retries.
       // Stop submitting new work to avoid hammering a still-throttled API.
       if (isThrottleError(err)) {
         stopSubmitting = true;
+        stopReason = 'an exhausted rate limit';
       }
     }
   }
@@ -291,9 +352,14 @@ async function executeSyncOperation(
       }
     }),
   );
+  for (const entry of queue.splice(0)) recordSkipped(entry);
 
   for (const entry of handlers.deletes) {
     current++;
+    if (stopSubmitting || transferFailed) {
+      recordSkipped(entry);
+      continue;
+    }
     onProgress?.({
       phase: 'transferring',
       current,
@@ -308,9 +374,28 @@ async function executeSyncOperation(
       result.filesDeleted++;
       delete state.local[entry.path];
       delete state.remote[entry.path];
+      if (state.deniedDeletes) delete state.deniedDeletes[entry.path];
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      result.errors.push({ path: entry.path, error: message });
+      result.errors.push({ path: entry.path, error: message, retryable: isRetryableSyncError(err) });
+      if (getStatusCode(err) === 403 && entry.direction === 'upload') {
+        // A remote delete the server will keep refusing. Recorded so the pull
+        // phase stops "restoring" the file the user deleted — without this the
+        // two phases fight each other on every reconciliation, forever.
+        state.deniedDeletes ??= {};
+        state.deniedDeletes[entry.path] = {
+          deniedAt: state.deniedDeletes[entry.path]?.deniedAt ?? new Date().toISOString(),
+          reason: message,
+        };
+      }
+      if (isQuotaError(message)) {
+        stopSubmitting = true;
+        stopReason = 'a quota error';
+      }
+      if (isThrottleError(err)) {
+        stopSubmitting = true;
+        stopReason = 'an exhausted rate limit';
+      }
     }
   }
 
@@ -325,6 +410,8 @@ async function executeSyncOperation(
     totalBytes: diff.totalBytes,
   });
 
+  result.failed = result.errors.length > 0;
+
   return result;
 }
 
@@ -338,14 +425,19 @@ export async function executePull(
   onProgress?: ProgressCallback,
   concurrency?: number,
   onThrottle?: ThrottleCallback,
+  /** Notified when a locally-modified file was preserved instead of deleted. */
+  onConflict?: (docPath: string, conflictFile: string) => void,
 ): Promise<SyncResult> {
+  // Last-known local state, read once: deleteFile below compares against it to
+  // tell "unchanged since last sync" from "the user edited this".
+  const pullState = loadSyncState(config.id);
   return executeSyncOperation(config, diff, {
     transfers: diff.downloads,
     deletes: diff.deletes,
     transferCounterKey: 'filesDownloaded',
     async transferFile(entry, cfg, throttleCallback) {
-      const localFile = path.join(cfg.localPath, entry.path);
-      const localDir = path.dirname(localFile);
+      assertSyncRoot(cfg);
+      const localFile = resolveWithinSyncRoot(cfg.localPath, entry.path);
 
       // Only use a conditional GET when (a) we have the remote hash AND (b)
       // the local file already exists.  For 'create' entries the local file
@@ -353,7 +445,7 @@ export async function executePull(
       // server's current hash), which would send the 304 branch into a
       // readFileSync on a non-existent path (ENOENT).  Guarding on existsSync
       // also makes the readFileSync in the 304 branch provably safe.
-      const useConditional = entry.remoteHash !== undefined && fs.existsSync(localFile);
+      const useConditional = hasPrecondition(entry.remoteHash) && fs.existsSync(localFile);
 
       const result = await retryWithBackoff<DocumentGetResult | DocumentWithContent>(
         () => useConditional
@@ -373,17 +465,41 @@ export async function executePull(
       // 200 response — result has `content` (handle both shapes of the union).
       const content = (result as { content: string }).content;
 
-      if (!fs.existsSync(localDir)) {
-        fs.mkdirSync(localDir, { recursive: true });
+      assertSyncRoot(cfg);
+      const mutationTarget = resolveWithinSyncRoot(cfg.localPath, entry.path);
+      const mutationDir = path.dirname(mutationTarget);
+      if (!fs.existsSync(mutationDir)) {
+        fs.mkdirSync(mutationDir, { recursive: true });
       }
-      atomicWriteFileSync(localFile, content, 'utf-8');
+      atomicWriteFileSync(mutationTarget, content, 'utf-8');
       return content;
     },
     async deleteFile(entry, cfg) {
-      const localFile = path.join(cfg.localPath, entry.path);
-      if (fs.existsSync(localFile)) {
-        fs.unlinkSync(localFile);
+      assertSyncRoot(cfg);
+      const localFile = resolveWithinSyncRoot(cfg.localPath, entry.path);
+      if (!fs.existsSync(localFile)) return;
+
+      // The diff emits this delete purely because the document vanished from
+      // the remote — it never compares the local file against last-known state.
+      // If the user edited it locally since the last sync, unlinking here
+      // destroys the only copy. Preserve it as a conflict file first, the same
+      // way the remote poller does for this exact case.
+      //
+      // The backup is skipped only when the file provably still holds the bytes
+      // of the last successful sync. An *absent* last-known hash is not that
+      // proof — it is the case where we know least — and used to be the exact
+      // condition under which the backup was skipped. The poller has always
+      // treated a missing `state.local` entry as "changed" (remote-poller.ts,
+      // the removed-document branch); this makes the engine agree.
+      const lastLocalHash = pullState.local[entry.path]?.hash;
+      const localContent = fs.readFileSync(localFile, 'utf-8');
+      const provablyUnchanged = lastLocalHash !== undefined && hashFileContent(localContent) === lastLocalHash;
+      if (!provablyUnchanged) {
+        const conflictFile = createConflictFile(cfg.localPath, entry.path, localContent, 'local');
+        onConflict?.(entry.path, conflictFile);
       }
+
+      fs.unlinkSync(localFile);
     },
   }, onProgress, concurrency, onThrottle);
 }
@@ -404,27 +520,138 @@ export async function executePush(
     deletes: diff.deletes,
     transferCounterKey: 'filesUploaded',
     async transferFile(entry, cfg, throttleCallback) {
-      const localFile = path.join(cfg.localPath, entry.path);
+      assertSyncRoot(cfg);
+      const localFile = resolveWithinSyncRoot(cfg.localPath, entry.path);
       const content = fs.readFileSync(localFile, 'utf-8');
-      await retryWithBackoff(() =>
-        client.documents.put(cfg.vaultId, entry.path, content),
-        throttleCallback ? () => throttleCallback(entry.path) : undefined,
-      );
+      // The root assertion sits outside the retry wrapper: a missing or
+      // mismatched marker is a permanent condition, not a transient request
+      // failure, and must not be re-probed with backoff.
+      assertSyncRoot(cfg);
+      // Close the diff-to-write window with a conditional PUT: apply only if the
+      // remote is still at the hash the diff observed. Without it, a remote edit
+      // landing between the comparison and this call was silently overwritten.
+      // `remoteHash` is undefined for a create, where there is nothing to guard.
+      try {
+        await retryWithBackoff(
+          () => hasPrecondition(entry.remoteHash)
+            ? client.documents.put(cfg.vaultId, entry.path, content, { ifMatch: entry.remoteHash })
+            : client.documents.put(cfg.vaultId, entry.path, content),
+          throttleCallback ? () => throttleCallback(entry.path) : undefined,
+        );
+      } catch (err) {
+        throw rewritePreconditionFailure(err, entry.path, 'upload');
+      }
       return content;
     },
     async deleteFile(entry, cfg) {
-      await retryWithBackoff(() =>
-        client.documents.delete(cfg.vaultId, entry.path),
-      );
+      assertSyncRoot(cfg);
+      resolveWithinSyncRoot(cfg.localPath, entry.path);
+      assertSyncRoot(cfg);
+      try {
+        // Same precondition on the delete: the preflight-to-delete window is
+        // exactly where a concurrent remote edit would otherwise be destroyed.
+        await retryWithBackoff(() => hasPrecondition(entry.remoteHash)
+          ? client.documents.delete(cfg.vaultId, entry.path, { ifMatch: entry.remoteHash })
+          : client.documents.delete(cfg.vaultId, entry.path));
+      } catch (err) {
+        // The server's If-Match assertion answers 412 for BOTH "the document
+        // moved on" and "the document is already gone", distinguishable only by
+        // message text we must not parse. One follow-up GET settles it: a 404
+        // means the desired end state is already reached, so report success and
+        // let the caller drop the path from its state. Without this a document
+        // deleted by someone else wedges every future push and, through
+        // `result.failed`, every future pull in the daemon.
+        if (getStatusCode(err) === 412 && await remoteDocumentIsAbsent(client, cfg.vaultId, entry.path)) {
+          return;
+        }
+        const precondition = rewritePreconditionFailure(err, entry.path, 'delete');
+        if (precondition !== err) throw precondition;
+        if (getStatusCode(err) === 403) {
+          throw new SyncPermissionError(
+            `Remote delete of ${entry.path} was forbidden (403). Deleting documents in a team vault requires the admin role; `
+            + 'the local deletion was not propagated. Ask a vault admin to delete it, or restore the local file with `lsvault sync pull`.',
+          );
+        }
+        throw err;
+      }
     },
   }, onProgress, concurrency, onThrottle);
 }
 
 /**
+ * Probe whether a document is already absent from the remote vault.
+ *
+ * Only a structured SDK `NotFoundError` counts. Any other outcome — a 200, an
+ * auth failure, a network error — leaves the remote state unknown, and the
+ * original precondition failure must stand.
+ */
+async function remoteDocumentIsAbsent(
+  client: LifestreamVaultClient,
+  vaultId: string,
+  docPath: string,
+): Promise<boolean> {
+  try {
+    await client.documents.get(vaultId, docPath);
+    return false;
+  } catch (probeErr) {
+    return probeErr instanceof NotFoundError;
+  }
+}
+
+/**
+ * Turn a 412 from a conditional write into an operator-facing message.
+ *
+ * A precondition failure means the remote changed after the diff observed it, so the
+ * local view is stale. Retrying is exactly wrong — it either keeps failing or, if
+ * forced past the precondition, performs the silent overwrite the precondition
+ * exists to prevent. Left as a status-carrying error so isRetryableSyncError
+ * classifies it as non-retryable.
+ */
+function rewritePreconditionFailure(err: unknown, docPath: string, operation: 'upload' | 'delete'): unknown {
+  if (getStatusCode(err) !== 412) return err;
+  const verb = operation === 'upload' ? 'Remote update' : 'Remote delete';
+  return Object.assign(
+    new Error(
+      `${verb} of ${docPath} was refused: the document changed on the server since this sync compared it. `
+      + 'Run `lsvault sync pull` to reconcile, then retry.',
+    ),
+    { statusCode: 412, name: 'SyncPreconditionError', cause: err },
+  );
+}
+
+/** A permanent authorization failure surfaced with an operator-facing message. */
+class SyncPermissionError extends Error {
+  readonly statusCode = 403;
+  constructor(message: string) {
+    super(message);
+    this.name = 'SyncPermissionError';
+  }
+}
+
+/**
+ * Classify whether a failed sync request is worth retrying at the CLI level.
+ *
+ * - 4xx responses (400/401/403/404/409 and friends) are permanent: the same
+ *   request will be rejected the same way.
+ * - 429 has already been retried by the SDK with Retry-After backoff.
+ * - 5xx has already been retried by ky's retry policy inside the SDK; layering
+ *   another loop on top only multiplies load on an unhealthy server.
+ * - Quota and permission messages without a status code are permanent too.
+ *
+ * Only status-less failures (connection reset, DNS, timeout surfaced as a
+ * NetworkError) remain retryable here.
+ */
+export function isRetryableSyncError(err: unknown): boolean {
+  if (getStatusCode(err) !== undefined) return false;
+  if (isThrottleError(err)) return false;
+  const message = err instanceof Error ? err.message : String(err);
+  if (isQuotaError(message) || isPermissionError(message)) return false;
+  return true;
+}
+
+/**
  * Retry a function with exponential backoff (max 3 retries) for transient
- * network errors. Throttle (429) and quota/permission errors are NOT retried
- * here — the SDK already retries 429s transparently (ky retry config), and
- * quota/permission errors are not recoverable by retrying.
+ * network errors only — see {@link isRetryableSyncError} for the classifier.
  *
  * @param onThrottle - Optional callback to invoke when a 429 is observed.
  *   The SDK will retry automatically; this is called so the CLI can update
@@ -442,7 +669,6 @@ async function retryWithBackoff<T>(
       return await fn();
     } catch (err) {
       lastError = err;
-      const message = err instanceof Error ? err.message : String(err);
 
       // Throttle errors: the SDK already exhausted its own retry budget with
       // proper Retry-After backoff. Don't layer another retry loop on top —
@@ -452,8 +678,7 @@ async function retryWithBackoff<T>(
         throw err;
       }
 
-      // Don't retry on other non-transient errors
-      if (isQuotaError(message) || isPermissionError(message)) {
+      if (!isRetryableSyncError(err)) {
         throw err;
       }
       if (attempt < maxRetries) {

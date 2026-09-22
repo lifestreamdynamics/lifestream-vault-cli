@@ -12,8 +12,9 @@ import {
   createSyncConfig,
   deleteSyncConfig,
   getSyncConfig,
+  trustSyncRoot,
 } from '../sync/config.js';
-import { deleteSyncState, loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState } from '../sync/state.js';
+import { deleteSyncState, loadSyncState, saveSyncState, hashFileContent, buildRemoteFileState, pruneDeniedDeletes } from '../sync/state.js';
 import { resolveIgnorePatterns } from '../sync/ignore.js';
 import {
   scanLocalFiles,
@@ -27,10 +28,60 @@ import {
   type ScanRemoteResult,
 } from '../sync/engine.js';
 import { formatDiff } from '../sync/diff.js';
+import {
+  clearDeletionAnomaly,
+  massDeleteOverrideHint,
+  recordDeletionAnomaly,
+} from '../sync/mass-delete-guard.js';
+import type { DeletionAnomaly, DeletionTarget, SyncState } from '../sync/types.js';
+import { createConflictFile } from '../sync/conflict.js';
+import { atomicWriteFileSync } from '../sync/atomic-write.js';
 import { createWatcher } from '../sync/watcher.js';
 import { createRemotePoller } from '../sync/remote-poller.js';
-import { startDaemon, stopDaemon, getDaemonStatus } from '../sync/daemon.js';
-import type { SyncMode, ConflictStrategy } from '../sync/types.js';
+import { runDaemonForeground, startDaemon, stopDaemon, getDaemonStatus } from '../sync/daemon.js';
+import { assertSyncRoot, prepareSyncRoot } from '../sync/root-marker.js';
+import { isSyncMode, isConflictStrategy, SYNC_MODES, CONFLICT_STRATEGIES } from '../sync/types.js';
+import { resolveWithinSyncRoot } from '../sync/safe-path.js';
+import { resolvePathFold } from '../sync/path-collision.js';
+
+/**
+ * Warn about, and persist, a deletion batch the mass-delete guard refused —
+ * or clear a marker that no longer applies.
+ *
+ * A refusal is not a transient console line: the vault is not converging until
+ * someone acts on it, so it goes into the sync state for `lsvault sync status`
+ * and is re-surfaced on every run until that side's listing recovers.
+ *
+ * @returns true when the state was modified and needs saving.
+ */
+function reportDeletionAnomaly(
+  out: ReturnType<typeof createOutput>,
+  state: SyncState,
+  anomaly: DeletionAnomaly | undefined,
+  target: DeletionTarget,
+): boolean {
+  if (anomaly) {
+    recordDeletionAnomaly(state, anomaly);
+    out.stopSpinner();
+    out.warn(`Refused ${anomaly.removedCount} ${target} deletion(s): ${anomaly.reason} ${massDeleteOverrideHint(target)}`);
+    return true;
+  }
+  if (clearDeletionAnomaly(state, target)) {
+    out.debug(`Deletion guard cleared for ${target}: that side's listing is consistent again.`);
+    return true;
+  }
+  return false;
+}
+
+/** Remove a directory that `sync init --create-dir` created but could not finish setting up. */
+function removeCreatedDir(dir: string): void {
+  try {
+    // Only an empty leaf is removed; anything the user put there stays.
+    fs.rmdirSync(dir);
+  } catch {
+    // Best effort: a non-empty or already-removed directory is left alone.
+  }
+}
 
 export function registerSyncCommands(program: Command): void {
   const sync = program.command('sync').description('Configure and manage vault sync');
@@ -45,6 +96,7 @@ export function registerSyncCommands(program: Command): void {
     .option('--ignore <patterns...>', 'Glob patterns to ignore')
     .option('--interval <interval>', 'Auto-sync interval (e.g., 5m, 1h)')
     .option('--auto-sync', 'Enable auto-sync')
+    .option('--create-dir', 'Create the local directory when it does not exist')
     .addHelpText('after', `
 Examples:
   lsvault sync init <vaultId> ~/my-vault
@@ -59,15 +111,33 @@ Sync modes:
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       out.startSpinner('Initializing sync...');
+      let createdDir: string | null = null;
       try {
+        const mode = _opts.mode ?? 'sync';
+        if (!isSyncMode(mode)) {
+          throw new Error(`--mode must be one of ${SYNC_MODES.join(', ')} (got ${String(mode)})`);
+        }
+        const onConflict = _opts.onConflict ?? 'newer';
+        if (!isConflictStrategy(onConflict)) {
+          throw new Error(`--on-conflict must be one of ${CONFLICT_STRATEGIES.join(', ')} (got ${String(onConflict)})`);
+        }
+
+        const absPath = path.resolve(localPath);
+        const createDir = _opts.createDir === true;
+        const existedBefore = fs.existsSync(absPath);
+        prepareSyncRoot(absPath, {
+          createDir,
+          requireUnmarked: true,
+        });
+        if (createDir && !existedBefore) createdDir = absPath;
         const client = await getClientAsync();
         const vault = await client.vaults.get(vaultId);
-        const absPath = path.resolve(localPath);
 
-        const mode = (_opts.mode as SyncMode | undefined) ?? 'sync';
-        const onConflict = (_opts.onConflict as ConflictStrategy | undefined) ?? 'newer';
         if (!_opts.onConflict) {
-          out.warn('No --on-conflict strategy specified; defaulting to "newer" (keeps the file with the more recent modification time). Use --on-conflict local|remote|ask to override.');
+          out.warn('No --on-conflict strategy specified; defaulting to "newer" (keeps the file with the more recent modification time). Use --on-conflict local|remote to override.');
+        }
+        if (onConflict === 'ask') {
+          out.warn('--on-conflict ask never resolves conflicts automatically: conflicting files are reported and left for `lsvault sync resolve`.');
         }
         const ignore = _opts.ignore as string[] | undefined;
         const syncInterval = _opts.interval as string | undefined;
@@ -81,7 +151,11 @@ Sync modes:
           ignore,
           syncInterval,
           autoSync,
+        }, {
+          markRoot: true,
+          createDir,
         });
+        createdDir = null;
 
         out.success(`Sync initialized for vault "${vault.name}"`, {
           id: config.id,
@@ -97,7 +171,50 @@ Sync modes:
           out.status(`Run ${chalk.cyan(`lsvault sync pull ${config.id}`)} or ${chalk.cyan(`lsvault sync push ${config.id}`)} to perform the first sync.`);
         }
       } catch (err) {
+        if (createdDir) removeCreatedDir(createdDir);
         handleError(out, err, 'Failed to initialize sync');
+      }
+    });
+
+  // sync trust-root <syncId>
+  addGlobalFlags(sync.command('trust-root')
+    .description('Trust and mark the local root of a legacy sync configuration')
+    .argument('<syncId>', 'Sync configuration ID')
+    .option('-y, --yes', 'Skip confirmation prompt'))
+    .action(async (syncId: string, _opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      try {
+        const existing = getSyncConfig(syncId);
+        if (!existing) {
+          out.error(`Sync configuration not found: ${syncId}`);
+          process.exitCode = 1;
+          return;
+        }
+        // Trusting a root turns every later local deletion into a remote
+        // deletion, so show exactly what would be tracked before marking it.
+        const ignorePatterns = resolveIgnorePatterns(existing.ignore, existing.localPath);
+        const fileCount = Object.keys(scanLocalFiles(existing.localPath, ignorePatterns)).length;
+        out.status(`Sync root: ${existing.localPath}`);
+        out.status(`Vault:     ${existing.vaultId}`);
+        out.status(`Markdown files that will be tracked: ${fileCount}`);
+        const confirmed = await confirmAction(
+          `Trust this directory as the sync root for ${syncId}?`,
+          { yes: _opts.yes as boolean | undefined },
+        );
+        if (!confirmed) {
+          out.status('Trust cancelled.');
+          return;
+        }
+        const config = trustSyncRoot(syncId);
+        out.success('Sync root trusted', {
+          id: config.id,
+          vaultId: config.vaultId,
+          localPath: config.localPath,
+          rootMarkerVersion: config.rootMarkerVersion,
+        });
+      } catch (err) {
+        handleError(out, err, 'Failed to trust sync root');
       }
     });
 
@@ -179,7 +296,8 @@ Sync modes:
   addGlobalFlags(sync.command('pull')
     .description('Pull remote changes to local directory')
     .argument('<syncId>', 'Sync configuration ID')
-    .option('--concurrency <n>', 'Max concurrent file transfers (1-16, default 4)', (v) => parseInt(v, 10)))
+    .option('--concurrency <n>', 'Max concurrent file transfers (1-16, default 4)', (v) => parseInt(v, 10))
+    .option('--allow-mass-delete', 'Apply a deletion batch the safety guard would otherwise refuse'))
     .action(async (syncId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -191,12 +309,13 @@ Sync modes:
           return;
         }
 
+        assertSyncRoot(config);
         const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const lastState = loadSyncState(config.id);
 
         // Clean up any orphaned temp files left by a prior interrupted pull.
-        const swept = sweepOrphanedTempFiles(config.localPath);
+        const swept = sweepOrphanedTempFiles(config.localPath, { ignorePatterns });
         if (swept > 0) {
           out.debug(`Removed ${swept} orphaned temp file(s) from ${config.localPath}`);
         }
@@ -214,7 +333,11 @@ Sync modes:
         out.debug(`Found ${Object.keys(remoteFiles).length} remote files`);
 
         out.startSpinner('Computing diff...');
-        const diff = computePullDiff(localFiles, remoteFiles, lastState);
+        const allowMassDelete = _opts.allowMassDelete === true;
+        const diff = computePullDiff(localFiles, remoteFiles, lastState, {
+          allowMassDelete,
+          fold: resolvePathFold(config.localPath),
+        });
 
         const unchanged = Object.keys(remoteFiles).length - diff.downloads.length;
         const totalOps = diff.downloads.length + diff.deletes.length;
@@ -224,8 +347,15 @@ Sync modes:
           lastState.remoteListEtag = remoteResult.listEtag;
         }
 
+        // A refused deletion batch is not a transient console warning: the vault
+        // is not converging until someone looks at it, so it is persisted for
+        // `lsvault sync status` and re-surfaced on every run until it clears.
+        const clearedDenials = pruneDeniedDeletes(lastState, remoteFiles, localFiles);
+        let stateDirty = clearedDenials.length > 0;
+        if (reportDeletionAnomaly(out, lastState, diff.deletionAnomaly, 'local')) stateDirty = true;
+
         if (totalOps === 0) {
-          if (remoteResult.listEtag) {
+          if (remoteResult.listEtag || stateDirty) {
             saveSyncState(lastState);
           }
           out.succeedSpinner('Everything is up to date');
@@ -237,6 +367,7 @@ Sync modes:
               unchanged: Object.keys(remoteFiles).length,
               bytesTransferred: 0,
               errors: 0,
+              ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
             });
           }
           return;
@@ -252,6 +383,7 @@ Sync modes:
               deletes: diff.deletes.length,
               unchanged,
               totalBytes: diff.totalBytes,
+              ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
             });
           } else {
             out.status(chalk.yellow('Dry run — no changes will be made:'));
@@ -266,13 +398,18 @@ Sync modes:
 
         const concurrency = resolveConcurrency(_opts.concurrency as number | undefined);
 
+        if (stateDirty) saveSyncState(lastState);
+
         out.startSpinner(`Pulling ${totalOps} file(s)...`);
+        const conflictCopies: Array<{ path: string; conflictFile: string }> = [];
         const result = await executePull(client, config, diff, (progress) => {
           if (progress.phase === 'transferring' && progress.currentFile) {
             out.startSpinner(`[${progress.current}/${progress.total}] ${progress.currentFile}`);
           }
         }, concurrency, (file) => {
           out.startSpinner(`Rate limited — waiting and retrying… (${file})`);
+        }, (docPath, conflictFile) => {
+          conflictCopies.push({ path: docPath, conflictFile });
         });
 
         if (result.errors.length > 0) {
@@ -280,8 +417,13 @@ Sync modes:
           for (const err of result.errors) {
             out.error(`  ${err.path}: ${err.error}`);
           }
+          process.exitCode = 1;
         } else {
           out.succeedSpinner('Pull complete');
+        }
+
+        for (const copy of conflictCopies) {
+          out.warn(`Kept your local edit of ${copy.path} as ${copy.conflictFile} before applying the remote deletion.`);
         }
 
         out.success('', {
@@ -290,6 +432,8 @@ Sync modes:
           unchanged,
           bytesTransferred: result.bytesTransferred,
           errors: result.errors.length,
+          ...(conflictCopies.length > 0 ? { conflictCopies } : {}),
+          ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
         });
       } catch (err) {
         handleError(out, err, 'Pull failed');
@@ -300,7 +444,8 @@ Sync modes:
   addGlobalFlags(sync.command('push')
     .description('Push local changes to remote vault')
     .argument('<syncId>', 'Sync configuration ID')
-    .option('--concurrency <n>', 'Max concurrent file transfers (1-16, default 4)', (v) => parseInt(v, 10)))
+    .option('--concurrency <n>', 'Max concurrent file transfers (1-16, default 4)', (v) => parseInt(v, 10))
+    .option('--allow-mass-delete', 'Apply a deletion batch the safety guard would otherwise refuse'))
     .action(async (syncId: string, _opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
@@ -312,9 +457,17 @@ Sync modes:
           return;
         }
 
+        assertSyncRoot(config);
         const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const lastState = loadSyncState(config.id);
+
+        // An interrupted pull leaves temp files behind that a later push would
+        // otherwise be free to upload; the sweep is not pull-specific.
+        const swept = sweepOrphanedTempFiles(config.localPath, { ignorePatterns });
+        if (swept > 0) {
+          out.debug(`Removed ${swept} orphaned temp file(s) from ${config.localPath}`);
+        }
 
         out.startSpinner('Scanning local files...');
         const localFiles = scanLocalFiles(config.localPath, ignorePatterns, lastState);
@@ -328,8 +481,22 @@ Sync modes:
         const remoteFiles = remoteResult.files;
         out.debug(`Found ${Object.keys(remoteFiles).length} remote files`);
 
+        const clearedDenials = pruneDeniedDeletes(lastState, remoteFiles, localFiles);
+        let stateDirty = clearedDenials.length > 0;
+        if (clearedDenials.length > 0) {
+          out.debug(`Cleared ${clearedDenials.length} stale denied-delete marker(s)`);
+        }
+
         out.startSpinner('Computing diff...');
-        const diff = computePushDiff(localFiles, remoteFiles, lastState);
+        // The mirror of the pull guard, and the more destructive direction: a
+        // local scan that came back short deletes documents from the vault every
+        // other client syncs from.
+        const allowMassDelete = _opts.allowMassDelete === true;
+        const diff = computePushDiff(localFiles, remoteFiles, lastState, {
+          allowMassDelete,
+          fold: resolvePathFold(config.localPath),
+        });
+        if (reportDeletionAnomaly(out, lastState, diff.deletionAnomaly, 'remote')) stateDirty = true;
 
         const unchanged = Object.keys(localFiles).length - diff.uploads.length;
         const totalOps = diff.uploads.length + diff.deletes.length;
@@ -340,7 +507,7 @@ Sync modes:
         }
 
         if (totalOps === 0) {
-          if (remoteResult.listEtag) {
+          if (remoteResult.listEtag || stateDirty) {
             saveSyncState(lastState);
           }
           out.succeedSpinner('Everything is up to date');
@@ -352,6 +519,7 @@ Sync modes:
               unchanged: Object.keys(localFiles).length,
               bytesTransferred: 0,
               errors: 0,
+              ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
             });
           }
           return;
@@ -367,6 +535,7 @@ Sync modes:
               deletes: diff.deletes.length,
               unchanged,
               totalBytes: diff.totalBytes,
+              ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
             });
           } else {
             out.status(chalk.yellow('Dry run — no changes will be made:'));
@@ -380,6 +549,8 @@ Sync modes:
         }
 
         const concurrency = resolveConcurrency(_opts.concurrency as number | undefined);
+
+        if (stateDirty) saveSyncState(lastState);
 
         out.startSpinner(`Pushing ${totalOps} file(s)...`);
         const result = await executePush(client, config, diff, (progress) => {
@@ -395,6 +566,7 @@ Sync modes:
           for (const err of result.errors) {
             out.error(`  ${err.path}: ${err.error}`);
           }
+          process.exitCode = 1;
         } else {
           out.succeedSpinner('Push complete');
         }
@@ -405,6 +577,7 @@ Sync modes:
           unchanged,
           bytesTransferred: result.bytesTransferred,
           errors: result.errors.length,
+          ...(diff.deletionAnomaly ? { deletionAnomaly: diff.deletionAnomaly } : {}),
         });
       } catch (err) {
         handleError(out, err, 'Push failed');
@@ -426,6 +599,7 @@ Sync modes:
           return;
         }
 
+        assertSyncRoot(config);
         const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const lastState = loadSyncState(config.id);
@@ -438,13 +612,23 @@ Sync modes:
         );
         const remoteFiles = remoteResult.files;
 
-        const pullDiff = computePullDiff(localFiles, remoteFiles, lastState);
-        const pushDiff = computePushDiff(localFiles, remoteFiles, lastState);
+        const fold = resolvePathFold(config.localPath);
+        const pullDiff = computePullDiff(localFiles, remoteFiles, lastState, { fold });
+        const pushDiff = computePushDiff(localFiles, remoteFiles, lastState, { fold });
 
         out.stopSpinner();
 
         const pullOps = pullDiff.downloads.length + pullDiff.deletes.length;
         const pushOps = pushDiff.uploads.length + pushDiff.deletes.length;
+        // A persisted anomaly is what a refusing daemon left behind; a freshly
+        // computed one is what this scan sees right now. Report either, per side:
+        // "your local nearly got wiped" and "your remote nearly got wiped" need
+        // different responses from the operator.
+        const deletionAnomalies = [
+          pullDiff.deletionAnomaly ?? lastState.deletionAnomalies?.local,
+          pushDiff.deletionAnomaly ?? lastState.deletionAnomalies?.remote,
+        ].filter((a): a is DeletionAnomaly => a !== undefined);
+        const deniedDeletes = Object.entries(lastState.deniedDeletes ?? {});
 
         if (flags.output === 'json') {
           out.record({
@@ -457,6 +641,10 @@ Sync modes:
             pendingPull: pullOps,
             pendingPush: pushOps,
             lastSyncAt: config.lastSyncAt,
+            ...(deletionAnomalies.length > 0 ? { deletionAnomalies } : {}),
+            ...(deniedDeletes.length > 0
+              ? { deniedDeletes: deniedDeletes.map(([docPath, entry]) => ({ path: docPath, ...entry })) }
+              : {}),
           });
           return;
         }
@@ -484,6 +672,23 @@ Sync modes:
           out.status(formatDiff(pushDiff));
         } else {
           out.status(chalk.green('Push: up to date'));
+        }
+
+        for (const anomaly of deletionAnomalies) {
+          out.status('');
+          out.status(chalk.red(
+            `Deletion guard active on the ${anomaly.target} side since ${anomaly.detectedAt}: ${anomaly.reason}`,
+          ));
+          out.status(chalk.red(`  ${massDeleteOverrideHint(anomaly.target)}`));
+        }
+
+        if (deniedDeletes.length > 0) {
+          out.status('');
+          out.status(chalk.yellow(`${deniedDeletes.length} local deletion(s) the server refused:`));
+          for (const [docPath, entry] of deniedDeletes) {
+            out.status(chalk.yellow(`  - ${docPath} (since ${entry.deniedAt}): ${entry.reason}`));
+          }
+          out.status(chalk.yellow('  These paths are not restored by pull. Ask a vault admin to delete them, or restore the file locally to clear the marker.'));
         }
 
         if (config.lastSyncAt !== '1970-01-01T00:00:00.000Z') {
@@ -517,6 +722,7 @@ Sync modes:
           return;
         }
 
+        assertSyncRoot(config);
         const client = await getClientAsync();
         const ignorePatterns = resolveIgnorePatterns(config.ignore, config.localPath);
         const pollInterval = parseInt(String(_opts.pollInterval ?? '30000'), 10);
@@ -536,15 +742,27 @@ Sync modes:
         const errorHandler = (err: Error) => out.error(err.message);
 
         // Start local watcher
-        const { stop: stopWatcher } = createWatcher(client, config, {
+        const {
+          ready: watcherReady,
+          markLocalWrite,
+          serialize,
+          stop: stopWatcher,
+        } = createWatcher(client, config, {
           ignorePatterns,
           onLog: logHandler,
           onConflictLog: conflictHandler,
           onError: errorHandler,
         });
 
+        try {
+          await watcherReady;
+        } catch (err) {
+          await stopWatcher().catch(() => undefined);
+          throw err;
+        }
+
         // Start remote poller (only for sync and pull modes)
-        let stopPoller: (() => void) | undefined;
+        let stopPoller: (() => Promise<void>) | undefined;
         if (config.mode === 'sync') {
           const poller = createRemotePoller(client, config, {
             ignorePatterns,
@@ -552,21 +770,42 @@ Sync modes:
             onLog: logHandler,
             onConflictLog: conflictHandler,
             onError: errorHandler,
+            onLocalWrite: markLocalWrite,
+            serialize,
           });
           stopPoller = poller.stop;
         }
 
         // Handle graceful shutdown
-        const shutdown = async () => {
+        let shutdownPromise: Promise<void> | null = null;
+        const performShutdown = async (): Promise<void> => {
           out.status('\nStopping...');
-          stopPoller?.();
-          await stopWatcher();
+          const results = await Promise.allSettled([
+            stopPoller?.() ?? Promise.resolve(),
+            stopWatcher(),
+          ]);
+          const errors = results
+            .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+            .map(result => result.reason instanceof Error ? result.reason.message : String(result.reason));
+          if (errors.length > 0) throw new Error(`Sync watch did not drain cleanly: ${errors.join('; ')}`);
           out.status('Sync watch stopped.');
-          process.exit(0);
         };
 
-        process.on('SIGINT', shutdown);
-        process.on('SIGTERM', shutdown);
+        const shutdown = () => {
+          process.removeListener('SIGINT', shutdown);
+          process.removeListener('SIGTERM', shutdown);
+          shutdownPromise ??= performShutdown();
+          void shutdownPromise.then(
+            () => process.exit(0),
+            err => {
+              out.error(err instanceof Error ? err.message : String(err));
+              process.exit(1);
+            },
+          );
+        };
+
+        process.once('SIGINT', shutdown);
+        process.once('SIGTERM', shutdown);
 
         // Keep process alive
         await new Promise(() => {}); // Never resolves — relies on signal handlers
@@ -593,6 +832,7 @@ Sync modes:
           return;
         }
 
+        assertSyncRoot(config);
         const useVersion = String(_opts.use);
         if (useVersion !== 'local' && useVersion !== 'remote') {
           out.failSpinner('--use must be "local" or "remote"');
@@ -601,17 +841,25 @@ Sync modes:
         }
 
         const client = await getClientAsync();
-        const localFile = path.join(config.localPath, docPath);
+        const localFile = resolveWithinSyncRoot(config.localPath, docPath);
         const state = loadSyncState(config.id);
 
         if (useVersion === 'local') {
+          assertSyncRoot(config);
           if (!fs.existsSync(localFile)) {
             out.failSpinner(`Local file not found: ${localFile}`);
             process.exitCode = 1;
             return;
           }
           const content = fs.readFileSync(localFile, 'utf-8');
-          await client.documents.put(config.vaultId, docPath, content);
+          assertSyncRoot(config);
+          // Condition the overwrite on the remote bytes this sync last saw. If
+          // the server has moved on again since the conflict was recorded, the
+          // 412 is the right answer — resolving a stale conflict must not
+          // destroy an edit that arrived after it.
+          const knownRemoteHash = state.remote[docPath]?.hash;
+          await client.documents.put(config.vaultId, docPath, content,
+            knownRemoteHash ? { ifMatch: knownRemoteHash } : undefined);
 
           state.local[docPath] = {
             path: docPath,
@@ -622,11 +870,26 @@ Sync modes:
           state.remote[docPath] = buildRemoteFileState(docPath, content, new Date().toISOString());
         } else {
           const { content } = await client.documents.get(config.vaultId, docPath);
-          const dir = path.dirname(localFile);
+          assertSyncRoot(config);
+          const mutationTarget = resolveWithinSyncRoot(config.localPath, docPath);
+          const dir = path.dirname(mutationTarget);
           if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
           }
-          fs.writeFileSync(localFile, content, 'utf-8');
+          assertSyncRoot(config);
+          // The local side is about to be discarded, so keep a copy first —
+          // `--use remote` is a one-way door otherwise, and the file being
+          // resolved is by definition one the user edited.
+          if (fs.existsSync(mutationTarget)) {
+            const localContent = fs.readFileSync(mutationTarget, 'utf-8');
+            if (localContent !== content) {
+              const backup = createConflictFile(config.localPath, docPath, localContent, 'local');
+              out.warn(`Saved the local version as ${backup} before overwriting it.`);
+            }
+          }
+          // Atomic, like every other local write in the sync engine: a crash
+          // mid-write must not leave a truncated document at the target path.
+          atomicWriteFileSync(mutationTarget, content, 'utf-8');
 
           state.local[docPath] = {
             path: docPath,
@@ -658,7 +921,7 @@ Sync modes:
       const out = createOutput(flags);
       try {
         const logFile = _opts.logFile as string | undefined;
-        const { pid, lingerWarning } = startDaemon(logFile);
+        const { pid, lingerWarning } = await startDaemon(logFile);
         out.success('Daemon started', { pid, status: 'running' });
         if (lingerWarning) {
           out.warn(`Warning: ${lingerWarning}`);
@@ -668,13 +931,25 @@ Sync modes:
       }
     });
 
+  addGlobalFlags(daemon.command('run')
+    .description('Run the sync daemon in the foreground (for systemd/launchd)'))
+    .action(async (_opts: Record<string, unknown>) => {
+      const flags = resolveFlags(_opts);
+      const out = createOutput(flags);
+      try {
+        await runDaemonForeground();
+      } catch (err) {
+        handleError(out, err, 'Daemon failed');
+      }
+    });
+
   addGlobalFlags(daemon.command('stop')
     .description('Stop the background sync daemon'))
     .action(async (_opts: Record<string, unknown>) => {
       const flags = resolveFlags(_opts);
       const out = createOutput(flags);
       try {
-        const stopped = stopDaemon();
+        const stopped = await stopDaemon();
         if (stopped) {
           out.success('Daemon stopped', { status: 'stopped' });
         } else {
@@ -696,11 +971,19 @@ Sync modes:
         if (flags.output === 'json') {
           out.record({
             running: status.running,
+            state: status.state,
             pid: status.pid,
             logFile: status.logFile,
             uptime: status.uptime,
             startedAt: status.startedAt,
           });
+          return;
+        }
+
+        if (status.state === 'unknown') {
+          out.status(chalk.yellow(`Daemon status unknown: PID ${status.pid} is alive but could not be verified on this platform.`));
+          out.status(`  Log file:   ${status.logFile}`);
+          process.exitCode = 1;
           return;
         }
 
